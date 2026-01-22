@@ -1,0 +1,68 @@
+version: 2
+updates:
+  # Root module
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Provider modules
+  - package-ecosystem: gomod
+    directory: /providers/docker
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: gomod
+    directory: /providers/local
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: gomod
+    directory: /providers/mock
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: gomod
+    directory: /providers/ssh
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Example module
+  - package-ecosystem: gomod
+    directory: /examples/unified-deploy
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"
