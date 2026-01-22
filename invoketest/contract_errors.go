@@ -1,0 +1,158 @@
+package invoketest
+
+import (
+	"errors"
+
+	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/require"
+)
+
+const (
+	runExitErrorCode  = 13
+	waitExitErrorCode = 23
+)
+
+func errorContracts() []TestCase {
+	return []TestCase{
+		runNilCommandReturnsErrorContract(),
+		runEmptyCommandReturnsErrorContract(),
+		startNilCommandReturnsErrorContract(),
+		startEmptyCommandReturnsErrorContract(),
+		runNonZeroReturnsExitErrorContract(),
+		startWaitNonZeroReturnsExitErrorContract(),
+		ttyUnsupportedNormalizedContract(),
+		runNonexistentBinaryContract(),
+	}
+}
+
+func runNilCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-nil-command-returns-error",
+		Description: "Run with a nil command must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), nil)
+			require.Error(t, err)
+		},
+	}
+}
+
+func runEmptyCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-empty-command-returns-error",
+		Description: "Run with an empty command binary must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), &invoke.Command{})
+			require.Error(t, err)
+		},
+	}
+}
+
+func startNilCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "start-nil-command-returns-error",
+		Description: "Start with a nil command must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Start(t.Context(), nil)
+			require.Error(t, err)
+		},
+	}
+}
+
+func startEmptyCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "start-empty-command-returns-error",
+		Description: "Start with an empty command binary must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Start(t.Context(), &invoke.Command{})
+			require.Error(t, err)
+		},
+	}
+}
+
+func runNonZeroReturnsExitErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-nonzero-returns-exiterror",
+		Description: "Run non-zero failures must return *invoke.ExitError",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), invoke.ShellCommand(exitScript(runExitErrorCode)))
+			require.Error(t, err)
+
+			var exitErr *invoke.ExitError
+			require.ErrorAs(t, err, &exitErr)
+			require.Equal(t, runExitErrorCode, exitErr.ExitCode)
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
+		},
+	}
+}
+
+func startWaitNonZeroReturnsExitErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "start-wait-nonzero-returns-exiterror",
+		Description: "Wait non-zero failures must return *invoke.ExitError",
+		Run: func(t T, env invoke.Environment) {
+			process, err := env.Start(t.Context(), invoke.ShellCommand(exitScript(waitExitErrorCode)))
+			require.NoError(t, err)
+			require.NotNil(t, process)
+
+			defer func() {
+				_ = process.Close()
+			}()
+
+			_, err = process.Wait()
+			require.Error(t, err)
+
+			var exitErr *invoke.ExitError
+			require.ErrorAs(t, err, &exitErr)
+			require.Equal(t, waitExitErrorCode, exitErr.ExitCode)
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
+		},
+	}
+}
+
+func ttyUnsupportedNormalizedContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "tty-unsupported-normalized",
+		Description: "If TTY is unsupported by a provider, it must wrap invoke.ErrNotSupported",
+		Run: func(t T, env invoke.Environment) {
+			cmd := invoke.ShellCommand("echo invoke-contract-tty")
+			cmd.Tty = true
+
+			process, err := env.Start(t.Context(), cmd)
+			if err != nil {
+				require.ErrorIs(t, err, invoke.ErrNotSupported)
+
+				return
+			}
+
+			require.NotNil(t, process)
+
+			defer func() {
+				_ = process.Close()
+			}()
+
+			_, waitErr := process.Wait()
+			require.NoError(t, waitErr)
+		},
+	}
+}
+
+func runNonexistentBinaryContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-nonexistent-binary",
+		Description: "Run with a binary that does not exist must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), &invoke.Command{
+				Cmd: "invoke-definitely-not-a-real-binary-xyz",
+			})
+			require.Error(t, err)
+		},
+	}
+}

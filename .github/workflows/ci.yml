@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Explicit permissions for least-privilege security
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          check-latest: true
+
+      - uses: extractions/setup-just@v2
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        env:
+          GOWORK: "off"
+        with:
+          version: 'v2.8.0'
+          args: --timeout=5m
+
+      - name: Verify Clean State
+        run: just check-clean
+
+      - name: Run Unit Tests (Common)
+        run: just test
+
+      - name: Run Integration Tests
+        run: just test-integration
+
+      - name: Run Demo (Local)
+        if: matrix.os == 'ubuntu-latest'
+        run: just demo
