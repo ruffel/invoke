@@ -1,0 +1,10 @@
+go 1.24.5
+
+use (
+	.
+	./examples/unified-deploy
+	./providers/docker
+	./providers/local
+	./providers/mock
+	./providers/ssh
+)

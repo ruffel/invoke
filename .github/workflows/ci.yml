@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.0'
+          check-latest: true
+
+      - uses: extractions/setup-just@v2
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: 'v2.8.0'
+          args: --timeout=5m
+
+      - name: Verify Clean State
+        run: just check-clean
+
+      - name: Run Unit Tests
+        run: just test
+
+      - name: Run Integration Tests
+        run: just test-integration
+
+      - name: Run Demo (Local)
+        run: just demo-local
+
+      - name: Run Demo (SSH - Ephemeral)
+        run: just demo-ssh
+
+      - name: Run Demo (Docker - Ephemeral)
+        run: just demo-docker
