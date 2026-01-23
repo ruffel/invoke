@@ -35,11 +35,13 @@ func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Res
 
 	defer func() { _ = process.Close() }()
 
-	if err := process.Wait(); err != nil {
-		return nil, err
+	waitErr := process.Wait()
+	// Always return the result if available, even if Wait failed (e.g. non-zero exit code)
+	if res := process.Result(); res != nil {
+		return res, waitErr
 	}
 
-	return process.Result(), nil
+	return nil, waitErr
 }
 
 // Start begins command execution asynchronously.
