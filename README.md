@@ -69,6 +69,17 @@ Uploads and downloads work recursively and consistently across all providers.
 err := env.Upload(ctx, "./configs/nginx", "/etc/nginx", invoke.WithPermissions(0644))
 ```
 
+### 5. Convenience (One-Liners)
+For simple local scripts, you don't need to manually manage the environment.
+
+```go
+// Run a shell one-liner
+res, _ := local.RunShell(ctx, "ls -la | grep foo")
+
+// Run a configured command
+res, _ := local.RunCommand(ctx, &invoke.Command{Cmd: "ls", Dir: "/tmp"})
+```
+
 ## Design Philosophy
 
 - **Streaming First**: We avoid buffering whenever possible. Interfaces use `io.Reader` and `io.Writer`.
