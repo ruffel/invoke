@@ -69,10 +69,10 @@ func TestCheckPathTraversal(t *testing.T) {
 			// Normalize for OS (Windows vs Unix)
 			root := filepath.FromSlash(tt.root)
 			target := filepath.FromSlash(tt.target)
-			
+
 			// For specific tests that rely on absolute paths, we might need adjustments on Windows
 			// but FromSlash handles separators.
-			
+
 			err := checkPathTraversal(root, target)
 			if tt.expectErr {
 				assert.Error(t, err)
