@@ -190,9 +190,11 @@ func ExampleCmd_builder() {
 
 	// Execute it
 	env, _ := local.New()
+
 	defer func() { _ = env.Close() }()
 
 	ctx := context.Background()
+
 	res, err := env.Run(ctx, cmd)
 	if err != nil {
 		panic(err)
