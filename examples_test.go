@@ -177,3 +177,35 @@ func ExampleEnvironment_upload_download() {
 	// Output:
 	// Downloaded content: hello world
 }
+
+func ExampleCmd_builder() {
+	// Construct a command using the fluent builder API.
+	cmd := invoke.Cmd("go").
+		Arg("env").
+		Arg("GREETING").
+		Env("GREETING", "hello builder").
+		Dir(os.TempDir()).
+		Build()
+
+	// Execute it
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() { _ = env.Close() }()
+
+	ctx := context.Background()
+
+	res, err := env.Run(ctx, cmd)
+	if err != nil {
+		panic(err)
+	}
+
+	// Capture output via RunBuffered would be better for verification,
+	// but here we just check exit code to keep it simple.
+	fmt.Printf("Exit Code: %d\n", res.ExitCode)
+
+	// Output:
+	// Exit Code: 0
+}

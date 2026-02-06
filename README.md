@@ -80,6 +80,20 @@ res, _ := local.RunShell(ctx, "ls -la | grep foo")
 res, _ := local.RunCommand(ctx, &invoke.Command{Cmd: "ls", Dir: "/tmp"})
 ```
 
+### 6. Fluent Builder
+Construct commands without struct literals.
+
+```go
+cmd := invoke.Cmd("docker").
+    Arg("run").
+    Arg("-it").
+    Env("GOOS", "linux").
+    Dir("/app").
+    Build()
+
+exec.Run(ctx, cmd)
+```
+
 ## Design Philosophy
 
 - **Streaming First**: We avoid buffering whenever possible. Interfaces use `io.Reader` and `io.Writer`.
