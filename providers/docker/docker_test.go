@@ -14,7 +14,7 @@ func TestTargetOS(t *testing.T) {
 		t.Parallel()
 
 		cfg := Config{ContainerID: "foo"}
-		env, err := New(cfg)
+		env, err := New(WithConfig(cfg))
 		require.NoError(t, err)
 		assert.Equal(t, invoke.OSLinux, env.TargetOS())
 	})
@@ -24,7 +24,7 @@ func TestTargetOS(t *testing.T) {
 		t.Parallel()
 
 		cfg := Config{ContainerID: "foo", OS: invoke.OSWindows}
-		env, err := New(cfg)
+		env, err := New(WithConfig(cfg))
 		require.NoError(t, err)
 		assert.Equal(t, invoke.OSWindows, env.TargetOS())
 	})

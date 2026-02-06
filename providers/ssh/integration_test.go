@@ -37,7 +37,7 @@ func TestIntegration(t *testing.T) {
 
 	t.Logf("Connecting to %s@%s:%d...", config.User, config.Host, config.Port)
 
-	env, err := New(config)
+	env, err := New(WithConfig(config))
 	require.NoError(t, err)
 	defer env.Close()
 

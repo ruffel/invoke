@@ -22,7 +22,12 @@ type Environment struct {
 }
 
 // New establishes a connection to the Docker daemon.
-func New(c Config) (*Environment, error) {
+func New(opts ...Option) (*Environment, error) {
+	c := Config{}
+	for _, opt := range opts {
+		opt(&c)
+	}
+
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}

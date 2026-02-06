@@ -71,7 +71,12 @@ func loadAgentAuth(useAgent bool) ssh.AuthMethod {
 }
 
 // New establishes a new SSH connection.
-func New(c Config) (*Environment, error) {
+func New(opts ...Option) (*Environment, error) {
+	c := Config{}
+	for _, opt := range opts {
+		opt(&c)
+	}
+
 	c = c.WithDefaults()
 	if err := c.Validate(); err != nil {
 		return nil, err

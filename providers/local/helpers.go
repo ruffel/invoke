@@ -8,7 +8,10 @@ import (
 
 // RunCommand executes a fully configured command locally using a new environment.
 func RunCommand(ctx context.Context, cmd *invoke.Command, opts ...invoke.ExecOption) (*invoke.BufferedResult, error) {
-	env := New()
+	env, err := New()
+	if err != nil {
+		return nil, err
+	}
 
 	defer func() { _ = env.Close() }()
 
@@ -19,7 +22,10 @@ func RunCommand(ctx context.Context, cmd *invoke.Command, opts ...invoke.ExecOpt
 
 // RunShell executes a shell command string locally using a new environment.
 func RunShell(ctx context.Context, script string, opts ...invoke.ExecOption) (*invoke.BufferedResult, error) {
-	env := New()
+	env, err := New()
+	if err != nil {
+		return nil, err
+	}
 
 	defer func() { _ = env.Close() }()
 

@@ -15,7 +15,8 @@ import (
 func TestFileTransfer(t *testing.T) {
 	t.Parallel()
 
-	env := New()
+	env, err := New()
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -27,7 +28,7 @@ func TestFileTransfer(t *testing.T) {
 	content := []byte("hello file transfer")
 
 	// Create source
-	err := os.WriteFile(srcFile, content, 0o644)
+	err = os.WriteFile(srcFile, content, 0o644)
 	require.NoError(t, err)
 
 	t.Run("Upload (Copy)", func(t *testing.T) {
