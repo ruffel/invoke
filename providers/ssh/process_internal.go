@@ -66,7 +66,7 @@ func buildFullCommand(cmd *invoke.Command, isWindows bool) string {
 	var sb strings.Builder
 	sb.WriteString(buildEnvPrefix(cmd.Env, isWindows))
 	sb.WriteString(buildDirPrefix(cmd.Dir, isWindows))
-	sb.WriteString(cmd.Cmd)
+	sb.WriteString(quoteArg(cmd.Cmd, isWindows))
 
 	for _, arg := range cmd.Args {
 		sb.WriteString(" ")

@@ -18,27 +18,27 @@ func TestSSH_Security_CommandInjection(t *testing.T) {
 		{
 			name:     "semicolon with space",
 			args:     []string{"hello; whoami"},
-			expected: "echo 'hello; whoami'",
+			expected: "'echo' 'hello; whoami'",
 		},
 		{
 			name:     "semicolon no space",
 			args:     []string{"hello;whoami"},
-			expected: "echo 'hello;whoami'",
+			expected: "'echo' 'hello;whoami'",
 		},
 		{
 			name:     "embedded single quote",
 			args:     []string{"it's"},
-			expected: "echo 'it'\\''s'",
+			expected: "'echo' 'it'\\''s'",
 		},
 		{
 			name:     "pipe",
 			args:     []string{"foo|bar"},
-			expected: "echo 'foo|bar'",
+			expected: "'echo' 'foo|bar'",
 		},
 		{
 			name:     "backticks",
 			args:     []string{"`whoami`"},
-			expected: "echo '`whoami`'",
+			expected: "'echo' '`whoami`'",
 		},
 	}
 
