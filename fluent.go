@@ -82,7 +82,21 @@ func (b *Builder) Tty() *Builder {
 	return b
 }
 
-// Build returns the constructed Command.
+// Build returns a deep copy of the constructed Command.
+// The returned command is safe to use while the builder continues to be modified.
 func (b *Builder) Build() *Command {
-	return b.cmd
+	// Deep copy the command to avoid sharing state if the builder is reused
+	cmd := *b.cmd
+
+	if len(b.cmd.Args) > 0 {
+		cmd.Args = make([]string, len(b.cmd.Args))
+		copy(cmd.Args, b.cmd.Args)
+	}
+
+	if len(b.cmd.Env) > 0 {
+		cmd.Env = make([]string, len(b.cmd.Env))
+		copy(cmd.Env, b.cmd.Env)
+	}
+
+	return &cmd
 }

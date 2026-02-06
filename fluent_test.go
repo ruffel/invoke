@@ -57,3 +57,23 @@ func TestBuilder_Streams(t *testing.T) {
 	assert.NotNil(t, cmd.Stdout)
 	assert.NotNil(t, cmd.Stderr)
 }
+
+func TestBuilder_Reuse(t *testing.T) {
+	t.Parallel()
+
+	builder := Cmd("base")
+	cmd1 := builder.Arg("arg1").Build()
+
+	// Modify the builder further
+	cmd2 := builder.Arg("arg2").Env("KEY", "val").Build()
+
+	// Verify cmd1 is unchanged
+	assert.Equal(t, "base", cmd1.Cmd)
+	assert.Equal(t, []string{"arg1"}, cmd1.Args)
+	assert.Empty(t, cmd1.Env)
+
+	// Verify cmd2 has all changes
+	assert.Equal(t, "base", cmd2.Cmd)
+	assert.Equal(t, []string{"arg1", "arg2"}, cmd2.Args)
+	assert.Equal(t, []string{"KEY=val"}, cmd2.Env)
+}
