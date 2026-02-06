@@ -8,10 +8,19 @@ on:
 
 jobs:
   build-and-test:
-    name: Build & Test
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    # Explicit permissions for least-privilege security
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - uses: actions/checkout@v6
 
@@ -22,6 +31,13 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
+      # Quick syntax check for Windows. Note: this won't catch missing
+      # platform constants (e.g. syscall.SIGTERM) - the native Windows
+      # job below handles that.
+      - name: Cross-Compile Check (Windows)
+        if: matrix.os == 'ubuntu-latest'
+        run: GOOS=windows go build ./...
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -29,19 +45,31 @@ jobs:
           args: --timeout=5m
 
       - name: Verify Clean State
+        if: matrix.os != 'windows-latest'
         run: just check-clean
 
-      - name: Run Unit Tests
+      - name: Run Unit Tests (Common)
+        if: matrix.os != 'windows-latest'
         run: just test
 
+      - name: Run Unit Tests (Windows)
+        if: matrix.os == 'windows-latest'
+        # Windows race detector support is partial/flaky; skip it.
+        run: just test-no-race
+
       - name: Run Integration Tests
+        if: matrix.os != 'windows-latest'
         run: just test-integration
 
       - name: Run Demo (Local)
+        if: matrix.os == 'ubuntu-latest'
         run: just demo-local
 
+      # Ephemeral demos require local environment/Docker
       - name: Run Demo (SSH - Ephemeral)
+        if: matrix.os == 'ubuntu-latest'
         run: just demo-ssh
 
       - name: Run Demo (Docker - Ephemeral)
+        if: matrix.os == 'ubuntu-latest'
         run: just demo-docker

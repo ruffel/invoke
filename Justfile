@@ -9,6 +9,10 @@ default: test lint
 test:
     go test -race ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
 
+# Run all tests WITHOUT race detection (for Windows/platforms where race is unsupported)
+test-no-race:
+    go test ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
+
 # Run linters
 lint:
     golangci-lint run ./... $(for mod in {{MODULES}}; do echo "./$mod/..."; done)
