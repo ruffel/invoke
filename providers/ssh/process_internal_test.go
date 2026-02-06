@@ -117,6 +117,6 @@ func TestBuildFullCommand(t *testing.T) {
 	cmd.Env = []string{"A=B"}
 
 	got := buildFullCommand(cmd, false)
-	want := "export A='B'; cd '/tmp' && echo hello"
+	want := "export A='B'; cd '/tmp' && echo 'hello'"
 	assert.Equal(t, want, got)
 }
