@@ -22,7 +22,7 @@ type Environment struct {
 // New creates a new local environment.
 func New(opts ...Option) (*Environment, error) {
 	cfg := Config{
-		TargetOS: invoke.DetectLocalOS(),
+		targetOS: invoke.DetectLocalOS(),
 	}
 
 	for _, opt := range opts {
@@ -30,7 +30,7 @@ func New(opts ...Option) (*Environment, error) {
 	}
 
 	return &Environment{
-		targetOS: cfg.TargetOS,
+		targetOS: cfg.targetOS,
 	}, nil
 }
 
