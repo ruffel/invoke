@@ -179,17 +179,19 @@ func ExampleEnvironment_upload_download() {
 }
 
 func ExampleCmd_builder() {
-	// Construct a complex command using the fluent builder API.
-	// This is often more readable than struct literals for commands with many options.
-	cmd := invoke.Cmd("sh").
-		Arg("-c").
-		Arg("echo $GREETING").
+	// Construct a command using the fluent builder API.
+	cmd := invoke.Cmd("go").
+		Arg("env").
+		Arg("GREETING").
 		Env("GREETING", "hello builder").
-		Dir("/tmp").
+		Dir(os.TempDir()).
 		Build()
 
 	// Execute it
-	env, _ := local.New()
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
 
 	defer func() { _ = env.Close() }()
 
@@ -200,8 +202,8 @@ func ExampleCmd_builder() {
 		panic(err)
 	}
 
-	// Note: output capture depends on explicit streams or RunBuffered,
-	// but here we just verify the exit code.
+	// Capture output via RunBuffered would be better for verification,
+	// but here we just check exit code to keep it simple.
 	fmt.Printf("Exit Code: %d\n", res.ExitCode)
 
 	// Output:
