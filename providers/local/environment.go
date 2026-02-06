@@ -20,10 +20,18 @@ type Environment struct {
 }
 
 // New creates a new local environment.
-func New() *Environment {
-	return &Environment{
-		targetOS: invoke.DetectLocalOS(),
+func New(opts ...Option) (*Environment, error) {
+	cfg := Config{
+		TargetOS: invoke.DetectLocalOS(),
 	}
+
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	return &Environment{
+		targetOS: cfg.TargetOS,
+	}, nil
 }
 
 // Run executes a command synchronously on the local machine.

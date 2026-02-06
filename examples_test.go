@@ -16,7 +16,10 @@ import (
 )
 
 func ExampleExecutor_RunBuffered_local() {
-	env := local.New()
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
 
 	defer func() { _ = env.Close() }()
 
@@ -116,7 +119,10 @@ Host prod-db
 }
 
 func ExampleEnvironment_withProgress() {
-	var env invoke.Environment = local.New()
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
 
 	_ = os.WriteFile("largefile.dat", []byte("1234567890"), 0o600)
 
@@ -125,7 +131,7 @@ func ExampleEnvironment_withProgress() {
 
 	ctx := context.Background()
 
-	err := env.Upload(ctx, "largefile.dat", "largefile.dat.bak",
+	err = env.Upload(ctx, "largefile.dat", "largefile.dat.bak",
 		invoke.WithProgress(func(current, total int64) {
 			fmt.Printf("Transferred %d/%d bytes\n", current, total)
 		}),
@@ -139,7 +145,10 @@ func ExampleEnvironment_withProgress() {
 }
 
 func ExampleEnvironment_upload_download() {
-	var env invoke.Environment = local.New()
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
 
 	_ = os.WriteFile("localfile.txt", []byte("hello world"), 0o600)
 
@@ -148,7 +157,7 @@ func ExampleEnvironment_upload_download() {
 
 	ctx := context.Background()
 
-	err := env.Upload(ctx, "localfile.txt", "/tmp/localfile.txt", invoke.WithPermissions(0o644))
+	err = env.Upload(ctx, "localfile.txt", "/tmp/localfile.txt", invoke.WithPermissions(0o644))
 	if err != nil {
 		panic(err)
 	}

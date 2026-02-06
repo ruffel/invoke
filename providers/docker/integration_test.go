@@ -42,7 +42,7 @@ func TestIntegration(t *testing.T) {
 	setupContainer(t, ctx, cli)
 	defer teardownContainer(ctx, cli)
 
-	env, err := New(Config{ContainerID: testContainer})
+	env, err := New(WithConfig(Config{ContainerID: testContainer}))
 	require.NoError(t, err)
 	defer env.Close()
 

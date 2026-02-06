@@ -30,7 +30,11 @@ func resolveDockerHost(ctx context.Context) error {
 		return nil
 	}
 
-	l := local.New()
+	l, err := local.New()
+	if err != nil {
+		return err
+	}
+
 	exec := invoke.NewExecutor(l)
 
 	res, err := exec.RunBuffered(ctx, &invoke.Command{
@@ -65,7 +69,11 @@ func getBridgeGateway(ctx context.Context, exec *invoke.Executor) string {
 
 // provisionEphemeral spins up a target environment for the demo.
 func provisionEphemeral(ctx context.Context, target string) (any, func(), error) {
-	localEnv := local.New()
+	localEnv, err := local.New()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	exec := invoke.NewExecutor(localEnv)
 
 	switch target {

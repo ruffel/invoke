@@ -19,7 +19,8 @@ const osWindows = "windows"
 func TestEnvironment_Run(t *testing.T) {
 	t.Parallel()
 
-	env := New()
+	env, err := New()
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -65,7 +66,8 @@ func TestEnvironment_Run(t *testing.T) {
 func TestEnvironment_Features(t *testing.T) {
 	t.Parallel()
 
-	env := New()
+	env, err := New()
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -132,7 +134,8 @@ func TestEnvironment_Features(t *testing.T) {
 func TestSafety(t *testing.T) {
 	t.Parallel()
 
-	env := New()
+	env, err := New()
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -160,9 +163,10 @@ func TestSafety(t *testing.T) {
 	t.Run("environment closed", func(t *testing.T) {
 		t.Parallel()
 
-		localEnv := New()
+		localEnv, err := New()
+		require.NoError(t, err)
 		_ = localEnv.Close()
-		_, err := localEnv.Start(context.Background(), &invoke.Command{Cmd: "echo"})
+		_, err = localEnv.Start(context.Background(), &invoke.Command{Cmd: "echo"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "environment is closed")
 	})
@@ -185,7 +189,8 @@ func TestLimits(t *testing.T) {
 func TestSignals(t *testing.T) {
 	t.Parallel()
 
-	env := New()
+	env, err := New()
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 

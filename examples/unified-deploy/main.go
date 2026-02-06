@@ -152,7 +152,7 @@ func runDeploy(target string) error {
 func initEnv(target string) (invoke.Environment, error) {
 	switch target {
 	case targetLocal:
-		return local.New(), nil
+		return local.New()
 	case targetSSH:
 		if sshHost == "" {
 			return nil, errors.New("missing --host")
@@ -168,13 +168,13 @@ func initEnv(target string) (invoke.Environment, error) {
 			InsecureSkipVerify: true,
 		}
 
-		return ssh.New(cfg)
+		return ssh.New(ssh.WithConfig(cfg))
 	case targetDocker:
 		if container == "" {
 			return nil, errors.New("missing --container")
 		}
 
-		return docker.New(docker.NewConfig(container))
+		return docker.New(docker.WithContainerID(container))
 	}
 
 	return nil, errors.New("unknown target")
