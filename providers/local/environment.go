@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"sync"
 
 	"github.com/ruffel/invoke"
@@ -105,6 +106,12 @@ func (e *Environment) Close() error {
 	e.closed = true
 
 	return nil
+}
+
+// LookPath searches for an executable named file in the directories named by
+// the PATH environment variable.
+func (e *Environment) LookPath(_ context.Context, file string) (string, error) {
+	return exec.LookPath(file)
 }
 
 func (e *Environment) decrementActive() {

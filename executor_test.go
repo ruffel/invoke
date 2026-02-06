@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +52,12 @@ func (m *MockEnv) TargetOS() TargetOS {
 	return OSLinux
 }
 
+func (m *MockEnv) LookPath(_ context.Context, file string) (string, error) {
+	args := m.Called(file)
+
+	return args.String(0), args.Error(1)
+}
+
 // MockProcess is a mock for invoke.Process.
 type MockProcess struct {
 	mock.Mock
@@ -85,36 +90,19 @@ func TestExecutor_LookPath(t *testing.T) {
 	mockEnv := new(MockEnv)
 	exec := NewExecutor(mockEnv)
 
-	// Setup expectations only for success case as we mock the "which" command
-	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
-		return c.Cmd == "command" && len(c.Args) == 2 && c.Args[1] == "docker"
-	})).Return(&Result{ExitCode: 0}, nil)
-
-	// Since we can't easily set stdout on the *Result without BufferResult which comes from RunBuffered...
-	// Wait, executor.LookPath uses RunShell -> RunBuffered.
-	// RunBuffered calls Run.
-	// We need to write to the cmd.Stdout being passed in Run!
-	// Success case
-	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
-		return c.Cmd == "sh" && len(c.Args) == 2 && strings.Contains(c.Args[1], "docker")
-	})).Run(func(args mock.Arguments) {
-		cmd := args.Get(1).(*Command)
-		if cmd.Stdout != nil {
-			_, _ = cmd.Stdout.Write([]byte("/usr/bin/docker\n"))
-		}
-	}).Return(&Result{ExitCode: 0}, nil)
+	// Success case: Environment finds the path
+	mockEnv.On("LookPath", "docker").Return("/usr/bin/docker", nil)
 
 	path, err := exec.LookPath(context.Background(), "docker")
 	require.NoError(t, err)
 	assert.Equal(t, "/usr/bin/docker", path)
 
-	// Failure case
-	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
-		return c.Cmd == "sh" && len(c.Args) == 2 && strings.Contains(c.Args[1], "missing")
-	})).Return(&Result{ExitCode: 1}, nil) // LookPath checks ExitCode
+	// Failure case: Environment returns error
+	mockEnv.On("LookPath", "missing").Return("", errors.New("exec: executable file not found in $PATH"))
 
 	_, err = exec.LookPath(context.Background(), "missing")
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exec: executable file not found")
 }
 
 func TestExecutor_RunShell(t *testing.T) {

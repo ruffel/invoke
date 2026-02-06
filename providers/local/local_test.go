@@ -165,6 +165,7 @@ func TestSafety(t *testing.T) {
 
 		localEnv, err := New()
 		require.NoError(t, err)
+
 		_ = localEnv.Close()
 		_, err = localEnv.Start(context.Background(), &invoke.Command{Cmd: "echo"})
 		require.Error(t, err)

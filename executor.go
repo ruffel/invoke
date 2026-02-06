@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 )
 
@@ -106,30 +105,9 @@ func (e *Executor) RunShell(ctx context.Context, cmdStr string, opts ...ExecOpti
 	return e.RunBuffered(ctx, cmd, opts...)
 }
 
-// LookPath resolves an executable path in the environment, similar to exec.LookPath.
+// LookPath resolves an executable path using the underlying environment's LookPath strategy.
 func (e *Executor) LookPath(ctx context.Context, file string) (string, error) {
-	cmd := "command -v " + file
-	if e.env.TargetOS() == OSWindows {
-		cmd = "where " + file
-	}
-
-	res, err := e.RunShell(ctx, cmd)
-	if err != nil {
-		return "", fmt.Errorf("failed to lookup path for %q: %w", file, err)
-	}
-
-	if res.ExitCode != 0 {
-		return "", fmt.Errorf("executable %q not found", file)
-	}
-	// Split output by newline (handling CRLF for Windows) and take the first line
-	output := string(res.Stdout)
-
-	lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
-	if len(lines) > 0 {
-		return strings.TrimSpace(lines[0]), nil
-	}
-
-	return "", fmt.Errorf("executable %q not found (empty output)", file)
+	return e.env.LookPath(ctx, file)
 }
 
 // Start initiates a command asynchronously.

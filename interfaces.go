@@ -42,6 +42,10 @@ type Environment interface {
 
 	// Download copies a remote file or directory to the local destination.
 	Download(ctx context.Context, remotePath, localPath string, opts ...FileOption) error
+
+	// LookPath searches for an executable named file in the directories named by
+	// the PATH environment variable.
+	LookPath(ctx context.Context, file string) (string, error)
 }
 
 // Process represents a command that has been started but not yet completed.

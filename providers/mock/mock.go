@@ -63,6 +63,13 @@ func (m *Environment) TargetOS() invoke.TargetOS {
 	return args.Get(0).(invoke.TargetOS)
 }
 
+// LookPath mocks looking up an executable path.
+func (m *Environment) LookPath(_ context.Context, file string) (string, error) {
+	args := m.Called(file)
+
+	return args.String(0), args.Error(1)
+}
+
 // Close mocks closing the environment.
 func (m *Environment) Close() error {
 	args := m.Called()
