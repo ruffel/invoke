@@ -76,11 +76,13 @@ func buildFullCommand(cmd *invoke.Command, isWindows bool) string {
 	return sb.String()
 }
 
+// quoteArg quotes a single argument for the remote shell.
 func quoteArg(arg string, isWindows bool) string {
 	if isWindows {
 		// PowerShell quoting: 'value' where ' is escaped as ''
 		return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
 	}
+
 	// POSIX quoting: 'value' where ' is escaped as '\''
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
