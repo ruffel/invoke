@@ -2,9 +2,11 @@ package local
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruffel/invoke"
 )
@@ -53,6 +55,10 @@ func (e *Environment) copyDir(ctx context.Context, src, dst string, cfg invoke.F
 		}
 
 		targetPath := filepath.Join(dst, relPath)
+
+		if err := checkPathTraversal(dst, targetPath); err != nil {
+			return err
+		}
 
 		if info.IsDir() {
 			err := os.MkdirAll(targetPath, info.Mode())
@@ -136,4 +142,19 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+func checkPathTraversal(root, target string) error {
+	cleanRoot := filepath.Clean(root)
+	cleanTarget := filepath.Clean(target)
+
+	if cleanRoot == cleanTarget {
+		return nil
+	}
+
+	if !strings.HasPrefix(cleanTarget, cleanRoot+string(os.PathSeparator)) {
+		return fmt.Errorf("illegal file path: %s is not within %s", target, root)
+	}
+
+	return nil
 }
