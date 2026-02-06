@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,10 +18,10 @@ func TestRunShell(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	res, err := local.RunShell(ctx, "echo hello world")
+	res, err := local.RunShell(ctx, "echo 'hello world'")
 	require.NoError(t, err)
 	assert.True(t, res.Success())
-	assert.Equal(t, "hello world\n", string(res.Stdout))
+	assert.Equal(t, "hello world\n", strings.ReplaceAll(string(res.Stdout), "\r\n", "\n"))
 }
 
 func TestRunCommand(t *testing.T) {
@@ -40,7 +41,8 @@ func TestRunCommand(t *testing.T) {
 	require.Error(t, err)
 	assert.NotNil(t, res)
 	assert.Equal(t, 1, res.ExitCode)
-	assert.Equal(t, "foo\n", string(res.Stderr))
+	// We should normalize here too regardless, just in case.
+	assert.Equal(t, "foo\n", strings.ReplaceAll(string(res.Stderr), "\r\n", "\n"))
 
 	var exitErr *invoke.ExitError
 	require.ErrorAs(t, err, &exitErr)
@@ -58,5 +60,5 @@ func TestRunShell_WithOption(t *testing.T) {
 	// Instead, let's just run a simple command and ensure it works with options passed.
 	res, err := local.RunShell(ctx, "echo opt", invoke.WithRetry(1, time.Millisecond))
 	require.NoError(t, err)
-	assert.Equal(t, "opt\n", string(res.Stdout))
+	assert.Equal(t, "opt\n", strings.ReplaceAll(string(res.Stdout), "\r\n", "\n"))
 }
