@@ -72,6 +72,10 @@ func (e *Environment) uploadDir(ctx context.Context, client *sftp.Client, localB
 		// Convert to forward slashes for remote linux paths (path.Join mostly matches but ensuring cleanliness)
 		remotePath = strings.ReplaceAll(remotePath, "\\", "/")
 
+		if err := checkRemotePathTraversal(remoteBase, remotePath); err != nil {
+			return err
+		}
+
 		if info.IsDir() {
 			err := client.MkdirAll(remotePath)
 			if err != nil {
@@ -187,6 +191,9 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 		}
 
 		localPath := filepath.Join(localBase, relPath)
+		if err := checkPathTraversal(localBase, localPath); err != nil {
+			return err
+		}
 		info := walker.Stat()
 
 		if info.IsDir() {
@@ -269,4 +276,35 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+func checkPathTraversal(root, target string) error {
+	cleanRoot := filepath.Clean(root)
+	cleanTarget := filepath.Clean(target)
+
+	if cleanRoot == cleanTarget {
+		return nil
+	}
+
+	if !strings.HasPrefix(cleanTarget, cleanRoot+string(os.PathSeparator)) {
+		return fmt.Errorf("illegal file path: %s is not within %s", target, root)
+	}
+
+	return nil
+}
+
+// checkRemotePathTraversal checks paths using forward slashes (assuming remote is Unix-like).
+func checkRemotePathTraversal(root, target string) error {
+	cleanRoot := pathpkg.Clean(root)
+	cleanTarget := pathpkg.Clean(target)
+
+	if cleanRoot == cleanTarget {
+		return nil
+	}
+
+	if !strings.HasPrefix(cleanTarget, cleanRoot+"/") {
+		return fmt.Errorf("illegal remote file path: %s is not within %s", target, root)
+	}
+
+	return nil
 }
