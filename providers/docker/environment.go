@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/docker/docker/client"
@@ -116,6 +117,46 @@ func (e *Environment) Close() error {
 	}
 
 	return nil
+}
+
+// LookPath searches for an executable in the container using 'which'.
+func (e *Environment) LookPath(ctx context.Context, file string) (string, error) {
+	cmdStr := "which"
+	args := []string{file}
+
+	if e.TargetOS() == invoke.OSWindows {
+		cmdStr = "where"
+	}
+
+	var stdout strings.Builder
+
+	cmd := &invoke.Command{
+		Cmd:    cmdStr,
+		Args:   args,
+		Stdout: &stdout,
+	}
+
+	result, err := e.Run(ctx, cmd)
+	if err != nil {
+		return "", err
+	}
+
+	if result.ExitCode != 0 {
+		return "", &invoke.ExitError{ExitCode: result.ExitCode}
+	}
+
+	// Windows 'where' might return multiple lines, take the first one
+	output := strings.TrimSpace(stdout.String())
+	if e.TargetOS() == invoke.OSWindows {
+		lines := strings.Split(strings.ReplaceAll(output, "\r\n", "\n"), "\n")
+		if len(lines) > 0 {
+			return strings.TrimSpace(lines[0]), nil
+		}
+
+		return "", &invoke.ExitError{ExitCode: 1}
+	}
+
+	return output, nil
 }
 
 func (e *Environment) decrementActive() {
