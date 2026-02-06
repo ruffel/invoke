@@ -252,6 +252,8 @@ func TestExecutor_FileTransfer(t *testing.T) {
 	mockEnv.AssertExpectations(t)
 }
 
+const sudoCmd = "sudo"
+
 func TestExecutor_SudoLegacy(t *testing.T) {
 	t.Parallel()
 
@@ -262,7 +264,7 @@ func TestExecutor_SudoLegacy(t *testing.T) {
 
 	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
 		// Expect: sudo -n -- ls -la
-		return c.Cmd == "sudo" &&
+		return c.Cmd == sudoCmd &&
 			len(c.Args) == 4 && // -n, --, ls, -la
 			c.Args[0] == "-n" &&
 			c.Args[1] == "--" &&
@@ -297,12 +299,13 @@ func TestExecutor_SudoConfig(t *testing.T) {
 		// 7: --
 		// 8: ps
 		// 9: aux
-		if c.Cmd != "sudo" {
+		if c.Cmd != sudoCmd {
 			return false
 		}
 		// Basic checks to ensure flags are present in some order (though Slice order is deterministic in implementation)
 		// We can check exact slice match
 		expected := []string{"-n", "-u", "postgres", "-g", "admin", "-E", "--custom", "--", "ps", "aux"}
+
 		return assert.ObjectsAreEqual(expected, c.Args)
 	})).Return(&Result{ExitCode: 0}, nil)
 

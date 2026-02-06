@@ -203,7 +203,12 @@ func (e *Executor) applySudo(cfg ExecConfig, cmd *Command) *Command {
 
 	newCmd := *cmd
 	newCmd.Cmd = "sudo"
-	newCmd.Args = append(sudoArgs, cmd.Args...)
+
+	// Combine args (pre-allocate for performance and linting)
+	args := make([]string, 0, len(sudoArgs)+len(cmd.Args))
+	args = append(args, sudoArgs...)
+	args = append(args, cmd.Args...)
+	newCmd.Args = args
 
 	return &newCmd
 }

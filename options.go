@@ -32,6 +32,7 @@ func WithSudo(opts ...SudoOption) ExecOption {
 		if c.SudoConfig == nil {
 			c.SudoConfig = &SudoConfig{}
 		}
+
 		for _, o := range opts {
 			o(c.SudoConfig)
 		}
