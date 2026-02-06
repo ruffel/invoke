@@ -24,12 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.24.0'
           check-latest: true
 
-      - uses: extractions/setup-just@v2
+      - uses: extractions/setup-just@v3
 
       # Quick syntax check for Windows. Note: this won't catch missing
       # platform constants (e.g. syscall.SIGTERM) - the native Windows
