@@ -251,3 +251,71 @@ func TestExecutor_FileTransfer(t *testing.T) {
 
 	mockEnv.AssertExpectations(t)
 }
+
+const sudoCmd = "sudo"
+
+func TestExecutor_SudoLegacy(t *testing.T) {
+	t.Parallel()
+
+	mockEnv := new(MockEnv)
+	exec := NewExecutor(mockEnv)
+
+	cmd := &Command{Cmd: "ls", Args: []string{"-la"}}
+
+	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
+		// Expect: sudo -n -- ls -la
+		return c.Cmd == sudoCmd &&
+			len(c.Args) == 4 && // -n, --, ls, -la
+			c.Args[0] == "-n" &&
+			c.Args[1] == "--" &&
+			c.Args[2] == "ls" &&
+			c.Args[3] == "-la"
+	})).Return(&Result{ExitCode: 0}, nil)
+
+	_, err := exec.Run(context.Background(), cmd, WithSudo())
+	require.NoError(t, err)
+
+	mockEnv.AssertExpectations(t)
+}
+
+func TestExecutor_SudoConfig(t *testing.T) {
+	t.Parallel()
+
+	mockEnv := new(MockEnv)
+	exec := NewExecutor(mockEnv)
+
+	cmd := &Command{Cmd: "ps", Args: []string{"aux"}}
+
+	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
+		// Expect: sudo -n -u postgres -g admin -E --custom -- ps aux
+		// Args index:
+		// 0: -n
+		// 1: -u
+		// 2: postgres
+		// 3: -g
+		// 4: admin
+		// 5: -E
+		// 6: --custom
+		// 7: --
+		// 8: ps
+		// 9: aux
+		if c.Cmd != sudoCmd {
+			return false
+		}
+		// Basic checks to ensure flags and arguments are present in this exact deterministic order.
+		// We deliberately check for an exact slice match.
+		expected := []string{"-n", "-u", "postgres", "-g", "admin", "-E", "--custom", "--", "ps", "aux"}
+
+		return assert.ObjectsAreEqual(expected, c.Args)
+	})).Return(&Result{ExitCode: 0}, nil)
+
+	_, err := exec.Run(context.Background(), cmd, WithSudo(
+		WithSudoUser("postgres"),
+		func(c *SudoConfig) { c.Group = "admin" }, // Manual functional option
+		WithSudoPreserveEnv(),
+		func(c *SudoConfig) { c.CustomFlags = []string{"--custom"} },
+	))
+	require.NoError(t, err)
+
+	mockEnv.AssertExpectations(t)
+}

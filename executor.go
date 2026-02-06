@@ -29,9 +29,8 @@ func (e *Executor) Run(ctx context.Context, cmd *Command, opts ...ExecOption) (*
 		o(&cfg)
 	}
 
-	if cfg.Sudo {
-		cmd = e.applySudo(cmd)
-	}
+	// Apply sudo if requested
+	cmd = e.applySudo(cfg, cmd)
 
 	var (
 		lastRes *Result
@@ -180,10 +179,36 @@ func (e *Executor) Download(ctx context.Context, remotePath, localPath string, o
 	return e.env.Download(ctx, remotePath, localPath, opts...)
 }
 
-func (e *Executor) applySudo(cmd *Command) *Command {
+func (e *Executor) applySudo(cfg ExecConfig, cmd *Command) *Command {
+	if cfg.SudoConfig == nil {
+		return cmd
+	}
+
+	sudoArgs := []string{"-n"}
+
+	if cfg.SudoConfig.User != "" {
+		sudoArgs = append(sudoArgs, "-u", cfg.SudoConfig.User)
+	}
+
+	if cfg.SudoConfig.Group != "" {
+		sudoArgs = append(sudoArgs, "-g", cfg.SudoConfig.Group)
+	}
+
+	if cfg.SudoConfig.PreserveEnv {
+		sudoArgs = append(sudoArgs, "-E")
+	}
+
+	sudoArgs = append(sudoArgs, cfg.SudoConfig.CustomFlags...)
+	sudoArgs = append(sudoArgs, "--", cmd.Cmd)
+
 	newCmd := *cmd
-	newCmd.Args = append([]string{"-n", "--", cmd.Cmd}, cmd.Args...)
 	newCmd.Cmd = "sudo"
+
+	// Combine args (pre-allocate for performance and linting)
+	args := make([]string, 0, len(sudoArgs)+len(cmd.Args))
+	args = append(args, sudoArgs...)
+	args = append(args, cmd.Args...)
+	newCmd.Args = args
 
 	return &newCmd
 }

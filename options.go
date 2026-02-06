@@ -7,18 +7,49 @@ import (
 
 // ExecConfig holds configuration derived from options.
 type ExecConfig struct {
-	Sudo          bool
+	SudoConfig    *SudoConfig
 	RetryAttempts int
 	RetryDelay    time.Duration
+}
+
+// SudoConfig defines advanced privilege escalation options.
+type SudoConfig struct {
+	User        string   // Target user (-u)
+	Group       string   // Target group (-g)
+	PreserveEnv bool     // Preserve environment (-E)
+	CustomFlags []string // Additional flags
 }
 
 // ExecOption defines a functional option for execution.
 type ExecOption func(*ExecConfig)
 
+// SudoOption defines a functional option for sudo configuration.
+type SudoOption func(*SudoConfig)
+
 // WithSudo wraps the command in sudo.
-func WithSudo() ExecOption {
+func WithSudo(opts ...SudoOption) ExecOption {
 	return func(c *ExecConfig) {
-		c.Sudo = true
+		if c.SudoConfig == nil {
+			c.SudoConfig = &SudoConfig{}
+		}
+
+		for _, o := range opts {
+			o(c.SudoConfig)
+		}
+	}
+}
+
+// WithSudoUser sets the target user.
+func WithSudoUser(user string) SudoOption {
+	return func(s *SudoConfig) {
+		s.User = user
+	}
+}
+
+// WithSudoPreserveEnv preserves the environment.
+func WithSudoPreserveEnv() SudoOption {
+	return func(s *SudoConfig) {
+		s.PreserveEnv = true
 	}
 }
 
