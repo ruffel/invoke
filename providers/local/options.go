@@ -11,5 +11,5 @@ type Config struct {
 // Option defines a functional option for the local provider.
 type Option func(*Config)
 
-// Api Compatibility Check
+// API compatibility check.
 var _ invoke.Environment = (*Environment)(nil)
