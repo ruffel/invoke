@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -131,10 +130,9 @@ func (p *Process) Close() error {
 		case <-done:
 			// Process already completed, nothing to kill
 		default:
-			// Process still running, kill it to prevent leaks
-			// Kill the entire process group (negative PID)
+			// Process still running, kill the process group to prevent leaks.
 			if p.execCmd.Process != nil && p.execCmd.Process.Pid > 0 {
-				_ = syscall.Kill(-p.execCmd.Process.Pid, syscall.SIGKILL)
+				_ = killProcessGroup(p.execCmd.Process.Pid)
 			}
 
 			<-done // Wait for goroutine to finish
@@ -165,7 +163,7 @@ func (p *Process) start(ctx context.Context) error {
 	}
 
 	// Create a new Process Group to allow killing the entire tree (children) later.
-	p.execCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setProcessGroup(p.execCmd)
 
 	// Wire up streams
 	// If stdout/stderr are nil, os/exec defaults to io.Discard automatically (in Go 1.12+),
