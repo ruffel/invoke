@@ -63,5 +63,26 @@ func buildTerminalModes() ssh.TerminalModes {
 // buildFullCommand constructs the complete command string to execution on the remote server.
 // It combines environment variables, working directory change, and the command itself.
 func buildFullCommand(cmd *invoke.Command, isWindows bool) string {
-	return buildEnvPrefix(cmd.Env, isWindows) + buildDirPrefix(cmd.Dir, isWindows) + cmd.String()
+	var sb strings.Builder
+	sb.WriteString(buildEnvPrefix(cmd.Env, isWindows))
+	sb.WriteString(buildDirPrefix(cmd.Dir, isWindows))
+	sb.WriteString(quoteArg(cmd.Cmd, isWindows))
+
+	for _, arg := range cmd.Args {
+		sb.WriteString(" ")
+		sb.WriteString(quoteArg(arg, isWindows))
+	}
+
+	return sb.String()
+}
+
+// quoteArg quotes a single argument for the remote shell.
+func quoteArg(arg string, isWindows bool) string {
+	if isWindows {
+		// PowerShell quoting: 'value' where ' is escaped as ''
+		return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+	}
+
+	// POSIX quoting: 'value' where ' is escaped as '\''
+	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }

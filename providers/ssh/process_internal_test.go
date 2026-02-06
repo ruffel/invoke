@@ -112,11 +112,63 @@ func TestBuildDirPrefix(t *testing.T) {
 func TestBuildFullCommand(t *testing.T) {
 	t.Parallel()
 
-	cmd := invoke.NewCommand("echo", "hello")
-	cmd.Dir = "/tmp"
-	cmd.Env = []string{"A=B"}
+	tests := []struct {
+		name      string
+		cmd       string
+		args      []string
+		dir       string
+		env       []string
+		isWindows bool
+		want      string
+	}{
+		{
+			name:      "posix with env and dir",
+			cmd:       "echo",
+			args:      []string{"hello"},
+			dir:       "/tmp",
+			env:       []string{"A=B"},
+			isWindows: false,
+			want:      "export A='B'; cd '/tmp' && 'echo' 'hello'",
+		},
+		{
+			name:      "windows with env and dir",
+			cmd:       "Write-Output",
+			args:      []string{"hello"},
+			dir:       "C:\\Users",
+			env:       []string{"A=B"},
+			isWindows: true,
+			want:      "$env:A='B'; cd 'C:\\Users'; 'Write-Output' 'hello'",
+		},
+		{
+			name:      "windows with embedded single quote",
+			cmd:       "echo",
+			args:      []string{"it's working"},
+			dir:       "",
+			env:       nil,
+			isWindows: true,
+			want:      "'echo' 'it''s working'",
+		},
+		{
+			name:      "posix with embedded single quote",
+			cmd:       "echo",
+			args:      []string{"it's working"},
+			dir:       "",
+			env:       nil,
+			isWindows: false,
+			want:      "'echo' 'it'\\''s working'",
+		},
+	}
 
-	got := buildFullCommand(cmd, false)
-	want := "export A='B'; cd '/tmp' && echo hello"
-	assert.Equal(t, want, got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := invoke.NewCommand(tt.cmd, tt.args...)
+			cmd.Dir = tt.dir
+			cmd.Env = tt.env
+
+			got := buildFullCommand(cmd, tt.isWindows)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

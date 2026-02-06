@@ -153,7 +153,8 @@ func TestIntegration(t *testing.T) {
 	t.Run("Environment Variables", func(t *testing.T) {
 		var stdout bytes.Buffer
 		cmd := invoke.Command{
-			Cmd:    "echo $INVOKE_TEST_VAR",
+			Cmd:    "sh",
+			Args:   []string{"-c", "echo $INVOKE_TEST_VAR"},
 			Env:    []string{"INVOKE_TEST_VAR=hello_env"},
 			Stdout: &stdout,
 		}
