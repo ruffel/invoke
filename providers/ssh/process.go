@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -90,6 +91,10 @@ func (p *Process) Signal(sig os.Signal) error {
 		sshSig = ssh.SIGINT
 	case os.Kill:
 		sshSig = ssh.SIGKILL
+	case syscall.SIGTERM:
+		sshSig = ssh.SIGTERM
+	case syscall.SIGQUIT:
+		sshSig = ssh.SIGQUIT
 	default:
 		return fmt.Errorf("signal %v not supported over ssh", sig)
 	}
