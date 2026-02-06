@@ -302,8 +302,8 @@ func TestExecutor_SudoConfig(t *testing.T) {
 		if c.Cmd != sudoCmd {
 			return false
 		}
-		// Basic checks to ensure flags are present in some order (though Slice order is deterministic in implementation)
-		// We can check exact slice match
+		// Basic checks to ensure flags and arguments are present in this exact deterministic order.
+		// We deliberately check for an exact slice match.
 		expected := []string{"-n", "-u", "postgres", "-g", "admin", "-E", "--custom", "--", "ps", "aux"}
 
 		return assert.ObjectsAreEqual(expected, c.Args)
