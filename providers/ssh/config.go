@@ -99,10 +99,14 @@ func NewFromSSHConfigReader(alias string, r io.Reader) (Config, error) {
 
 	identityFile, _ := cfg.Get(alias, "IdentityFile")
 	if strings.HasPrefix(identityFile, "~/") {
-		home, _ := os.UserHomeDir()
-		if home != "" {
-			identityFile = filepath.Join(home, identityFile[2:])
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: %w", identityFile, err)
 		}
+		if home == "" {
+			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: empty home directory", identityFile)
+		}
+		identityFile = filepath.Join(home, identityFile[2:])
 	}
 
 	c := NewConfig(hostName, username)
