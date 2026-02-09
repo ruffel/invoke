@@ -126,7 +126,7 @@ func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Res
 	defer func() { _ = proc.Close() }()
 
 	waitErr := proc.Wait()
-	// Always return the result if available, even if Wait failed (e.g. non-zero exit code)
+	// Always return the result if available, even if Wait returned an error (e.g. non-zero exit status or transport/context errors).
 	if res := proc.Result(); res != nil {
 		return res, waitErr
 	}
