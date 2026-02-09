@@ -45,6 +45,7 @@ func TestSSH_Security_CommandInjection(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			cmd := invoke.NewCommand("echo", tt.args...)
 			got := buildFullCommand(cmd, false)
 			assert.Equal(t, tt.expected, got)

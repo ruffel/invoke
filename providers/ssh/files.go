@@ -194,6 +194,7 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 		if err := checkPathTraversal(localBase, localPath); err != nil {
 			return err
 		}
+
 		info := walker.Stat()
 
 		if info.IsDir() {
@@ -209,9 +210,7 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 			return err
 		}
 	}
-	// Force chmod if mode is specific
-	// sftp.Create doesn't always guarantee mode, especially with umask.
-	// Explicit chmod is safer.
+
 	return nil
 }
 

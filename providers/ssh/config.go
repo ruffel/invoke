@@ -55,6 +55,7 @@ func NewFromSSHConfig(alias, path string) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("failed to get home directory: %w", err)
 		}
+
 		path = filepath.Join(home, ".ssh", "config")
 	}
 
@@ -103,9 +104,11 @@ func NewFromSSHConfigReader(alias string, r io.Reader) (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: %w", identityFile, err)
 		}
+
 		if home == "" {
 			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: empty home directory", identityFile)
 		}
+
 		identityFile = filepath.Join(home, identityFile[2:])
 	}
 
