@@ -104,6 +104,14 @@ func (e *Environment) uploadFile(ctx context.Context, client *sftp.Client, local
 		return ctx.Err()
 	}
 
+	// Ensure parent directory exists
+	parent := pathpkg.Dir(remotePath)
+	if parent != "." && parent != "/" {
+		if err := client.MkdirAll(parent); err != nil {
+			return fmt.Errorf("failed to create remote parent directory: %w", err)
+		}
+	}
+
 	src, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -185,10 +193,22 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 
 		path := walker.Path()
 
-		relPath, err := filepath.Rel(remoteBase, path)
-		if err != nil {
+		if path == remoteBase {
 			continue
 		}
+
+		// Ensure we don't have a partial match on a path component
+		// e.g. /home/user/data matching /home/user/datapath
+		cleanBase := pathpkg.Clean(remoteBase)
+		if cleanBase == "/" {
+			cleanBase = ""
+		}
+
+		if !strings.HasPrefix(path, cleanBase+"/") {
+			return fmt.Errorf("path %q is not within %q", path, remoteBase)
+		}
+
+		relPath := strings.TrimPrefix(path, cleanBase+"/")
 
 		localPath := filepath.Join(localBase, relPath)
 		if err := checkPathTraversal(localBase, localPath); err != nil {
@@ -210,7 +230,6 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 			return err
 		}
 	}
-
 	return nil
 }
 
