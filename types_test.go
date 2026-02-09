@@ -258,6 +258,7 @@ func TestExitError_Error(t *testing.T) {
 
 	t.Run("with command", func(t *testing.T) {
 		t.Parallel()
+
 		e := &ExitError{
 			Command:  &Command{Cmd: "ls", Args: []string{"-la"}},
 			ExitCode: 1,
@@ -267,9 +268,11 @@ func TestExitError_Error(t *testing.T) {
 
 	t.Run("without command", func(t *testing.T) {
 		t.Parallel()
+
 		e := &ExitError{
 			ExitCode: 1,
 		}
+
 		assert.NotPanics(t, func() {
 			assert.Equal(t, "command exited with code 1", e.Error())
 		})
