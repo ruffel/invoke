@@ -195,7 +195,7 @@ func TestExecutor_RunLineStream_Leak(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	err := exec.RunLineStream(ctx, &Command{Cmd: "leak"}, func(line string) {})
+	err := exec.RunLineStream(ctx, &Command{Cmd: "leak"}, func(_ string) {})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wait failed")
