@@ -176,6 +176,31 @@ func TestExecutor_RunLineStream(t *testing.T) {
 	assert.Equal(t, []string{"line1", "line2"}, lines)
 }
 
+func TestExecutor_RunLineStream_Leak(t *testing.T) {
+	t.Parallel()
+
+	mockEnv := new(MockEnv)
+	exec := NewExecutor(mockEnv)
+	mockProc := new(MockProcess)
+
+	mockEnv.On("Start", mock.Anything, mock.MatchedBy(func(c *Command) bool {
+		return c.Cmd == "leak" && c.Stdout != nil
+	})).Return(mockProc, nil)
+
+	// Make Wait return an error immediately
+	mockProc.On("Wait").Return(errors.New("wait failed"))
+	mockProc.On("Close").Return(nil)
+
+	// We'll use a timeout to ensure the test doesn't hang if there is a leak
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := exec.RunLineStream(ctx, &Command{Cmd: "leak"}, func(line string) {})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wait failed")
+}
+
 func TestExecutor_Run_Retry(t *testing.T) {
 	t.Parallel()
 
