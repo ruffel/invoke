@@ -183,22 +183,38 @@ func TestExecutor_RunLineStream_Leak(t *testing.T) {
 	exec := NewExecutor(mockEnv)
 	mockProc := new(MockProcess)
 
+	var capturedStdout io.WriteCloser
+
 	mockEnv.On("Start", mock.Anything, mock.MatchedBy(func(c *Command) bool {
 		return c.Cmd == "leak" && c.Stdout != nil
-	})).Return(mockProc, nil)
+	})).Run(func(args mock.Arguments) {
+		cmd := args.Get(1).(*Command)
+		if w, ok := cmd.Stdout.(io.WriteCloser); ok {
+			capturedStdout = w
+		}
+	}).Return(mockProc, nil)
 
 	// Make Wait return an error immediately
 	mockProc.On("Wait").Return(errors.New("wait failed"))
 	mockProc.On("Close").Return(nil)
 
-	// We'll use a timeout to ensure the test doesn't hang if there is a leak
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- exec.RunLineStream(context.Background(), &Command{Cmd: "leak"}, func(_ string) {})
+	}()
 
-	err := exec.RunLineStream(ctx, &Command{Cmd: "leak"}, func(_ string) {})
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "wait failed")
+	case <-time.After(time.Second):
+		t.Fatal("RunLineStream timed out (possible goroutine leak)")
+	}
 
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "wait failed")
+	// Assert that the pipe writer was closed
+	require.NotNil(t, capturedStdout, "stdout pipe should have been captured")
+	_, err := capturedStdout.Write([]byte("test"))
+	assert.ErrorIs(t, err, io.ErrClosedPipe, "stdout pipe should be closed after RunLineStream returns")
 }
 
 func TestExecutor_Run_Retry(t *testing.T) {
