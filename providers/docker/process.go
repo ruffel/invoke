@@ -59,6 +59,9 @@ func pollForExitCode(ctx context.Context, cli *client.Client, execID string, tim
 	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		inspectResp, err := cli.ContainerExecInspect(pollCtx, execID)
 		if err != nil {
@@ -72,7 +75,7 @@ func pollForExitCode(ctx context.Context, cli *client.Client, execID string, tim
 		select {
 		case <-pollCtx.Done():
 			return inspectResp, pollCtx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-ticker.C:
 			// Continue polling
 		}
 	}
