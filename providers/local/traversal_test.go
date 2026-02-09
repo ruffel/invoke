@@ -5,9 +5,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCheckPathTraversal(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name      string
 		root      string
@@ -66,6 +69,8 @@ func TestCheckPathTraversal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			// Normalize for OS (Windows vs Unix)
 			root := filepath.FromSlash(tt.root)
 			target := filepath.FromSlash(tt.target)
@@ -75,7 +80,7 @@ func TestCheckPathTraversal(t *testing.T) {
 
 			err := checkPathTraversal(root, target)
 			if tt.expectErr {
-				assert.Error(t, err)
+				require.Error(t, err)
 				assert.Contains(t, err.Error(), "illegal file path")
 			} else {
 				assert.NoError(t, err)
