@@ -50,11 +50,15 @@ func NewConfig(host, username string) Config {
 // NewFromSSHConfig loads configuration from an SSH config file (e.g. ~/.ssh/config).
 // logic mirrors OpenSSH: reads specific path or default ~/.ssh/config.
 func NewFromSSHConfig(alias, path string) (Config, error) {
-	f, err := os.Open(filepath.Join(os.Getenv("HOME"), ".ssh", "config"))
-	if path != "" {
-		f, err = os.Open(path)
+	if path == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("failed to get home directory: %w", err)
+		}
+		path = filepath.Join(home, ".ssh", "config")
 	}
 
+	f, err := os.Open(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("failed to open ssh config: %w", err)
 	}
@@ -95,7 +99,14 @@ func NewFromSSHConfigReader(alias string, r io.Reader) (Config, error) {
 
 	identityFile, _ := cfg.Get(alias, "IdentityFile")
 	if strings.HasPrefix(identityFile, "~/") {
-		identityFile = filepath.Join(os.Getenv("HOME"), identityFile[2:])
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: %w", identityFile, err)
+		}
+		if home == "" {
+			return Config{}, fmt.Errorf("failed to expand IdentityFile %q: empty home directory", identityFile)
+		}
+		identityFile = filepath.Join(home, identityFile[2:])
 	}
 
 	c := NewConfig(hostName, username)
@@ -179,7 +190,12 @@ func (c Config) ToClientConfig() (*ssh.ClientConfig, error) {
 // DefaultKnownHosts returns a HostKeyCallback that verifies the host key against
 // strict entries in the user's ~/.ssh/known_hosts file.
 func DefaultKnownHosts() (ssh.HostKeyCallback, error) {
-	path := filepath.Join(os.Getenv("HOME"), ".ssh", "known_hosts")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+
+	path := filepath.Join(home, ".ssh", "known_hosts")
 
 	return knownhosts.New(path)
 }
