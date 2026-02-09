@@ -148,13 +148,16 @@ func (e *Executor) RunLineStream(ctx context.Context, cmd *Command, onLine func(
 	}()
 
 	// Wait for the command to finish.
-	if err := proc.Wait(); err != nil {
-		return err
-	}
+	waitErr := proc.Wait()
 
 	_ = pw.Close() // Close the write end to signal the scanner to stop
 
 	scanErr := <-scanErrCh
+
+	if waitErr != nil {
+		return waitErr
+	}
+
 	if scanErr != nil {
 		return fmt.Errorf("scan error: %w", scanErr)
 	}
