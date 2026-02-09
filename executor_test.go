@@ -199,6 +199,7 @@ func TestExecutor_RunLineStream_Leak(t *testing.T) {
 	mockProc.On("Close").Return(nil)
 
 	done := make(chan error, 1)
+
 	go func() {
 		done <- exec.RunLineStream(context.Background(), &Command{Cmd: "leak"}, func(_ string) {})
 	}()
