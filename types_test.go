@@ -252,3 +252,26 @@ func TestNewCommand(t *testing.T) {
 	assert.Equal(t, "ls", cmd.Cmd)
 	assert.Equal(t, []string{"-la", "/tmp"}, cmd.Args)
 }
+
+func TestExitError_Error(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with command", func(t *testing.T) {
+		t.Parallel()
+		e := &ExitError{
+			Command:  &Command{Cmd: "ls", Args: []string{"-la"}},
+			ExitCode: 1,
+		}
+		assert.Equal(t, "command \"ls -la\" exited with code 1", e.Error())
+	})
+
+	t.Run("without command", func(t *testing.T) {
+		t.Parallel()
+		e := &ExitError{
+			ExitCode: 1,
+		}
+		assert.NotPanics(t, func() {
+			assert.Equal(t, "command exited with code 1", e.Error())
+		})
+	})
+}

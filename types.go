@@ -114,6 +114,10 @@ type ExitError struct {
 }
 
 func (e *ExitError) Error() string {
+	if e.Command == nil {
+		return fmt.Sprintf("command exited with code %d", e.ExitCode)
+	}
+
 	return fmt.Sprintf("command %q exited with code %d", e.Command.String(), e.ExitCode)
 }
 

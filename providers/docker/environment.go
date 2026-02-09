@@ -142,7 +142,7 @@ func (e *Environment) LookPath(ctx context.Context, file string) (string, error)
 	}
 
 	if result.ExitCode != 0 {
-		return "", &invoke.ExitError{ExitCode: result.ExitCode}
+		return "", &invoke.ExitError{Command: cmd, ExitCode: result.ExitCode}
 	}
 
 	// Windows 'where' might return multiple lines, take the first one
@@ -153,7 +153,7 @@ func (e *Environment) LookPath(ctx context.Context, file string) (string, error)
 			return strings.TrimSpace(lines[0]), nil
 		}
 
-		return "", &invoke.ExitError{ExitCode: 1}
+		return "", &invoke.ExitError{Command: cmd, ExitCode: 1}
 	}
 
 	return output, nil
