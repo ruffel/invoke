@@ -32,7 +32,7 @@ Host myalias
 		assert.Equal(t, "1.2.3.4", cfg.Host)
 		assert.Equal(t, "testuser", cfg.User)
 		assert.Equal(t, 2222, cfg.Port)
-		assert.Equal(t, true, cfg.InsecureSkipVerify)
+		assert.True(t, cfg.InsecureSkipVerify)
 		// IdentityFile resolution check (it uses os.UserHomeDir())
 		assert.True(t, filepath.IsAbs(cfg.PrivateKeyPath))
 		assert.Contains(t, cfg.PrivateKeyPath, "id_ed25519")
