@@ -67,3 +67,47 @@ func TestDownloadDir_PathLogic(t *testing.T) {
 		})
 	}
 }
+
+func TestDownloadDir_RootEntrySkipUsesCleanPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		remoteBase string
+		walkPath   string
+		wantSkip   bool
+	}{
+		{
+			name:       "trailing slash base should skip cleaned root entry",
+			remoteBase: "/home/user/data/",
+			walkPath:   "/home/user/data",
+			wantSkip:   true,
+		},
+		{
+			name:       "canonical base should skip same entry",
+			remoteBase: "/home/user/data",
+			walkPath:   "/home/user/data",
+			wantSkip:   true,
+		},
+		{
+			name:       "child path should not skip",
+			remoteBase: "/home/user/data/",
+			walkPath:   "/home/user/data/child.txt",
+			wantSkip:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cleanBase := path.Clean(tt.remoteBase)
+			if cleanBase == "/" {
+				cleanBase = ""
+			}
+
+			cleanPath := path.Clean(tt.walkPath)
+			assert.Equal(t, tt.wantSkip, cleanPath == cleanBase)
+		})
+	}
+}
