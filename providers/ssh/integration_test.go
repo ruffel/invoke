@@ -131,7 +131,7 @@ func TestIntegration(t *testing.T) {
 			assert.Equal(t, "ssh-transfer-content", stdout.String())
 
 			// Also verify Windows-style separators are normalized correctly.
-			windowsStylePath := "\\" + filepath.ToSlash(filepath.Join(remoteBase, "invoke-ssh-upload-parent-create", "win", "style", "upload.txt"))
+			windowsStylePath := remoteBase + "\\invoke-ssh-upload-parent-create\\win\\style\\upload.txt"
 			err = env.Upload(ctx, srcFile, windowsStylePath, invoke.WithPermissions(0644))
 			require.NoError(t, err)
 
