@@ -104,6 +104,18 @@ func (e *Environment) uploadFile(ctx context.Context, client *sftp.Client, local
 		return ctx.Err()
 	}
 
+	// Normalize remote paths to Unix-style separators and clean form.
+	remotePath = strings.ReplaceAll(remotePath, "\\", "/")
+	remotePath = pathpkg.Clean(remotePath)
+
+	// Ensure parent directory exists
+	parent := pathpkg.Dir(remotePath)
+	if parent != "." && parent != "/" {
+		if err := client.MkdirAll(parent); err != nil {
+			return fmt.Errorf("failed to create remote parent directory %q for remote file %q: %w", parent, remotePath, err)
+		}
+	}
+
 	src, err := os.Open(localPath)
 	if err != nil {
 		return err
@@ -177,18 +189,30 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 }
 
 func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remoteBase, localBase string, progress invoke.ProgressFunc) error {
+	cleanBase := pathpkg.Clean(remoteBase)
+	if cleanBase == "/" {
+		cleanBase = ""
+	}
+
 	walker := client.Walk(remoteBase)
 	for walker.Step() {
 		if err := walker.Err(); err != nil {
 			return err
 		}
 
-		path := walker.Path()
+		remotePath := pathpkg.Clean(walker.Path())
 
-		relPath, err := filepath.Rel(remoteBase, path)
-		if err != nil {
+		if remotePath == cleanBase {
 			continue
 		}
+
+		// Ensure we don't have a partial match on a path component
+		// e.g. /home/user/data matching /home/user/datapath
+		if !strings.HasPrefix(remotePath, cleanBase+"/") {
+			return fmt.Errorf("path %q is not within %q", remotePath, remoteBase)
+		}
+
+		relPath := strings.TrimPrefix(remotePath, cleanBase+"/")
 
 		localPath := filepath.Join(localBase, relPath)
 		if err := checkPathTraversal(localBase, localPath); err != nil {
@@ -206,11 +230,10 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 			continue
 		}
 
-		if err := e.downloadFile(ctx, client, path, localPath, info.Mode(), progress); err != nil {
+		if err := e.downloadFile(ctx, client, remotePath, localPath, info.Mode(), progress); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 

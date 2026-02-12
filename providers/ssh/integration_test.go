@@ -105,6 +105,48 @@ func TestIntegration(t *testing.T) {
 
 		// Cleanup remote
 		_, _ = env.Run(ctx, &invoke.Command{Cmd: "rm", Args: []string{remotePath}})
+
+		t.Run("creates missing remote parents", func(t *testing.T) {
+			remoteBase := "/tmp"
+			if os.Getenv("SSH_TEST_HOST") == "" {
+				remoteBase = "/config"
+			}
+
+			// Start from a clean slate to ensure parent dirs are actually created by Upload.
+			remoteParentRoot := filepath.ToSlash(filepath.Join(remoteBase, "invoke-ssh-upload-parent-create"))
+			_, _ = env.Run(ctx, &invoke.Command{Cmd: "rm", Args: []string{"-rf", remoteParentRoot}})
+
+			remotePath := filepath.ToSlash(filepath.Join(remoteParentRoot, "nested", "deeper", "upload.txt"))
+			err = env.Upload(ctx, srcFile, remotePath, invoke.WithPermissions(0644))
+			require.NoError(t, err)
+
+			var stdout bytes.Buffer
+			catCmd := invoke.Command{
+				Cmd:    "cat",
+				Args:   []string{remotePath},
+				Stdout: &stdout,
+			}
+			_, err = env.Run(ctx, &catCmd)
+			require.NoError(t, err)
+			assert.Equal(t, "ssh-transfer-content", stdout.String())
+
+			// Also verify Windows-style separators are normalized correctly.
+			windowsStylePath := remoteBase + "\\invoke-ssh-upload-parent-create\\win\\style\\upload.txt"
+			err = env.Upload(ctx, srcFile, windowsStylePath, invoke.WithPermissions(0644))
+			require.NoError(t, err)
+
+			stdout.Reset()
+			catWinCmd := invoke.Command{
+				Cmd:    "cat",
+				Args:   []string{filepath.ToSlash(filepath.Join(remoteBase, "invoke-ssh-upload-parent-create", "win", "style", "upload.txt"))},
+				Stdout: &stdout,
+			}
+			_, err = env.Run(ctx, &catWinCmd)
+			require.NoError(t, err)
+			assert.Equal(t, "ssh-transfer-content", stdout.String())
+
+			_, _ = env.Run(ctx, &invoke.Command{Cmd: "rm", Args: []string{"-rf", remoteParentRoot}})
+		})
 	})
 
 	t.Run("Signal", func(t *testing.T) {
