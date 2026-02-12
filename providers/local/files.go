@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,11 +14,19 @@ import (
 
 // Upload copies a local file/dir to the destination path (also local).
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.FileOption) error {
+	if e.isClosed() {
+		return errors.New("cannot upload files: environment is closed")
+	}
+
 	// For local provider, "remote" is just another local path.
 	// We handle options generally.
 	cfg := invoke.DefaultFileConfig()
 	for _, o := range opts {
 		o(&cfg)
+	}
+
+	if cfg.UID != 0 || cfg.GID != 0 {
+		return fmt.Errorf("owner options are unsupported by local provider: %w", invoke.ErrNotSupported)
 	}
 
 	info, err := os.Stat(localPath)
@@ -26,6 +35,10 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 	}
 
 	if info.IsDir() {
+		if !cfg.Recursive {
+			return errors.New("recursive directory upload is disabled by configuration")
+		}
+
 		return e.copyDir(ctx, localPath, remotePath, cfg)
 	}
 
@@ -39,12 +52,20 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 
 // Download copies a remote file/dir to the destination path (also local).
 func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.FileOption) error {
-	// For local provider, this is symmetric to Upload
+	if e.isClosed() {
+		return errors.New("cannot download files: environment is closed")
+	}
+
+	// For local provider, this is symmetric to Upload.
 	return e.Upload(ctx, remotePath, localPath, opts...)
 }
 
 func (e *Environment) copyDir(ctx context.Context, src, dst string, cfg invoke.FileConfig) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		if err != nil {
 			return err
 		}
@@ -102,14 +123,28 @@ func (e *Environment) copyFile(ctx context.Context, src, dst string, mode os.Fil
 
 	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
-		return err
+		// Handle read-only files: if OpenFile failed, it might be due to permissions.
+		// If the file exists and we are trying to overwrite it, remove it first.
+		if os.IsPermission(err) {
+			// Check if file exists
+			if _, statErr := os.Stat(dst); statErr == nil {
+				if removeErr := os.Remove(dst); removeErr == nil {
+					// Try opening again after removal
+					destFile, err = os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
+				}
+			}
+		}
+
+		if err != nil {
+			return err
+		}
 	}
 
 	defer func() { _ = destFile.Close() }()
 
-	var reader io.Reader = sourceFile
+	var reader io.Reader = &contextReader{ctx: ctx, reader: sourceFile}
 	if progress != nil {
-		reader = &progressReader{Reader: sourceFile, total: size, fn: progress}
+		reader = &progressReader{Reader: reader, total: size, fn: progress}
 	}
 
 	_, err = io.Copy(destFile, reader)
@@ -124,6 +159,7 @@ func (e *Environment) copyFile(ctx context.Context, src, dst string, mode os.Fil
 	return destFile.Close()
 }
 
+// progressReader wraps a Reader and reports copy progress.
 type progressReader struct {
 	io.Reader
 
@@ -142,6 +178,20 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// contextReader checks cancellation before each read operation.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (cr *contextReader) Read(p []byte) (int, error) {
+	if cr.ctx.Err() != nil {
+		return 0, cr.ctx.Err()
+	}
+
+	return cr.reader.Read(p)
 }
 
 func checkPathTraversal(root, target string) error {

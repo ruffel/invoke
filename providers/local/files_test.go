@@ -84,3 +84,51 @@ func TestFileTransfer(t *testing.T) {
 		assert.Equal(t, content, readContent)
 	})
 }
+
+func TestFileTransfer_Validation(t *testing.T) {
+	t.Parallel()
+
+	env, err := New()
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	srcFile := filepath.Join(tmpDir, "source.txt")
+	dstFile := filepath.Join(tmpDir, "dest.txt")
+	require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0o644))
+
+	t.Run("owner option unsupported", func(t *testing.T) {
+		t.Parallel()
+
+		err := env.Upload(ctx, srcFile, dstFile, invoke.WithOwner(1000, 1000))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, invoke.ErrNotSupported)
+	})
+
+	t.Run("recursive disabled for directories", func(t *testing.T) {
+		t.Parallel()
+
+		srcDir := filepath.Join(tmpDir, "src_tree")
+		dstDir := filepath.Join(tmpDir, "dst_tree")
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "file.txt"), []byte("x"), 0o644))
+
+		err := env.Upload(ctx, srcDir, dstDir, func(cfg *invoke.FileConfig) { cfg.Recursive = false })
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "recursive directory upload is disabled")
+	})
+
+	t.Run("upload fails when environment is closed", func(t *testing.T) {
+		t.Parallel()
+
+		localEnv, err := New()
+		require.NoError(t, err)
+		_ = localEnv.Close()
+
+		err = localEnv.Upload(ctx, srcFile, dstFile)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "environment is closed")
+	})
+}

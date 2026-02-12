@@ -7,6 +7,7 @@
 //
 // Usage:
 //
-//	env := local.New()
-//	stdout, _ := env.Run(ctx, &invoke.Command{Cmd: "echo", Args: []string{"hello"}})
+//	env, _ := local.New()
+//	res, _ := env.Run(ctx, &invoke.Command{Cmd: "echo", Args: []string{"hello"}})
+//	_ = res
 package local
