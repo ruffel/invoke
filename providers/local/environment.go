@@ -2,8 +2,10 @@ package local
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/ruffel/invoke"
@@ -37,6 +39,10 @@ func New(opts ...Option) (*Environment, error) {
 
 // Run executes a command synchronously on the local machine.
 func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Result, error) {
+	if err := validateCommand(cmd); err != nil {
+		return nil, err
+	}
+
 	process, err := e.Start(ctx, cmd)
 	if err != nil {
 		return nil, err
@@ -56,6 +62,10 @@ func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Res
 // Start begins command execution asynchronously.
 // Caller must close/wait on the returned Process.
 func (e *Environment) Start(ctx context.Context, cmd *invoke.Command) (invoke.Process, error) {
+	if err := validateCommand(cmd); err != nil {
+		return nil, err
+	}
+
 	e.mu.Lock()
 
 	if e.closed {
@@ -111,6 +121,10 @@ func (e *Environment) Close() error {
 // LookPath searches for an executable named file in the directories named by
 // the PATH environment variable.
 func (e *Environment) LookPath(_ context.Context, file string) (string, error) {
+	if e.isClosed() {
+		return "", errors.New("cannot look up path: environment is closed")
+	}
+
 	return exec.LookPath(file)
 }
 
@@ -118,4 +132,23 @@ func (e *Environment) decrementActive() {
 	e.mu.Lock()
 	e.active--
 	e.mu.Unlock()
+}
+
+func (e *Environment) isClosed() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	return e.closed
+}
+
+func validateCommand(cmd *invoke.Command) error {
+	if cmd == nil {
+		return errors.New("command cannot be nil")
+	}
+
+	if strings.TrimSpace(cmd.Cmd) == "" {
+		return errors.New("command binary cannot be empty")
+	}
+
+	return nil
 }

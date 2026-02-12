@@ -170,6 +170,43 @@ func TestSafety(t *testing.T) {
 		_, err = localEnv.Start(context.Background(), &invoke.Command{Cmd: "echo"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "environment is closed")
+
+		_, err = localEnv.LookPath(context.Background(), "echo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "environment is closed")
+	})
+}
+
+func TestEnvironment_StartValidation(t *testing.T) {
+	t.Parallel()
+
+	env, err := New()
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	t.Run("nil command", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := env.Start(context.Background(), nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "command cannot be nil")
+	})
+
+	t.Run("empty command binary", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := env.Start(context.Background(), &invoke.Command{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "command binary cannot be empty")
+	})
+
+	t.Run("tty unsupported", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := env.Start(context.Background(), &invoke.Command{Cmd: "echo", Tty: true})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, invoke.ErrNotSupported)
 	})
 }
 

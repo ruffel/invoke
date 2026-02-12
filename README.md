@@ -27,7 +27,7 @@ Run a command locally, or on a remote server, just by swapping the provider.
 ```go
 ctx := context.Background()
 
-// env := local.New()
+// env, _ := local.New()
 env, _ := ssh.New(ssh.NewConfig("10.0.0.1", "root"))
 defer env.Close()
 
@@ -50,7 +50,7 @@ cmd := invoke.Command{
     Stderr: os.Stderr,
 }
 
-err := env.Run(ctx, cmd)
+_, err := env.Run(ctx, &cmd)
 ```
 
 ### 3. Sudo without the headache

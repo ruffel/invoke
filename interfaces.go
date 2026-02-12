@@ -31,7 +31,8 @@ type Environment interface {
 	Run(ctx context.Context, cmd *Command) (*Result, error)
 
 	// Start initiates a command asynchronously.
-	// The caller manages the returned Process (Wait/Signal) and must ensure resources are released via Wait().
+	// The caller manages the returned Process (Wait/Signal) and must ensure resources are released via
+	// either Wait() or Close().
 	Start(ctx context.Context, cmd *Command) (Process, error)
 
 	// TargetOS returns the operating system of the target environment.
