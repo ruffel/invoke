@@ -97,6 +97,7 @@ func TestFileTransfer_Validation(t *testing.T) {
 	tmpDir := t.TempDir()
 	srcFile := filepath.Join(tmpDir, "source.txt")
 	dstFile := filepath.Join(tmpDir, "dest.txt")
+
 	require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0o644))
 
 	t.Run("owner option unsupported", func(t *testing.T) {
@@ -125,6 +126,7 @@ func TestFileTransfer_Validation(t *testing.T) {
 
 		localEnv, err := New()
 		require.NoError(t, err)
+
 		_ = localEnv.Close()
 
 		err = localEnv.Upload(ctx, srcFile, dstFile)

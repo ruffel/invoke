@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -54,7 +53,10 @@ func (e *Executor) Run(ctx context.Context, cmd *Command, opts ...ExecOption) (*
 	}
 
 	if lastErr != nil {
-		return lastRes, fmt.Errorf("command execution failed after %d attempts: %w", cfg.RetryAttempts, lastErr)
+		return lastRes, &TransportError{
+			Command: cmd,
+			Err:     lastErr,
+		}
 	}
 
 	// Check if the final execution had a non-zero exit code
@@ -84,14 +86,6 @@ func (e *Executor) RunBuffered(ctx context.Context, cmd *Command, opts ...ExecOp
 	}
 	if result != nil {
 		bufResult.Result = *result
-	}
-
-	// Attach stderr to ExitError for context
-	if err != nil {
-		var exitErr *ExitError
-		if errors.As(err, &exitErr) {
-			exitErr.Stderr = bufResult.Stderr
-		}
 	}
 
 	return bufResult, err

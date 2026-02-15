@@ -122,22 +122,19 @@ func (e *Environment) copyFile(ctx context.Context, src, dst string, mode os.Fil
 	}
 
 	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
+	if os.IsPermission(err) {
 		// Handle read-only files: if OpenFile failed, it might be due to permissions.
 		// If the file exists and we are trying to overwrite it, remove it first.
-		if os.IsPermission(err) {
-			// Check if file exists
-			if _, statErr := os.Stat(dst); statErr == nil {
-				if removeErr := os.Remove(dst); removeErr == nil {
-					// Try opening again after removal
-					destFile, err = os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
-				}
+		if _, statErr := os.Stat(dst); statErr == nil {
+			if removeErr := os.Remove(dst); removeErr == nil {
+				// Try opening again after removal
+				destFile, err = os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode)
 			}
 		}
+	}
 
-		if err != nil {
-			return err
-		}
+	if err != nil {
+		return err
 	}
 
 	defer func() { _ = destFile.Close() }()
@@ -182,7 +179,7 @@ func (pr *progressReader) Read(p []byte) (int, error) {
 
 // contextReader checks cancellation before each read operation.
 type contextReader struct {
-	ctx    context.Context
+	ctx    context.Context //nolint:containedctx
 	reader io.Reader
 }
 

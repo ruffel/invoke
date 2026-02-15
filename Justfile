@@ -1,6 +1,6 @@
 # Justfile for invoke
 
-MODULES := "examples/unified-deploy providers/local providers/docker providers/ssh providers/mock"
+MODULES := "examples/compat-check examples/unified-deploy providers/local providers/docker providers/ssh providers/mock"
 
 # Default recipe
 default: test lint
