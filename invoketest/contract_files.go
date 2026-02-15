@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:funlen // Test functions are often longer due to setup/assertions.
 func fileContracts() []TestCase {
 	return []TestCase{
 		{
@@ -133,9 +134,9 @@ func fileContracts() []TestCase {
 				//     /file2.txt
 				tempDir := t.TempDir()
 				srcDir := filepath.Join(tempDir, "upload-tree")
-				require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "subdir"), 0755))
-				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("root file"), 0644))
-				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "subdir", "file2.txt"), []byte("sub file"), 0644))
+				require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "subdir"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("root file"), 0o644))
+				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "subdir", "file2.txt"), []byte("sub file"), 0o644))
 
 				dstDir := "/tmp/invoke-tree-" + t.Name()
 
