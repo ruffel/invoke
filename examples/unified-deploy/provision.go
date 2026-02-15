@@ -35,6 +35,8 @@ func resolveDockerHost(ctx context.Context) error {
 		return err
 	}
 
+	defer func() { _ = l.Close() }()
+
 	exec := invoke.NewExecutor(l)
 
 	res, err := exec.RunBuffered(ctx, &invoke.Command{
@@ -42,7 +44,7 @@ func resolveDockerHost(ctx context.Context) error {
 		Args: []string{"context", "inspect", "--format", "{{.Endpoints.docker.Host}}"},
 	})
 	if err != nil {
-		return nil //nolint:nilerr // Graceful fallback to default socket
+		return nil
 	}
 
 	host := strings.TrimSpace(string(res.Stdout))
@@ -76,14 +78,35 @@ func provisionEphemeral(ctx context.Context, target string) (any, func(), error)
 
 	exec := invoke.NewExecutor(localEnv)
 
+	var (
+		config  any
+		cleanup func()
+	)
+
 	switch target {
 	case "docker":
-		return provisionEphemeralDocker(ctx, exec)
+		config, cleanup, err = provisionEphemeralDocker(ctx, exec)
 	case "ssh":
-		return provisionEphemeralSSH(ctx, exec)
+		config, cleanup, err = provisionEphemeralSSH(ctx, exec)
 	default:
+		_ = localEnv.Close()
+
 		return nil, nil, fmt.Errorf("ephemeral mode not supported for target: %s", target)
 	}
+
+	if err != nil {
+		_ = localEnv.Close()
+
+		return nil, nil, err
+	}
+
+	return config, func() {
+		if cleanup != nil {
+			cleanup()
+		}
+
+		_ = localEnv.Close()
+	}, nil
 }
 
 func provisionEphemeralDocker(ctx context.Context, exec *invoke.Executor) (string, func(), error) {

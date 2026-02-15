@@ -101,30 +101,6 @@ func (r *Result) Failed() bool {
 	return !r.Success()
 }
 
-// ErrNotSupported indicates that the requested feature (e.g., TTY) is not supported
-// by the specific provider or OS.
-var ErrNotSupported = errors.New("operation not supported")
-
-// ExitError represents a successful execution that resulted in a non-zero exit code.
-type ExitError struct {
-	Command  *Command
-	ExitCode int
-	Stderr   []byte // Captured stderr, if available from RunBuffered
-	Cause    error  // Underlying error, if any
-}
-
-func (e *ExitError) Error() string {
-	if e.Command == nil {
-		return fmt.Sprintf("command exited with code %d", e.ExitCode)
-	}
-
-	return fmt.Sprintf("command %q exited with code %d", e.Command.String(), e.ExitCode)
-}
-
-func (e *ExitError) Unwrap() error {
-	return e.Cause
-}
-
 // TargetOS identifies the operating system of the target environment.
 type TargetOS int
 
