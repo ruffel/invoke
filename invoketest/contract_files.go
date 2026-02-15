@@ -2,12 +2,41 @@ package invoketest
 
 import (
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func getTestPaths(t T, env invoke.Environment) (string, string) {
+	name := strings.ReplaceAll(t.Name(), "/", "_")
+
+	if env.TargetOS() == invoke.OSWindows {
+		return `C:\Windows\Temp\invoke-test-` + name, `Get-Content -Raw`
+	}
+
+	return "/tmp/invoke-test-" + name, "cat"
+}
+
+// joinRemote handles path joining for the target environment.
+func joinRemote(env invoke.Environment, base string, parts ...string) string {
+	if env.TargetOS() == invoke.OSWindows {
+		var res strings.Builder
+		res.WriteString(base)
+
+		for _, p := range parts {
+			res.WriteString("\\" + p)
+		}
+
+		return res.String()
+	}
+
+	// Use forward slash for Unix
+	return path.Join(append([]string{base}, parts...)...)
+}
 
 //nolint:funlen // Test functions are often longer due to setup/assertions.
 func fileContracts() []TestCase {
@@ -17,9 +46,9 @@ func fileContracts() []TestCase {
 			Name:        "upload-failure-source-missing",
 			Description: "Error returned when we try to upload a non-existent local file",
 			Run: func(t T, env invoke.Environment) {
-				// Create a directory that we know exists, but look for a file inside it that does NOT exist.
+				dstBase, _ := getTestPaths(t, env)
 				src := filepath.Join(t.TempDir(), "this-file-really-does-not-exist-12345")
-				dst := "/tmp/should-not-exist-on-target-12345"
+				dst := joinRemote(env, dstBase, "should-not-exist-12345")
 
 				err := env.Upload(t.Context(), src, dst)
 				require.Error(t, err)
@@ -32,11 +61,11 @@ func fileContracts() []TestCase {
 			Run: func(t T, env invoke.Environment) {
 				// ARRANGE
 				content := "hello world from invoke"
+				dstBase, readCmd := getTestPaths(t, env)
 
-				// The destination path does not exist, the
-				dstPath := "/tmp/invoke-test-" + t.Name() + "/test.txt"
+				dstPath := joinRemote(env, dstBase, "test.txt")
 				srcPath := filepath.Join(t.TempDir(), "test.txt")
-				require.NoError(t, os.WriteFile(srcPath, []byte(content), 0644))
+				require.NoError(t, os.WriteFile(srcPath, []byte(content), 0o644))
 
 				// ACT
 				err := env.Upload(t.Context(), srcPath, dstPath)
@@ -46,9 +75,9 @@ func fileContracts() []TestCase {
 				exec := invoke.NewExecutor(env)
 				assert.NotNil(t, exec)
 
-				res, err := exec.RunBuffered(t.Context(), invoke.NewCommand("cat", dstPath))
+				res, err := exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+dstPath))
 				require.NoError(t, err)
-				require.Equal(t, content, string(res.Stdout))
+				require.Equal(t, content, strings.TrimSpace(string(res.Stdout)))
 				require.Zero(t, res.ExitCode)
 			},
 		},
@@ -59,10 +88,11 @@ func fileContracts() []TestCase {
 			Run: func(t T, env invoke.Environment) {
 				// ARRANGE
 				content := "hello world from invoke"
+				dstBase, readCmd := getTestPaths(t, env)
 
-				dstPath := "/tmp/invoke-test-" + t.Name() + "/nested/dir/structure/level1/level2/test.txt"
+				dstPath := joinRemote(env, dstBase, "nested", "dir", "structure", "level1", "level2", "test.txt")
 				srcPath := filepath.Join(t.TempDir(), "test.txt")
-				require.NoError(t, os.WriteFile(srcPath, []byte(content), 0644))
+				require.NoError(t, os.WriteFile(srcPath, []byte(content), 0o644))
 
 				// ACT
 				err := env.Upload(t.Context(), srcPath, dstPath)
@@ -72,9 +102,9 @@ func fileContracts() []TestCase {
 				exec := invoke.NewExecutor(env)
 				assert.NotNil(t, exec)
 
-				res, err := exec.RunBuffered(t.Context(), invoke.NewCommand("cat", dstPath))
+				res, err := exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+dstPath))
 				require.NoError(t, err)
-				require.Equal(t, content, string(res.Stdout))
+				require.Equal(t, content, strings.TrimSpace(string(res.Stdout)))
 				require.Zero(t, res.ExitCode)
 			},
 		},
@@ -86,12 +116,13 @@ func fileContracts() []TestCase {
 				// ARRANGE
 				initialContent := "initial content"
 				updatedContent := "updated content"
+				dstBase, readCmd := getTestPaths(t, env)
 
-				dstPath := "/tmp/invoke-test-" + t.Name() + "/test.txt"
+				dstPath := joinRemote(env, dstBase, "test.txt")
 				srcPath := filepath.Join(t.TempDir(), "test.txt")
 
 				// Create the initial file on the source.
-				require.NoError(t, os.WriteFile(srcPath, []byte(initialContent), 0644))
+				require.NoError(t, os.WriteFile(srcPath, []byte(initialContent), 0o644))
 
 				// ACT
 
@@ -103,22 +134,22 @@ func fileContracts() []TestCase {
 				exec := invoke.NewExecutor(env)
 				assert.NotNil(t, exec)
 
-				res, err := exec.RunBuffered(t.Context(), invoke.NewCommand("cat", dstPath))
+				res, err := exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+dstPath))
 				require.NoError(t, err)
-				require.Equal(t, initialContent, string(res.Stdout))
+				require.Equal(t, initialContent, strings.TrimSpace(string(res.Stdout)))
 				require.Zero(t, res.ExitCode)
 
 				// Update the source file with new content.
-				require.NoError(t, os.WriteFile(srcPath, []byte(updatedContent), 0644))
+				require.NoError(t, os.WriteFile(srcPath, []byte(updatedContent), 0o644))
 
 				// Upload the updated file to the destination (overwriting).
 				err = env.Upload(t.Context(), srcPath, dstPath)
 				require.NoError(t, err)
 
 				// Assert the updated content is correct on the target.
-				res, err = exec.RunBuffered(t.Context(), invoke.NewCommand("cat", dstPath))
+				res, err = exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+dstPath))
 				require.NoError(t, err)
-				require.Equal(t, updatedContent, string(res.Stdout))
+				require.Equal(t, updatedContent, strings.TrimSpace(string(res.Stdout)))
 				require.Zero(t, res.ExitCode)
 			},
 		},
@@ -138,7 +169,8 @@ func fileContracts() []TestCase {
 				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "file1.txt"), []byte("root file"), 0o644))
 				require.NoError(t, os.WriteFile(filepath.Join(srcDir, "subdir", "file2.txt"), []byte("sub file"), 0o644))
 
-				dstDir := "/tmp/invoke-tree-" + t.Name()
+				dstBase, readCmd := getTestPaths(t, env)
+				dstDir := joinRemote(env, dstBase, "tree")
 
 				// ACT
 				err := env.Upload(t.Context(), srcDir, dstDir)
@@ -147,14 +179,14 @@ func fileContracts() []TestCase {
 				// ASSERT
 				exec := invoke.NewExecutor(env)
 				// Check file 1
-				res, err := exec.RunBuffered(t.Context(), invoke.NewCommand("cat", filepath.Join(dstDir, "file1.txt")))
+				res, err := exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+joinRemote(env, dstDir, "file1.txt")))
 				require.NoError(t, err)
-				require.Equal(t, "root file", string(res.Stdout))
+				require.Equal(t, "root file", strings.TrimSpace(string(res.Stdout)))
 
 				// Check file 2 (nested)
-				res, err = exec.RunBuffered(t.Context(), invoke.NewCommand("cat", filepath.Join(dstDir, "subdir", "file2.txt")))
+				res, err = exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand(readCmd+" "+joinRemote(env, dstDir, "subdir", "file2.txt")))
 				require.NoError(t, err)
-				require.Equal(t, "sub file", string(res.Stdout))
+				require.Equal(t, "sub file", strings.TrimSpace(string(res.Stdout)))
 			},
 		},
 	}

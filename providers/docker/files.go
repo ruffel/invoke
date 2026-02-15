@@ -32,7 +32,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 	containerRoot := "/"
 
 	if e.TargetOS() == invoke.OSWindows {
-		if len(remotePath) >= 2 && remotePath[1] == ':' {
+		if len(remotePath) >= 3 && remotePath[1] == ':' && (remotePath[2] == '/' || remotePath[2] == '\\') {
 			containerRoot = remotePath[:3] // e.g., "C:/"
 			remotePath = remotePath[3:]
 		} else {
@@ -190,6 +190,11 @@ func untar(r io.Reader, dst string) error {
 
 	// Optimization: If root is a file, extract directly
 	if firstHeader.Typeflag == tar.TypeReg {
+		dir := filepath.Dir(dst)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+
 		f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(firstHeader.Mode))
 		if err != nil {
 			return err
