@@ -31,7 +31,10 @@ func resolveDockerHost(ctx context.Context) {
 		return
 	}
 
+	defer func() { _ = l.Close() }()
+
 	exec := invoke.NewExecutor(l)
+
 	res, err := exec.RunBuffered(ctx, &invoke.Command{
 		Cmd:  "docker",
 		Args: []string{"context", "inspect", "--format", "{{.Endpoints.docker.Host}}"},
@@ -62,6 +65,7 @@ func provisionEphemeralDocker(ctx context.Context) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
+
 	exec := invoke.NewExecutor(l)
 
 	res, err := exec.RunBuffered(ctx, &invoke.Command{
@@ -69,14 +73,19 @@ func provisionEphemeralDocker(ctx context.Context) (string, func(), error) {
 		Args: []string{"run", "-d", "--rm", "alpine", "sleep", "infinity"},
 	})
 	if err != nil {
+		_ = l.Close()
+
 		return "", nil, err
 	}
 
 	cid := strings.TrimSpace(string(res.Stdout))
-	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	cleanup := func() { //nolint:contextcheck
+		ctxCleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		_, _ = exec.Run(ctx, &invoke.Command{Cmd: "docker", Args: []string{"stop", cid}})
+
+		_, _ = exec.Run(ctxCleanup, &invoke.Command{Cmd: "docker", Args: []string{"stop", cid}})
+
+		_ = l.Close()
 	}
 
 	return cid, cleanup, nil
@@ -87,6 +96,7 @@ func provisionEphemeralSSH(ctx context.Context) (ssh.Config, func(), error) {
 	if err != nil {
 		return ssh.Config{}, nil, err
 	}
+
 	exec := invoke.NewExecutor(l)
 
 	res, err := exec.RunBuffered(ctx, &invoke.Command{
@@ -100,19 +110,25 @@ func provisionEphemeralSSH(ctx context.Context) (ssh.Config, func(), error) {
 		},
 	})
 	if err != nil {
+		_ = l.Close()
+
 		return ssh.Config{}, nil, err
 	}
 
 	cid := strings.TrimSpace(string(res.Stdout))
-	cleanup := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
+	cleanup := func() { //nolint:contextcheck
+		ctxCleanup, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 		defer cancel()
-		_, _ = exec.Run(ctx, &invoke.Command{Cmd: "docker", Args: []string{"stop", cid}})
+
+		_, _ = exec.Run(ctxCleanup, &invoke.Command{Cmd: "docker", Args: []string{"stop", cid}})
+
+		_ = l.Close()
 	}
 
 	sshHost, sshPort, err := resolveSSHPort(ctx, exec, cid)
 	if err != nil {
 		cleanup()
+
 		return ssh.Config{}, nil, err
 	}
 
@@ -126,6 +142,7 @@ func provisionEphemeralSSH(ctx context.Context) (ssh.Config, func(), error) {
 	finalHost, err := waitForSSHReady(ctx, candidates, sshPort)
 	if err != nil {
 		cleanup()
+
 		return ssh.Config{}, nil, err
 	}
 
@@ -142,6 +159,7 @@ func resolveSSHPort(ctx context.Context, exec *invoke.Executor, cid string) (str
 		pRes, pErr := exec.RunBuffered(ctx, &invoke.Command{Cmd: "docker", Args: []string{"port", cid, sshInternalPort}})
 		if pErr != nil {
 			time.Sleep(sshPollInterval)
+
 			continue
 		}
 
@@ -150,12 +168,14 @@ func resolveSSHPort(ctx context.Context, exec *invoke.Executor, cid string) (str
 
 		if len(lines) == 0 || lines[0] == "" {
 			time.Sleep(sshPollInterval)
+
 			continue
 		}
 
 		h, portStr, err := net.SplitHostPort(lines[0])
 		if err != nil {
 			time.Sleep(sshPollInterval)
+
 			continue
 		}
 
@@ -166,6 +186,7 @@ func resolveSSHPort(ctx context.Context, exec *invoke.Executor, cid string) (str
 		p, err := strconv.Atoi(portStr)
 		if err != nil || p <= 0 {
 			time.Sleep(sshPollInterval)
+
 			continue
 		}
 
@@ -177,6 +198,7 @@ func resolveSSHPort(ctx context.Context, exec *invoke.Executor, cid string) (str
 
 func waitForSSHReady(ctx context.Context, candidates []string, port int) (string, error) {
 	deadline := time.Now().Add(sshWaitTimeout)
+
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -186,11 +208,15 @@ func waitForSSHReady(ctx context.Context, candidates []string, port int) (string
 
 		for _, host := range candidates {
 			addr := net.JoinHostPort(host, strconv.Itoa(port))
+
 			var dialer net.Dialer
+
 			conn, err := dialer.DialContext(ctx, "tcp", addr)
 			if err == nil {
 				_ = conn.Close()
+
 				time.Sleep(1 * time.Second)
+
 				return host, nil
 			}
 		}

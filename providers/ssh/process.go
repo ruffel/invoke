@@ -48,6 +48,7 @@ func (p *Process) Wait() error {
 			return &invoke.ExitError{
 				Command:  p.cmd,
 				ExitCode: exitErr.ExitStatus(),
+				Cause:    p.result.Error,
 			}
 		}
 

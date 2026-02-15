@@ -234,6 +234,7 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 			return err
 		}
 	}
+
 	return nil
 }
 

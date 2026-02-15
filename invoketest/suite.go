@@ -22,6 +22,7 @@ type T interface {
 	Errorf(format string, args ...any)
 	FailNow()
 	Context() context.Context
+	TempDir() string
 }
 
 // TestCase defines a single behavioral contract requirement.

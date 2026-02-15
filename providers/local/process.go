@@ -62,6 +62,7 @@ func (p *Process) Wait() error {
 				ExitCode: exitErr.ExitCode(),
 				// Note: Stderr is not captured here by default. It must be captured via Command.Stderr.
 				Stderr: nil,
+				Cause:  p.result.Error,
 			}
 		}
 		// Return other errors (context canceled, etc.) as-is

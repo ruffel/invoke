@@ -14,7 +14,7 @@ replace github.com/ruffel/invoke/providers/mock => ../../providers/mock
 
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/ruffel/invoke v0.0.3
+	github.com/ruffel/invoke v0.0.0
 	github.com/ruffel/invoke/providers/docker v0.0.0
 	github.com/ruffel/invoke/providers/local v0.0.0
 	github.com/ruffel/invoke/providers/ssh v0.0.0

@@ -15,7 +15,7 @@ func coreContracts() []TestCase {
 			Name:     "simple-echo",
 			Run: func(t T, env invoke.Environment) {
 				exec := invoke.NewExecutor(env)
-				result, err := exec.RunBuffered(t.Context(), invoke.NewCommand("echo", "hello"))
+				result, err := exec.RunBuffered(t.Context(), env.TargetOS().ShellCommand("echo hello"))
 				require.NoError(t, err)
 				require.NotNil(t, result)
 
