@@ -17,12 +17,12 @@ const (
 )
 
 // T is the minimal interface required for testify/assert and require.
-// *testing.T satisfies this interface automatically (Go 1.24+).
 type T interface {
 	Errorf(format string, args ...any)
 	FailNow()
 	Context() context.Context
 	TempDir() string
+	Name() string
 }
 
 // TestCase defines a single behavioral contract requirement.

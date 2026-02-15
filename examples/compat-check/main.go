@@ -162,6 +162,7 @@ type testResult struct {
 
 type cliTester struct {
 	ctx      context.Context //nolint:containedctx
+	name     string
 	failed   bool
 	errMsg   string
 	tempDirs []string
@@ -180,6 +181,10 @@ func (c *cliTester) FailNow() {
 
 func (c *cliTester) Context() context.Context {
 	return c.ctx
+}
+
+func (c *cliTester) Name() string {
+	return c.name
 }
 
 func (c *cliTester) TempDir() string {
@@ -207,7 +212,10 @@ func runMatrix(ctx context.Context, envs map[string]invoke.Environment) map[stri
 	for name, env := range envs {
 		for _, tc := range invoketest.AllContracts() {
 			func(tc invoketest.TestCase) {
-				t := &cliTester{ctx: ctx}
+				t := &cliTester{
+					ctx:  ctx,
+					name: tc.Name,
+				}
 				defer t.Cleanup()
 
 				func() {

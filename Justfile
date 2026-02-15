@@ -44,6 +44,13 @@ tidy:
 check-clean: fmt tidy
     git diff --exit-code
 
+# Run the compatibility check example
+compat-check:
+    go run ./examples/compat-check
+
+compat-check-all:
+    go run ./examples/compat-check --all
+
 # Run the unified-deploy example (pass args, e.g. "local" or "ssh --ephemeral")
 demo +args="":
     go run ./examples/unified-deploy {{args}}
