@@ -39,9 +39,13 @@ type Environment interface {
 	TargetOS() TargetOS
 
 	// Upload copies a local file or directory to the remote destination.
+	//
+	// It creates any missing parent directories at the destination.
 	Upload(ctx context.Context, localPath, remotePath string, opts ...FileOption) error
 
 	// Download copies a remote file or directory to the local destination.
+	//
+	// It creates any missing parent directories at the local destination.
 	Download(ctx context.Context, remotePath, localPath string, opts ...FileOption) error
 
 	// LookPath searches for an executable named file in the directories named by

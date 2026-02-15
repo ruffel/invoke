@@ -20,13 +20,30 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		o(&cfg)
 	}
 
-	// We want the file in the container to be named filepath.Base(remotePath).
-	// CopyToContainer extracts into the given directory.
-	// So we extract into Dir(remotePath), and the tar entry should be named Base(remotePath).
-	parentDir := filepath.Dir(remotePath)
-	destName := filepath.Base(remotePath)
+	// Check local info
+	if _, err := os.Stat(localPath); err != nil {
+		return err
+	}
 
-	tarStream := tarArchive(localPath, destName)
+	// Normalize and split the remote path. We use the container root as the base
+	// for CopyToContainer and include the relative path in the tar stream.
+	// This allows the Docker daemon's tar extractor to create any missing intermediate directories.
+	remotePath = strings.ReplaceAll(remotePath, "\\", "/")
+	containerRoot := "/"
+
+	if e.TargetOS() == invoke.OSWindows {
+		if len(remotePath) >= 2 && remotePath[1] == ':' {
+			containerRoot = remotePath[:3] // e.g., "C:/"
+			remotePath = remotePath[3:]
+		} else {
+			containerRoot = "C:/"
+			remotePath = strings.TrimPrefix(remotePath, "/")
+		}
+	} else {
+		remotePath = strings.TrimPrefix(remotePath, "/")
+	}
+
+	tarStream := tarArchive(localPath, remotePath)
 
 	defer func() { _ = tarStream.Close() }()
 
@@ -39,7 +56,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		AllowOverwriteDirWithFile: true,
 	}
 
-	err := e.client.CopyToContainer(ctx, e.config.ContainerID, parentDir, reader, options)
+	err := e.client.CopyToContainer(ctx, e.config.ContainerID, containerRoot, reader, options)
 	if err != nil {
 		return fmt.Errorf("failed to copy to container: %w", err)
 	}
@@ -115,7 +132,7 @@ func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src
 		relPath = destName
 	} else if destName != "" && strings.HasPrefix(path, src) {
 		// If we are renaming a directory, we need to rewrite children paths too
-		// But Upload() mostly targets single files or matching heirarchies.
+		// But Upload() mostly targets single files or matching hierarchies.
 		// For now, let's keep it simple: strict renaming only applies if src is a file
 		// or if we are renaming the root dir.
 		// If src is dir, relPath is "srcBasename/child". We want "destName/child".
