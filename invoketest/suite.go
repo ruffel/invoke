@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/ruffel/invoke"
@@ -20,6 +21,7 @@ const (
 type T interface {
 	Errorf(format string, args ...any)
 	FailNow()
+	Skipf(format string, args ...any)
 	Context() context.Context
 	TempDir() string
 	Name() string
@@ -30,7 +32,13 @@ type TestCase struct {
 	Category    string
 	Name        string
 	Description string
+	Prereq      func(t T, env invoke.Environment) (ok bool, reason string)
 	Run         func(t T, env invoke.Environment)
+}
+
+// ID returns the stable, globally unique contract identifier.
+func (tc TestCase) ID() string {
+	return fmt.Sprintf("%s/%s", tc.Category, tc.Name)
 }
 
 // Verify is the standard Go test entry point for provider authors.
@@ -38,7 +46,14 @@ func Verify(t *testing.T, env invoke.Environment) {
 	t.Helper()
 
 	for _, tc := range AllContracts() {
-		t.Run(tc.Category+"/"+tc.Name, func(t *testing.T) {
+		t.Run(tc.ID(), func(t *testing.T) {
+			if tc.Prereq != nil {
+				ok, reason := tc.Prereq(t, env)
+				if !ok {
+					t.Skipf("prereq unmet: %s", reason)
+				}
+			}
+
 			tc.Run(t, env)
 		})
 	}
