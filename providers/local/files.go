@@ -25,10 +25,6 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		o(&cfg)
 	}
 
-	if cfg.UID != 0 || cfg.GID != 0 {
-		return fmt.Errorf("owner options are unsupported by local provider: %w", invoke.ErrNotSupported)
-	}
-
 	info, err := os.Stat(localPath)
 	if err != nil {
 		return err

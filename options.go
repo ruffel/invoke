@@ -70,7 +70,6 @@ func WithRetry(attempts int, delay time.Duration) ExecOption {
 // FileConfig holds configuration for file transfers.
 type FileConfig struct {
 	Permissions os.FileMode // Destination perms override (0 means preserve/default)
-	UID, GID    int         // Destination ownership (0 usually means root/current)
 	Recursive   bool        // Default true for generic uploads
 	Progress    ProgressFunc
 }
@@ -89,14 +88,6 @@ type FileOption func(*FileConfig)
 func WithPermissions(mode os.FileMode) FileOption {
 	return func(c *FileConfig) {
 		c.Permissions = mode
-	}
-}
-
-// WithOwner forces specific destination ownership.
-func WithOwner(uid, gid int) FileOption {
-	return func(c *FileConfig) {
-		c.UID = uid
-		c.GID = gid
 	}
 }
 

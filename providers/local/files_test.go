@@ -100,14 +100,6 @@ func TestFileTransfer_Validation(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(srcFile, []byte("content"), 0o644))
 
-	t.Run("owner option unsupported", func(t *testing.T) {
-		t.Parallel()
-
-		err := env.Upload(ctx, srcFile, dstFile, invoke.WithOwner(1000, 1000))
-		require.Error(t, err)
-		assert.ErrorIs(t, err, invoke.ErrNotSupported)
-	})
-
 	t.Run("recursive disabled for directories", func(t *testing.T) {
 		t.Parallel()
 
