@@ -156,15 +156,19 @@ func setupSSH(ctx context.Context) (invoke.Environment, func(), error) {
 }
 
 type testResult struct {
-	passed bool
-	errMsg string
+	passed  bool
+	skipped bool
+	errMsg  string
+	skipMsg string
 }
 
 type cliTester struct {
 	ctx      context.Context //nolint:containedctx
 	name     string
 	failed   bool
+	skipped  bool
 	errMsg   string
+	skipMsg  string
 	tempDirs []string
 }
 
@@ -177,6 +181,13 @@ func (c *cliTester) FailNow() {
 	c.failed = true
 
 	panic(failNow{})
+}
+
+func (c *cliTester) Skipf(f string, a ...any) {
+	c.skipped = true
+	c.skipMsg = fmt.Sprintf(f, a...)
+
+	panic(skipNow{})
 }
 
 func (c *cliTester) Context() context.Context {
@@ -206,6 +217,8 @@ func (c *cliTester) Cleanup() {
 
 type failNow struct{}
 
+type skipNow struct{}
+
 func runMatrix(ctx context.Context, envs map[string]invoke.Environment) map[string]map[string]testResult {
 	data := make(map[string]map[string]testResult)
 
@@ -214,7 +227,7 @@ func runMatrix(ctx context.Context, envs map[string]invoke.Environment) map[stri
 			func(tc invoketest.TestCase) {
 				t := &cliTester{
 					ctx:  ctx,
-					name: tc.Name,
+					name: tc.ID(),
 				}
 				defer t.Cleanup()
 
@@ -225,18 +238,35 @@ func runMatrix(ctx context.Context, envs map[string]invoke.Environment) map[stri
 								return
 							}
 
+							if _, ok := r.(skipNow); ok {
+								return
+							}
+
 							panic(r)
 						}
 					}()
 
+					if tc.Prereq != nil {
+						ok, reason := tc.Prereq(t, env)
+						if !ok {
+							t.Skipf("prereq unmet: %s", reason)
+						}
+					}
+
 					tc.Run(t, env)
 				}()
 
-				if _, ok := data[tc.Name]; !ok {
-					data[tc.Name] = make(map[string]testResult)
+				id := tc.ID()
+				if _, ok := data[id]; !ok {
+					data[id] = make(map[string]testResult)
 				}
 
-				data[tc.Name][name] = testResult{!t.failed, t.errMsg}
+				data[id][name] = testResult{
+					passed:  !t.failed && !t.skipped,
+					skipped: t.skipped,
+					errMsg:  t.errMsg,
+					skipMsg: t.skipMsg,
+				}
 			}(tc)
 		}
 	}
@@ -271,6 +301,7 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 	var (
 		currentCat string
 		issues     []string
+		hasNA      bool
 	)
 
 	for _, tc := range invoketest.AllContracts() {
@@ -279,8 +310,11 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 			fmt.Printf("%s\n", catStyle.Render(strings.ToUpper(currentCat)))
 		}
 
-		row := matrix[tc.Name]
-		issue := renderRow(tc, names, row, nameWidth, colWidth)
+		row := matrix[tc.ID()]
+		issue, rowHasNA := renderRow(tc, names, row, nameWidth, colWidth)
+		if rowHasNA {
+			hasNA = true
+		}
 
 		if issue != "" {
 			issues = append(issues, issue)
@@ -293,6 +327,8 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 		for _, issue := range issues {
 			fmt.Printf("  - %s\n", issue)
 		}
+	} else if hasNA {
+		fmt.Println(infoStyle.Render("\n⚠️  No failures detected; some contracts are skipped (parity N/A)."))
 	} else {
 		fmt.Println(checkStyle.Render("\n✅ All providers are in parity!"))
 	}
@@ -316,12 +352,12 @@ func renderHeader(names []string, nameWidth, colWidth int) {
 	fmt.Println("\n" + header.String())
 }
 
-func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult, nameWidth, colWidth int) string {
+func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult, nameWidth, colWidth int) (string, bool) {
 	var line strings.Builder
 
 	line.WriteString(rowStyle.Render(fmt.Sprintf("%-*s", nameWidth, tc.Name)))
 
-	allPassed := true
+	anySkipped := false
 
 	var issue string
 
@@ -330,10 +366,13 @@ func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult
 		status := "PASSED"
 		style := passedStyle
 
-		if !res.passed {
+		if res.skipped {
+			status = "SKIPPED"
+			style = skippedStyle
+			anySkipped = true
+		} else if !res.passed {
 			status = "FAILED"
 			style = failedStyle
-			allPassed = false
 			issue = fmt.Sprintf("[%s] %s/%s: %s", strings.ToUpper(n), tc.Category, tc.Name, res.errMsg)
 		}
 
@@ -342,8 +381,10 @@ func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult
 	}
 
 	parity := parityMatchStyle.Render("MATCH")
-	if !allPassed {
+	if issue != "" {
 		parity = parityDivergedStyle.Render("DIVERGED")
+	} else if anySkipped {
+		parity = parityNAStyle.Render("N/A")
 	}
 
 	line.WriteString(" ")
@@ -351,5 +392,5 @@ func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult
 
 	fmt.Println(line.String())
 
-	return issue
+	return issue, anySkipped
 }

@@ -37,6 +37,9 @@ var (
 	failedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("160"))
 
+	skippedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214"))
+
 	parityMatchStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("40")).
 				Bold(true)
@@ -44,6 +47,10 @@ var (
 	parityDivergedStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("160")).
 				Bold(true)
+
+	parityNAStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true)
 
 	catStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("33")).
