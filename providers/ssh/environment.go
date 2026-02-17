@@ -136,6 +136,10 @@ func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Res
 
 // Start opens a NEW SSH session for the command.
 func (e *Environment) Start(ctx context.Context, cmd *invoke.Command) (invoke.Process, error) {
+	if err := cmd.Validate(); err != nil {
+		return nil, err
+	}
+
 	e.mu.Lock()
 
 	if e.closed {

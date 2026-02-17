@@ -57,6 +57,20 @@ func (c *Command) String() string {
 	return b.String()
 }
 
+// Validate checks that the command is well-formed.
+// Returns an error if the command is nil or has an empty binary.
+func (c *Command) Validate() error {
+	if c == nil {
+		return errors.New("command cannot be nil")
+	}
+
+	if strings.TrimSpace(c.Cmd) == "" {
+		return errors.New("command binary cannot be empty")
+	}
+
+	return nil
+}
+
 // ParseCommand parses a shell command string into a Command struct using shlex.
 // It handles quoted arguments correctly.
 func ParseCommand(cmdStr string) (*Command, error) {

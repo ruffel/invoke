@@ -148,7 +148,7 @@ func (p *Process) start(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if err := validateCommand(p.cmd); err != nil {
+	if err := p.cmd.Validate(); err != nil {
 		return err
 	}
 

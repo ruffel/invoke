@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
-	"strings"
 	"sync"
 
 	"github.com/ruffel/invoke"
@@ -39,7 +38,7 @@ func New(opts ...Option) (*Environment, error) {
 
 // Run executes a command synchronously on the local machine.
 func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Result, error) {
-	if err := validateCommand(cmd); err != nil {
+	if err := cmd.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -62,7 +61,7 @@ func (e *Environment) Run(ctx context.Context, cmd *invoke.Command) (*invoke.Res
 // Start begins command execution asynchronously.
 // Caller must close/wait on the returned Process.
 func (e *Environment) Start(ctx context.Context, cmd *invoke.Command) (invoke.Process, error) {
-	if err := validateCommand(cmd); err != nil {
+	if err := cmd.Validate(); err != nil {
 		return nil, err
 	}
 
@@ -139,16 +138,4 @@ func (e *Environment) isClosed() bool {
 	defer e.mu.RUnlock()
 
 	return e.closed
-}
-
-func validateCommand(cmd *invoke.Command) error {
-	if cmd == nil {
-		return errors.New("command cannot be nil")
-	}
-
-	if strings.TrimSpace(cmd.Cmd) == "" {
-		return errors.New("command binary cannot be empty")
-	}
-
-	return nil
 }
