@@ -199,6 +199,8 @@ func (e *Executor) Download(ctx context.Context, remotePath, localPath string, o
 // RunInteractiveTTY executes a command in interactive TTY mode.
 //
 // If Stdin/Stdout/Stderr are nil they default to os.Stdin/os.Stdout/os.Stderr.
+// This behavior is specific to RunInteractiveTTY and overrides the default
+// Command behavior, where nil streams typically default to empty/discard.
 // When reading from the current terminal, stdin is switched to raw mode for the
 // duration of the command and restored afterwards.
 func (e *Executor) RunInteractiveTTY(ctx context.Context, cmd *Command, opts ...ExecOption) (*Result, error) {
