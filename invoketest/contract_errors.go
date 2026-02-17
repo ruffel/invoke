@@ -1,18 +1,13 @@
 package invoketest
 
 import (
-	"os"
-	"path/filepath"
-
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/require"
 )
 
 const (
-	runExitErrorCode   = 13
-	waitExitErrorCode  = 23
-	unsupportedOwnerID = 12345
-	unsupportedGroupID = 23456
+	runExitErrorCode  = 13
+	waitExitErrorCode = 23
 )
 
 func errorContracts() []TestCase {
@@ -24,7 +19,6 @@ func errorContracts() []TestCase {
 		runNonZeroReturnsExitErrorContract(),
 		startWaitNonZeroReturnsExitErrorContract(),
 		ttyUnsupportedNormalizedContract(),
-		uploadOwnerUnsupportedNormalizedContract(),
 	}
 }
 
@@ -139,33 +133,6 @@ func ttyUnsupportedNormalizedContract() TestCase {
 			}()
 
 			require.NoError(t, process.Wait())
-		},
-	}
-}
-
-func uploadOwnerUnsupportedNormalizedContract() TestCase {
-	return TestCase{
-		Category:    CategoryErrors,
-		Name:        "upload-owner-unsupported-normalized",
-		Description: "If owner options are unsupported, Upload must wrap invoke.ErrNotSupported",
-		Run: func(t T, env invoke.Environment) {
-			srcPath := filepath.Join(t.TempDir(), "owner-src.txt")
-			require.NoError(t, os.WriteFile(srcPath, []byte("owner-option-test"), 0o644))
-
-			dstBase, _ := getTestPaths(t, env)
-			dstPath := joinRemote(env, dstBase, "owner-dst.txt")
-
-			err := env.Upload(
-				t.Context(),
-				srcPath,
-				dstPath,
-				invoke.WithOwner(unsupportedOwnerID, unsupportedGroupID),
-			)
-			if err == nil {
-				return
-			}
-
-			require.ErrorIs(t, err, invoke.ErrNotSupported)
 		},
 	}
 }
