@@ -189,5 +189,59 @@ func fileContracts() []TestCase {
 				require.Equal(t, "sub file", strings.TrimSpace(string(res.Stdout)))
 			},
 		},
+		{
+			Category:    CategoryFilesystem,
+			Name:        "download-file-content",
+			Description: "Download copies file content from remote path to local path",
+			Run: func(t T, env invoke.Environment) {
+				content := "download contract content"
+
+				seedLocalPath := filepath.Join(t.TempDir(), "seed-source.txt")
+				require.NoError(t, os.WriteFile(seedLocalPath, []byte(content), 0o644))
+
+				remoteBase, _ := getTestPaths(t, env)
+				remoteSourcePath := joinRemote(env, remoteBase, "download-source.txt")
+				require.NoError(t, env.Upload(t.Context(), seedLocalPath, remoteSourcePath))
+
+				downloadedPath := filepath.Join(t.TempDir(), "downloaded.txt")
+				require.NoError(t, env.Download(t.Context(), remoteSourcePath, downloadedPath))
+
+				downloadedContent, err := os.ReadFile(downloadedPath)
+				require.NoError(t, err)
+				require.Equal(t, content, strings.TrimSpace(string(downloadedContent)))
+			},
+		},
+		{
+			Category:    CategoryFilesystem,
+			Name:        "download-creates-local-parents",
+			Description: "Download creates missing local destination parent directories",
+			Run: func(t T, env invoke.Environment) {
+				content := "download parent create content"
+
+				seedLocalPath := filepath.Join(t.TempDir(), "parent-seed-source.txt")
+				require.NoError(t, os.WriteFile(seedLocalPath, []byte(content), 0o644))
+
+				remoteBase, _ := getTestPaths(t, env)
+				remoteSourcePath := joinRemote(env, remoteBase, "download-parent-source.txt")
+				require.NoError(t, env.Upload(t.Context(), seedLocalPath, remoteSourcePath))
+
+				localBase := filepath.Join(t.TempDir(), "nested", "local", "download")
+				downloadedPath := filepath.Join(localBase, "file.txt")
+
+				_, err := os.Stat(localBase)
+				require.Error(t, err)
+				require.True(t, os.IsNotExist(err))
+
+				require.NoError(t, env.Download(t.Context(), remoteSourcePath, downloadedPath))
+
+				stat, err := os.Stat(localBase)
+				require.NoError(t, err)
+				require.True(t, stat.IsDir())
+
+				downloadedContent, err := os.ReadFile(downloadedPath)
+				require.NoError(t, err)
+				require.Equal(t, content, strings.TrimSpace(string(downloadedContent)))
+			},
+		},
 	}
 }
