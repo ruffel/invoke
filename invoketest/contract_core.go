@@ -1,7 +1,6 @@
 package invoketest
 
 import (
-	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -115,7 +114,7 @@ func coreContracts() []TestCase {
 				require.Error(t, err)
 
 				var exitErr *invoke.ExitError
-				require.True(t, errors.As(err, &exitErr))
+				require.ErrorAs(t, err, &exitErr)
 				assert.Equal(t, want, exitErr.ExitCode)
 
 				result := process.Result()
