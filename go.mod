@@ -8,6 +8,7 @@ require (
 	github.com/ruffel/invoke/providers/mock v0.0.0-00010101000000-000000000000
 	github.com/ruffel/invoke/providers/ssh v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/term v0.39.0
 )
 
 require (

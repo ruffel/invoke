@@ -1,10 +1,12 @@
 package invoke
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +135,58 @@ func TestExecutor_Start(t *testing.T) {
 
 	_, err := exec.Start(context.Background(), &Command{Cmd: "sleep"})
 	assert.NoError(t, err)
+}
+
+func TestExecutor_RunInteractiveTTY_Defaults(t *testing.T) {
+	t.Parallel()
+
+	mockEnv := new(MockEnv)
+	exec := NewExecutor(mockEnv)
+
+	cmd := &Command{Cmd: "sh", Args: []string{"-c", "echo ok"}}
+
+	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
+		return c.Cmd == "sh" && c.Tty && c.Stdin != nil && c.Stdout != nil && c.Stderr != nil
+	})).Return(&Result{ExitCode: 0}, nil)
+
+	_, err := exec.RunInteractiveTTY(context.Background(), cmd)
+	require.NoError(t, err)
+
+	assert.False(t, cmd.Tty)
+	assert.Nil(t, cmd.Stdin)
+	assert.Nil(t, cmd.Stdout)
+	assert.Nil(t, cmd.Stderr)
+
+	mockEnv.AssertExpectations(t)
+}
+
+func TestExecutor_RunInteractiveTTY_RespectsStreams(t *testing.T) {
+	t.Parallel()
+
+	mockEnv := new(MockEnv)
+	exec := NewExecutor(mockEnv)
+
+	stdin := strings.NewReader("exit\n")
+
+	var stdout bytes.Buffer
+
+	var stderr bytes.Buffer
+
+	cmd := &Command{
+		Cmd:    "sh",
+		Stdin:  stdin,
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+
+	mockEnv.On("Run", mock.Anything, mock.MatchedBy(func(c *Command) bool {
+		return c.Tty && c.Stdin == stdin && c.Stdout == &stdout && c.Stderr == &stderr
+	})).Return(&Result{ExitCode: 0}, nil)
+
+	_, err := exec.RunInteractiveTTY(context.Background(), cmd)
+	require.NoError(t, err)
+
+	mockEnv.AssertExpectations(t)
 }
 
 func TestExecutor_RunLineStream(t *testing.T) {

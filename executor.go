@@ -7,7 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // Executor handles command execution with retry logic, sudo support, and output buffering.
@@ -191,6 +194,51 @@ func (e *Executor) Upload(ctx context.Context, localPath, remotePath string, opt
 // It delegates directly to the underlying Environment.
 func (e *Executor) Download(ctx context.Context, remotePath, localPath string, opts ...FileOption) error {
 	return e.env.Download(ctx, remotePath, localPath, opts...)
+}
+
+// RunInteractiveTTY executes a command in interactive TTY mode.
+//
+// If Stdin/Stdout/Stderr are nil they default to os.Stdin/os.Stdout/os.Stderr.
+// This behavior is specific to RunInteractiveTTY and overrides the default
+// Command behavior, where nil streams typically default to empty/discard.
+// When reading from the current terminal, stdin is switched to raw mode for the
+// duration of the command and restored afterwards.
+func (e *Executor) RunInteractiveTTY(ctx context.Context, cmd *Command, opts ...ExecOption) (*Result, error) {
+	if cmd == nil {
+		return e.Run(ctx, nil, opts...)
+	}
+
+	cmdCopy := *cmd
+	cmdCopy.Tty = true
+
+	if cmdCopy.Stdin == nil {
+		cmdCopy.Stdin = os.Stdin
+	}
+
+	if cmdCopy.Stdout == nil {
+		cmdCopy.Stdout = os.Stdout
+	}
+
+	if cmdCopy.Stderr == nil {
+		cmdCopy.Stderr = os.Stderr
+	}
+
+	stdinFile, ok := cmdCopy.Stdin.(*os.File)
+	if ok && stdinFile == os.Stdin {
+		fd := int(os.Stdin.Fd())
+		if term.IsTerminal(fd) {
+			state, err := term.MakeRaw(fd)
+			if err != nil {
+				return nil, fmt.Errorf("failed to set terminal raw mode: %w", err)
+			}
+
+			defer func() {
+				_ = term.Restore(fd, state)
+			}()
+		}
+	}
+
+	return e.Run(ctx, &cmdCopy, opts...)
 }
 
 func (e *Executor) applySudo(cfg ExecConfig, cmd *Command) *Command {
