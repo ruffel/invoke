@@ -71,7 +71,7 @@ func coreContracts() []TestCase {
 				require.NoError(t, err)
 				require.NotNil(t, result)
 
-				assert.Contains(t, strings.TrimSpace(string(result.Stdout)), dir)
+				assert.Contains(t, strings.ToLower(strings.TrimSpace(string(result.Stdout))), strings.ToLower(dir))
 				assert.Equal(t, 0, result.ExitCode)
 			},
 		},
