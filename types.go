@@ -27,6 +27,20 @@ type Command struct {
 	Tty bool
 }
 
+// Validate checks that the command is well-formed.
+// Returns an error if the command is nil or has an empty binary.
+func (c *Command) Validate() error {
+	if c == nil {
+		return errors.New("command cannot be nil")
+	}
+
+	if strings.TrimSpace(c.Cmd) == "" {
+		return errors.New("command binary cannot be empty")
+	}
+
+	return nil
+}
+
 // NewCommand creates a new Command with the given binary and arguments.
 func NewCommand(binary string, args ...string) *Command {
 	return &Command{

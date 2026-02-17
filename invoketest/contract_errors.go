@@ -17,10 +17,62 @@ const (
 
 func errorContracts() []TestCase {
 	return []TestCase{
+		runNilCommandReturnsErrorContract(),
+		runEmptyCommandReturnsErrorContract(),
+		startNilCommandReturnsErrorContract(),
+		startEmptyCommandReturnsErrorContract(),
 		runNonZeroReturnsExitErrorContract(),
 		startWaitNonZeroReturnsExitErrorContract(),
 		ttyUnsupportedNormalizedContract(),
 		uploadOwnerUnsupportedNormalizedContract(),
+	}
+}
+
+func runNilCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-nil-command-returns-error",
+		Description: "Run with a nil command must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), nil)
+			require.Error(t, err)
+		},
+	}
+}
+
+func runEmptyCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "run-empty-command-returns-error",
+		Description: "Run with an empty command binary must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Run(t.Context(), &invoke.Command{})
+			require.Error(t, err)
+		},
+	}
+}
+
+func startNilCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "start-nil-command-returns-error",
+		Description: "Start with a nil command must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Start(t.Context(), nil)
+			require.Error(t, err)
+		},
+	}
+}
+
+func startEmptyCommandReturnsErrorContract() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "start-empty-command-returns-error",
+		Description: "Start with an empty command binary must return an error",
+		Run: func(t T, env invoke.Environment) {
+			_, err := env.Start(t.Context(), &invoke.Command{})
+			require.Error(t, err)
+		},
 	}
 }
 
