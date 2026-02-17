@@ -203,7 +203,7 @@ func (e *Executor) Download(ctx context.Context, remotePath, localPath string, o
 // duration of the command and restored afterwards.
 func (e *Executor) RunInteractiveTTY(ctx context.Context, cmd *Command, opts ...ExecOption) (*Result, error) {
 	if cmd == nil {
-		return nil, errors.New("command cannot be nil")
+		return e.Run(ctx, nil, opts...)
 	}
 
 	cmdCopy := *cmd
