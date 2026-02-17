@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+//nolint:funlen
 func coreContracts() []TestCase {
 	return []TestCase{
 		{
@@ -30,14 +31,16 @@ func coreContracts() []TestCase {
 			Category: CategoryCore,
 			Name:     "run-nonzero-exiterror",
 			Run: func(t T, env invoke.Environment) {
-				result, err := env.Run(t.Context(), env.TargetOS().ShellCommand(exitScript(7)))
+				want := 7
+
+				result, err := env.Run(t.Context(), env.TargetOS().ShellCommand(exitScript(want)))
 				require.Error(t, err)
 				require.NotNil(t, result)
 
 				var exitErr *invoke.ExitError
 				require.ErrorAs(t, err, &exitErr)
-				assert.NotEqual(t, 0, exitErr.ExitCode)
-				assert.NotEqual(t, 0, result.ExitCode)
+				assert.Equal(t, want, exitErr.ExitCode)
+				assert.Equal(t, want, result.ExitCode)
 			},
 		},
 		{
@@ -80,6 +83,7 @@ func coreContracts() []TestCase {
 				process, err := env.Start(t.Context(), env.TargetOS().ShellCommand("echo start-contract"))
 				require.NoError(t, err)
 				require.NotNil(t, process)
+
 				defer func() {
 					_ = process.Close()
 				}()
@@ -97,9 +101,12 @@ func coreContracts() []TestCase {
 			Category: CategoryCore,
 			Name:     "start-wait-nonzero-exiterror",
 			Run: func(t T, env invoke.Environment) {
-				process, err := env.Start(t.Context(), env.TargetOS().ShellCommand(exitScript(9)))
+				want := 9
+
+				process, err := env.Start(t.Context(), env.TargetOS().ShellCommand(exitScript(want)))
 				require.NoError(t, err)
 				require.NotNil(t, process)
+
 				defer func() {
 					_ = process.Close()
 				}()
@@ -109,11 +116,11 @@ func coreContracts() []TestCase {
 
 				var exitErr *invoke.ExitError
 				require.True(t, errors.As(err, &exitErr))
-				assert.NotEqual(t, 0, exitErr.ExitCode)
+				assert.Equal(t, want, exitErr.ExitCode)
 
 				result := process.Result()
 				require.NotNil(t, result)
-				assert.NotEqual(t, 0, result.ExitCode)
+				assert.Equal(t, want, result.ExitCode)
 				assert.GreaterOrEqual(t, result.Duration, time.Duration(0))
 			},
 		},
