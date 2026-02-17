@@ -8,6 +8,7 @@ require (
 	github.com/ruffel/invoke/providers/mock v0.0.0-00010101000000-000000000000
 	github.com/ruffel/invoke/providers/ssh v0.0.0-00010101000000-000000000000
 	github.com/stretchr/testify v1.11.1
+	golang.org/x/term v0.39.0
 )
 
 require (
@@ -21,7 +22,6 @@ require (
 	github.com/stretchr/objx v0.5.3 // indirect
 	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/sys v0.40.0 // indirect
-	golang.org/x/term v0.39.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
