@@ -221,57 +221,66 @@ type skipNow struct{}
 
 func runMatrix(ctx context.Context, envs map[string]invoke.Environment) map[string]map[string]testResult {
 	data := make(map[string]map[string]testResult)
+	contracts := invoketest.AllContracts()
 
 	for name, env := range envs {
-		for _, tc := range invoketest.AllContracts() {
-			func(tc invoketest.TestCase) {
-				t := &cliTester{
-					ctx:  ctx,
-					name: tc.ID(),
-				}
-				defer t.Cleanup()
-
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							if _, ok := r.(failNow); ok {
-								return
-							}
-
-							if _, ok := r.(skipNow); ok {
-								return
-							}
-
-							panic(r)
-						}
-					}()
-
-					if tc.Prereq != nil {
-						ok, reason := tc.Prereq(t, env)
-						if !ok {
-							t.Skipf("prereq unmet: %s", reason)
-						}
-					}
-
-					tc.Run(t, env)
-				}()
-
-				id := tc.ID()
-				if _, ok := data[id]; !ok {
-					data[id] = make(map[string]testResult)
-				}
-
-				data[id][name] = testResult{
-					passed:  !t.failed && !t.skipped,
-					skipped: t.skipped,
-					errMsg:  t.errMsg,
-					skipMsg: t.skipMsg,
-				}
-			}(tc)
+		for _, tc := range contracts {
+			data[tc.ID()] = executeContract(ctx, env, name, tc, data[tc.ID()])
 		}
 	}
 
 	return data
+}
+
+func executeContract(
+	ctx context.Context,
+	env invoke.Environment,
+	envName string,
+	tc invoketest.TestCase,
+	row map[string]testResult,
+) map[string]testResult {
+	if row == nil {
+		row = make(map[string]testResult)
+	}
+
+	t := &cliTester{
+		ctx:  ctx,
+		name: tc.ID(),
+	}
+	defer t.Cleanup()
+
+	runContractWithRecovery(t, tc, env)
+
+	row[envName] = testResult{
+		passed:  !t.failed && !t.skipped,
+		skipped: t.skipped,
+		errMsg:  t.errMsg,
+		skipMsg: t.skipMsg,
+	}
+
+	return row
+}
+
+func runContractWithRecovery(t *cliTester, tc invoketest.TestCase, env invoke.Environment) {
+	defer func() {
+		if r := recover(); r != nil {
+			switch r.(type) {
+			case failNow, skipNow:
+				return
+			default:
+				panic(r)
+			}
+		}
+	}()
+
+	if tc.Prereq != nil {
+		ok, reason := tc.Prereq(t, env)
+		if !ok {
+			t.Skipf("prereq unmet: %s", reason)
+		}
+	}
+
+	tc.Run(t, env)
 }
 
 func getSortedEnvNames(envs map[string]invoke.Environment) []string {
@@ -287,14 +296,9 @@ func getSortedEnvNames(envs map[string]invoke.Environment) []string {
 
 func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[string]testResult) {
 	names := getSortedEnvNames(envs)
-	nameWidth := 30
-	colWidth := 15
+	contracts := invoketest.AllContracts()
 
-	for _, n := range names {
-		if len(n)+2 > colWidth {
-			colWidth = len(n) + 2
-		}
-	}
+	nameWidth, colWidth := computeColumnWidths(contracts, names)
 
 	renderHeader(names, nameWidth, colWidth)
 
@@ -304,7 +308,7 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 		hasNA      bool
 	)
 
-	for _, tc := range invoketest.AllContracts() {
+	for _, tc := range contracts {
 		if tc.Category != currentCat {
 			currentCat = tc.Category
 			fmt.Printf("%s\n", catStyle.Render(strings.ToUpper(currentCat)))
@@ -312,6 +316,7 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 
 		row := matrix[tc.ID()]
 		issue, rowHasNA := renderRow(tc, names, row, nameWidth, colWidth)
+
 		if rowHasNA {
 			hasNA = true
 		}
@@ -321,19 +326,58 @@ func renderMatrix(envs map[string]invoke.Environment, matrix map[string]map[stri
 		}
 	}
 
-	if len(issues) > 0 {
+	switch {
+	case len(issues) > 0:
 		fmt.Println(errorStyle.Render("\n❌ Issue Details:"))
 
 		for _, issue := range issues {
 			fmt.Printf("  - %s\n", issue)
 		}
-	} else if hasNA {
+	case hasNA:
 		fmt.Println(infoStyle.Render("\n⚠️  No failures detected; some contracts are skipped (parity N/A)."))
-	} else {
+	default:
 		fmt.Println(checkStyle.Render("\n✅ All providers are in parity!"))
 	}
 
 	fmt.Println()
+}
+
+func computeColumnWidths(contracts []invoketest.TestCase, names []string) (int, int) {
+	const (
+		nameMinWidth = 30
+		nameMaxWidth = 48
+		colMinWidth  = 8
+	)
+
+	nameWidth := len("CONTRACT TEST")
+	for _, tc := range contracts {
+		if len(tc.Name) > nameWidth {
+			nameWidth = len(tc.Name)
+		}
+	}
+
+	if nameWidth < nameMinWidth {
+		nameWidth = nameMinWidth
+	}
+
+	if nameWidth > nameMaxWidth {
+		nameWidth = nameMaxWidth
+	}
+
+	colWidth := len("SKIPPED")
+
+	for _, n := range names {
+		upper := strings.ToUpper(n)
+		if len(upper) > colWidth {
+			colWidth = len(upper)
+		}
+	}
+
+	if colWidth < colMinWidth {
+		colWidth = colMinWidth
+	}
+
+	return nameWidth, colWidth
 }
 
 func renderHeader(names []string, nameWidth, colWidth int) {
@@ -355,7 +399,8 @@ func renderHeader(names []string, nameWidth, colWidth int) {
 func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult, nameWidth, colWidth int) (string, bool) {
 	var line strings.Builder
 
-	line.WriteString(rowStyle.Render(fmt.Sprintf("%-*s", nameWidth, tc.Name)))
+	displayName := fitColumn(tc.Name, nameWidth)
+	line.WriteString(rowStyle.Render(fmt.Sprintf("%-*s", nameWidth, displayName)))
 
 	anySkipped := false
 
@@ -393,4 +438,16 @@ func renderRow(tc invoketest.TestCase, names []string, row map[string]testResult
 	fmt.Println(line.String())
 
 	return issue, anySkipped
+}
+
+func fitColumn(value string, width int) string {
+	if len(value) <= width {
+		return value
+	}
+
+	if width <= 1 {
+		return value[:width]
+	}
+
+	return value[:width-1] + "…"
 }
