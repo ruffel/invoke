@@ -1,12 +1,99 @@
 package fileutil
 
 import (
+	"context"
+	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProgressReader_UpdatesCurrentAndCallsFn(t *testing.T) {
+	t.Parallel()
+
+	data := "hello world"
+	var calls []struct{ current, total int64 }
+
+	pr := &ProgressReader{
+		Reader: strings.NewReader(data),
+		Total:  int64(len(data)),
+		Fn: func(current, total int64) {
+			calls = append(calls, struct{ current, total int64 }{current, total})
+		},
+	}
+
+	buf, err := io.ReadAll(pr)
+	require.NoError(t, err)
+	assert.Equal(t, data, string(buf))
+	assert.Equal(t, int64(len(data)), pr.Current)
+	require.NotEmpty(t, calls)
+
+	last := calls[len(calls)-1]
+	assert.Equal(t, int64(len(data)), last.current)
+	assert.Equal(t, int64(len(data)), last.total)
+}
+
+func TestProgressReader_NilFnDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	pr := &ProgressReader{
+		Reader: strings.NewReader("data"),
+		Total:  4,
+		Fn:     nil,
+	}
+
+	buf, err := io.ReadAll(pr)
+	require.NoError(t, err)
+	assert.Equal(t, "data", string(buf))
+	assert.Equal(t, int64(4), pr.Current)
+}
+
+func TestProgressReader_PropagatesEOF(t *testing.T) {
+	t.Parallel()
+
+	pr := &ProgressReader{
+		Reader: strings.NewReader(""),
+		Total:  0,
+	}
+
+	buf := make([]byte, 10)
+	n, err := pr.Read(buf)
+	assert.Equal(t, 0, n)
+	assert.ErrorIs(t, err, io.EOF)
+}
+
+func TestContextReader_CancelledContextReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cr := &ContextReader{
+		Ctx:    ctx,
+		Reader: strings.NewReader("should not read"),
+	}
+
+	buf := make([]byte, 10)
+	n, err := cr.Read(buf)
+	assert.Equal(t, 0, n)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestContextReader_ActiveContextDelegates(t *testing.T) {
+	t.Parallel()
+
+	cr := &ContextReader{
+		Ctx:    context.Background(),
+		Reader: strings.NewReader("hello"),
+	}
+
+	buf, err := io.ReadAll(cr)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(buf))
+}
 
 func TestCheckPathTraversal(t *testing.T) {
 	t.Parallel()
