@@ -269,7 +269,7 @@ func fileContracts() []TestCase {
 				// Verify: content must exactly match the small file, no stale trailing bytes.
 				downloaded, err := os.ReadFile(localPath)
 				require.NoError(t, err)
-				require.Equal(t, smallContent, strings.TrimSpace(string(downloaded)))
+				require.Equal(t, []byte(smallContent), downloaded)
 			},
 		},
 	}

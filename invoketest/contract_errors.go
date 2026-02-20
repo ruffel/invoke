@@ -84,7 +84,7 @@ func runNonZeroReturnsExitErrorContract() TestCase {
 			var exitErr *invoke.ExitError
 			require.ErrorAs(t, err, &exitErr)
 			require.Equal(t, runExitErrorCode, exitErr.ExitCode)
-			require.NotNil(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
 		},
 	}
 }
@@ -109,7 +109,7 @@ func startWaitNonZeroReturnsExitErrorContract() TestCase {
 			var exitErr *invoke.ExitError
 			require.ErrorAs(t, err, &exitErr)
 			require.Equal(t, waitExitErrorCode, exitErr.ExitCode)
-			require.NotNil(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
 		},
 	}
 }

@@ -1,7 +1,6 @@
 package invoketest
 
 import (
-	"errors"
 	"path/filepath"
 
 	"github.com/ruffel/invoke"
@@ -28,7 +27,7 @@ func environmentContracts() []TestCase {
 
 				_, err := env.Run(t.Context(), env.TargetOS().ShellCommand("echo invoke-contract"))
 				require.Error(t, err)
-				require.True(t, errors.Is(err, invoke.ErrEnvironmentClosed), "expected ErrEnvironmentClosed, got: %v", err)
+				require.ErrorIs(t, err, invoke.ErrEnvironmentClosed)
 			},
 		},
 		{
@@ -40,7 +39,7 @@ func environmentContracts() []TestCase {
 
 				_, err := env.Start(t.Context(), env.TargetOS().ShellCommand("echo invoke-contract"))
 				require.Error(t, err)
-				require.True(t, errors.Is(err, invoke.ErrEnvironmentClosed), "expected ErrEnvironmentClosed, got: %v", err)
+				require.ErrorIs(t, err, invoke.ErrEnvironmentClosed)
 			},
 		},
 		{
@@ -52,7 +51,7 @@ func environmentContracts() []TestCase {
 
 				_, err := env.LookPath(t.Context(), "echo")
 				require.Error(t, err)
-				require.True(t, errors.Is(err, invoke.ErrEnvironmentClosed), "expected ErrEnvironmentClosed, got: %v", err)
+				require.ErrorIs(t, err, invoke.ErrEnvironmentClosed)
 			},
 		},
 		{
@@ -67,7 +66,7 @@ func environmentContracts() []TestCase {
 
 				err := env.Upload(t.Context(), src, joinRemote(env, remoteBase, "close-upload-dst.txt"))
 				require.Error(t, err)
-				require.True(t, errors.Is(err, invoke.ErrEnvironmentClosed), "expected ErrEnvironmentClosed, got: %v", err)
+				require.ErrorIs(t, err, invoke.ErrEnvironmentClosed)
 			},
 		},
 		{
@@ -82,7 +81,7 @@ func environmentContracts() []TestCase {
 
 				err := env.Download(t.Context(), joinRemote(env, remoteBase, "close-download-src.txt"), localPath)
 				require.Error(t, err)
-				require.True(t, errors.Is(err, invoke.ErrEnvironmentClosed), "expected ErrEnvironmentClosed, got: %v", err)
+				require.ErrorIs(t, err, invoke.ErrEnvironmentClosed)
 			},
 		},
 	}
