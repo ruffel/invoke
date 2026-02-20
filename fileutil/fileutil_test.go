@@ -15,6 +15,7 @@ func TestProgressReader_UpdatesCurrentAndCallsFn(t *testing.T) {
 	t.Parallel()
 
 	data := "hello world"
+
 	var calls []struct{ current, total int64 }
 
 	pr := &ProgressReader{
