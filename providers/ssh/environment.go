@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -145,7 +144,7 @@ func (e *Environment) Start(ctx context.Context, cmd *invoke.Command) (invoke.Pr
 	if e.closed {
 		e.mu.Unlock()
 
-		return nil, errors.New("ssh environment closed")
+		return nil, fmt.Errorf("cannot start command: %w", invoke.ErrEnvironmentClosed)
 	}
 
 	e.active++

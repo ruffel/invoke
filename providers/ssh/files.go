@@ -2,7 +2,6 @@ package ssh
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,7 +20,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 	if e.closed {
 		e.mu.Unlock()
 
-		return errors.New("environment closed")
+		return fmt.Errorf("cannot upload files: %w", invoke.ErrEnvironmentClosed)
 	}
 	// We assume client is active
 	client := e.client
@@ -163,7 +162,7 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 	if e.closed {
 		e.mu.Unlock()
 
-		return errors.New("environment closed")
+		return fmt.Errorf("cannot download files: %w", invoke.ErrEnvironmentClosed)
 	}
 
 	client := e.client
