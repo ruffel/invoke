@@ -11,6 +11,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/fileutil"
 )
 
 // Upload copies a local file/dir to the remote path using SFTP.
@@ -71,7 +72,7 @@ func (e *Environment) uploadDir(ctx context.Context, client *sftp.Client, localB
 		// Convert to forward slashes for remote linux paths (path.Join mostly matches but ensuring cleanliness)
 		remotePath = strings.ReplaceAll(remotePath, "\\", "/")
 
-		if err := checkRemotePathTraversal(remoteBase, remotePath); err != nil {
+		if err := fileutil.CheckRemotePathTraversal(remoteBase, remotePath); err != nil {
 			return err
 		}
 
@@ -141,7 +142,7 @@ func (e *Environment) uploadFile(ctx context.Context, client *sftp.Client, local
 
 	var reader io.Reader = src
 	if progress != nil {
-		reader = &progressReader{Reader: src, total: size, fn: progress}
+		reader = &fileutil.ProgressReader{Reader: src, Total: size, Fn: progress}
 	}
 
 	_, err = io.Copy(dst, reader)
@@ -214,7 +215,7 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 		relPath := strings.TrimPrefix(remotePath, cleanBase+"/")
 
 		localPath := filepath.Join(localBase, relPath)
-		if err := checkPathTraversal(localBase, localPath); err != nil {
+		if err := fileutil.CheckPathTraversal(localBase, localPath); err != nil {
 			return err
 		}
 
@@ -272,61 +273,10 @@ func (e *Environment) downloadFile(ctx context.Context, client *sftp.Client, rem
 
 	var reader io.Reader = src
 	if progress != nil {
-		reader = &progressReader{Reader: src, total: size, fn: progress}
+		reader = &fileutil.ProgressReader{Reader: src, Total: size, Fn: progress}
 	}
 
 	_, err = io.Copy(dst, reader)
 
 	return err
-}
-
-type progressReader struct {
-	io.Reader
-
-	total   int64
-	current int64
-	fn      invoke.ProgressFunc
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.Reader.Read(p)
-	if n > 0 {
-		pr.current += int64(n)
-		if pr.fn != nil {
-			pr.fn(pr.current, pr.total)
-		}
-	}
-
-	return n, err
-}
-
-func checkPathTraversal(root, target string) error {
-	cleanRoot := filepath.Clean(root)
-	cleanTarget := filepath.Clean(target)
-
-	if cleanRoot == cleanTarget {
-		return nil
-	}
-
-	if !strings.HasPrefix(cleanTarget, cleanRoot+string(os.PathSeparator)) {
-		return fmt.Errorf("illegal file path: %s is not within %s", target, root)
-	}
-
-	return nil
-}
-
-// checkRemotePathTraversal checks paths using forward slashes (assuming remote is Unix-like).
-func checkRemotePathTraversal(root, target string) error {
-	cleanRoot := pathpkg.Clean(root)
-	cleanTarget := pathpkg.Clean(target)
-
-	if cleanRoot == cleanTarget {
-		return nil
-	}
-
-	if !strings.HasPrefix(cleanTarget, cleanRoot+"/") {
-		return fmt.Errorf("illegal remote file path: %s is not within %s", target, root)
-	}
-
-	return nil
 }

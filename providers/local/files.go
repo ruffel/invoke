@@ -7,9 +7,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/fileutil"
 )
 
 // Upload copies a local file/dir to the destination path (also local).
@@ -73,7 +73,7 @@ func (e *Environment) copyDir(ctx context.Context, src, dst string, cfg invoke.F
 
 		targetPath := filepath.Join(dst, relPath)
 
-		if err := checkPathTraversal(dst, targetPath); err != nil {
+		if err := fileutil.CheckPathTraversal(dst, targetPath); err != nil {
 			return err
 		}
 
@@ -135,9 +135,9 @@ func (e *Environment) copyFile(ctx context.Context, src, dst string, mode os.Fil
 
 	defer func() { _ = destFile.Close() }()
 
-	var reader io.Reader = &contextReader{ctx: ctx, reader: sourceFile}
+	var reader io.Reader = &fileutil.ContextReader{Ctx: ctx, Reader: sourceFile}
 	if progress != nil {
-		reader = &progressReader{Reader: reader, total: size, fn: progress}
+		reader = &fileutil.ProgressReader{Reader: reader, Total: size, Fn: progress}
 	}
 
 	_, err = io.Copy(destFile, reader)
@@ -150,54 +150,4 @@ func (e *Environment) copyFile(ctx context.Context, src, dst string, mode os.Fil
 	}
 
 	return destFile.Close()
-}
-
-// progressReader wraps a Reader and reports copy progress.
-type progressReader struct {
-	io.Reader
-
-	total   int64
-	current int64
-	fn      invoke.ProgressFunc
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.Reader.Read(p)
-	if n > 0 {
-		pr.current += int64(n)
-		if pr.fn != nil {
-			pr.fn(pr.current, pr.total)
-		}
-	}
-
-	return n, err
-}
-
-// contextReader checks cancellation before each read operation.
-type contextReader struct {
-	ctx    context.Context //nolint:containedctx
-	reader io.Reader
-}
-
-func (cr *contextReader) Read(p []byte) (int, error) {
-	if cr.ctx.Err() != nil {
-		return 0, cr.ctx.Err()
-	}
-
-	return cr.reader.Read(p)
-}
-
-func checkPathTraversal(root, target string) error {
-	cleanRoot := filepath.Clean(root)
-	cleanTarget := filepath.Clean(target)
-
-	if cleanRoot == cleanTarget {
-		return nil
-	}
-
-	if !strings.HasPrefix(cleanTarget, cleanRoot+string(os.PathSeparator)) {
-		return fmt.Errorf("illegal file path: %s is not within %s", target, root)
-	}
-
-	return nil
 }

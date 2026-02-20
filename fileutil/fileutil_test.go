@@ -1,4 +1,4 @@
-package local
+package fileutil
 
 import (
 	"path/filepath"
@@ -75,13 +75,66 @@ func TestCheckPathTraversal(t *testing.T) {
 			root := filepath.FromSlash(tt.root)
 			target := filepath.FromSlash(tt.target)
 
-			// For specific tests that rely on absolute paths, we might need adjustments on Windows
-			// but FromSlash handles separators.
-
-			err := checkPathTraversal(root, target)
+			err := CheckPathTraversal(root, target)
 			if tt.expectErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "illegal file path")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestCheckRemotePathTraversal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		root      string
+		target    string
+		expectErr bool
+	}{
+		{
+			name:      "Safe child",
+			root:      "/home/user/data",
+			target:    "/home/user/data/file.txt",
+			expectErr: false,
+		},
+		{
+			name:      "Root itself",
+			root:      "/home/user/data",
+			target:    "/home/user/data",
+			expectErr: false,
+		},
+		{
+			name:      "Traversal attempt",
+			root:      "/home/user/data",
+			target:    "/home/user/data/../evil.txt",
+			expectErr: true,
+		},
+		{
+			name:      "Root prefix but not child",
+			root:      "/home/user/data",
+			target:    "/home/user/data_suffix",
+			expectErr: true,
+		},
+		{
+			name:      "Trailing slash root",
+			root:      "/home/user/data/",
+			target:    "/home/user/data/file.txt",
+			expectErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := CheckRemotePathTraversal(tt.root, tt.target)
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "illegal remote file path")
 			} else {
 				assert.NoError(t, err)
 			}
