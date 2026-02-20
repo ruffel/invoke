@@ -2,7 +2,6 @@ package local
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -70,7 +69,7 @@ func (e *Environment) Start(ctx context.Context, cmd *invoke.Command) (invoke.Pr
 	if e.closed {
 		e.mu.Unlock()
 
-		return nil, fmt.Errorf("cannot start command %q: environment is closed", cmd.String())
+		return nil, fmt.Errorf("cannot start command %q: %w", cmd.String(), invoke.ErrEnvironmentClosed)
 	}
 
 	e.active++
@@ -121,7 +120,7 @@ func (e *Environment) Close() error {
 // the PATH environment variable.
 func (e *Environment) LookPath(_ context.Context, file string) (string, error) {
 	if e.isClosed() {
-		return "", errors.New("cannot look up path: environment is closed")
+		return "", fmt.Errorf("cannot look up path: %w", invoke.ErrEnvironmentClosed)
 	}
 
 	return exec.LookPath(file)

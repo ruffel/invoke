@@ -101,6 +101,7 @@ func (p *Process) Wait() error {
 
 	if p.result.ExitCode != 0 {
 		return &invoke.ExitError{
+			Cause:    fmt.Errorf("exit code %d", p.result.ExitCode),
 			Command:  p.cmd,
 			ExitCode: p.result.ExitCode,
 		}

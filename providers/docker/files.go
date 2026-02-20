@@ -15,6 +15,14 @@ import (
 
 // Upload copies a local file/dir to the remote path using Container tools.
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.FileOption) error {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+
+		return fmt.Errorf("cannot upload files: %w", invoke.ErrEnvironmentClosed)
+	}
+	e.mu.Unlock()
+
 	cfg := invoke.DefaultFileConfig()
 	for _, o := range opts {
 		o(&cfg)
@@ -66,6 +74,14 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 
 // Download copies a remote file/dir to the local path.
 func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.FileOption) error {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+
+		return fmt.Errorf("cannot download files: %w", invoke.ErrEnvironmentClosed)
+	}
+	e.mu.Unlock()
+
 	cfg := invoke.DefaultFileConfig()
 	for _, o := range opts {
 		o(&cfg)
@@ -254,7 +270,7 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader) error {
 			return err
 		}
 
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_RDWR, os.FileMode(header.Mode))
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
 		if err != nil {
 			return err
 		}

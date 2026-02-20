@@ -9,6 +9,9 @@ import (
 // by the specific provider or OS.
 var ErrNotSupported = errors.New("operation not supported")
 
+// ErrEnvironmentClosed indicates that an operation was attempted on a closed environment.
+var ErrEnvironmentClosed = errors.New("environment is closed")
+
 // ExitError represents a successful execution that resulted in a non-zero exit code.
 type ExitError struct {
 	Command  *Command

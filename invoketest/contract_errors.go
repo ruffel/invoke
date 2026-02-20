@@ -1,6 +1,8 @@
 package invoketest
 
 import (
+	"errors"
+
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/require"
 )
@@ -82,6 +84,7 @@ func runNonZeroReturnsExitErrorContract() TestCase {
 			var exitErr *invoke.ExitError
 			require.ErrorAs(t, err, &exitErr)
 			require.Equal(t, runExitErrorCode, exitErr.ExitCode)
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
 		},
 	}
 }
@@ -106,6 +109,7 @@ func startWaitNonZeroReturnsExitErrorContract() TestCase {
 			var exitErr *invoke.ExitError
 			require.ErrorAs(t, err, &exitErr)
 			require.Equal(t, waitExitErrorCode, exitErr.ExitCode)
+			require.Error(t, errors.Unwrap(exitErr), "ExitError.Cause must be populated")
 		},
 	}
 }

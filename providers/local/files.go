@@ -15,7 +15,7 @@ import (
 // Upload copies a local file/dir to the destination path (also local).
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.FileOption) error {
 	if e.isClosed() {
-		return errors.New("cannot upload files: environment is closed")
+		return fmt.Errorf("cannot upload files: %w", invoke.ErrEnvironmentClosed)
 	}
 
 	// For local provider, "remote" is just another local path.
@@ -49,7 +49,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 // Download copies a remote file/dir to the destination path (also local).
 func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.FileOption) error {
 	if e.isClosed() {
-		return errors.New("cannot download files: environment is closed")
+		return fmt.Errorf("cannot download files: %w", invoke.ErrEnvironmentClosed)
 	}
 
 	// For local provider, this is symmetric to Upload.

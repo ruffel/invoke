@@ -243,5 +243,34 @@ func fileContracts() []TestCase {
 				require.Equal(t, content, strings.TrimSpace(string(downloadedContent)))
 			},
 		},
+		{
+			Category:    CategoryFilesystem,
+			Name:        "download-overwrites-larger-file",
+			Description: "Downloading a smaller file over a larger existing local file must truncate, not leave stale data",
+			Run: func(t T, env invoke.Environment) {
+				smallContent := "small"
+				largeContent := "this is a much larger existing local file that should be fully replaced"
+
+				// Seed a small file on remote.
+				seedPath := filepath.Join(t.TempDir(), "small-seed.txt")
+				require.NoError(t, os.WriteFile(seedPath, []byte(smallContent), 0o644))
+
+				remoteBase, _ := getTestPaths(t, env)
+				remotePath := joinRemote(env, remoteBase, "overwrite-src.txt")
+				require.NoError(t, env.Upload(t.Context(), seedPath, remotePath))
+
+				// Pre-create a larger local destination.
+				localPath := filepath.Join(t.TempDir(), "overwrite-dst.txt")
+				require.NoError(t, os.WriteFile(localPath, []byte(largeContent), 0o644))
+
+				// Download smaller remote file over larger local file.
+				require.NoError(t, env.Download(t.Context(), remotePath, localPath))
+
+				// Verify: content must exactly match the small file, no stale trailing bytes.
+				downloaded, err := os.ReadFile(localPath)
+				require.NoError(t, err)
+				require.Equal(t, []byte(smallContent), downloaded)
+			},
+		},
 	}
 }
