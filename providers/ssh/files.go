@@ -59,6 +59,10 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 
 func (e *Environment) uploadDir(ctx context.Context, client *sftp.Client, localBase, remoteBase string, cfg invoke.FileConfig) error {
 	return filepath.Walk(localBase, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
 		if err != nil {
 			return err
 		}
@@ -140,9 +144,9 @@ func (e *Environment) uploadFile(ctx context.Context, client *sftp.Client, local
 		return fmt.Errorf("failed to chmod remote file: %w", err)
 	}
 
-	var reader io.Reader = src
+	var reader io.Reader = &fileutil.ContextReader{Ctx: ctx, Reader: src}
 	if progress != nil {
-		reader = &fileutil.ProgressReader{Reader: src, Total: size, Fn: progress}
+		reader = &fileutil.ProgressReader{Reader: reader, Total: size, Fn: progress}
 	}
 
 	_, err = io.Copy(dst, reader)
@@ -271,9 +275,9 @@ func (e *Environment) downloadFile(ctx context.Context, client *sftp.Client, rem
 		return fmt.Errorf("failed to chmod local file: %w", err)
 	}
 
-	var reader io.Reader = src
+	var reader io.Reader = &fileutil.ContextReader{Ctx: ctx, Reader: src}
 	if progress != nil {
-		reader = &fileutil.ProgressReader{Reader: src, Total: size, Fn: progress}
+		reader = &fileutil.ProgressReader{Reader: reader, Total: size, Fn: progress}
 	}
 
 	_, err = io.Copy(dst, reader)
