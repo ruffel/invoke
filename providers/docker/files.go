@@ -11,16 +11,19 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/fileutil"
 )
 
 // Upload copies a local file/dir to the remote path using Container tools.
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.FileOption) error {
 	e.mu.Lock()
+
 	if e.closed {
 		e.mu.Unlock()
 
 		return fmt.Errorf("cannot upload files: %w", invoke.ErrEnvironmentClosed)
 	}
+
 	e.mu.Unlock()
 
 	cfg := invoke.DefaultFileConfig()
@@ -57,7 +60,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 
 	var reader io.Reader = tarStream
 	if cfg.Progress != nil {
-		reader = &progressReader{Reader: tarStream, total: 0, fn: cfg.Progress}
+		reader = &fileutil.ProgressReader{Reader: tarStream, Total: 0, Fn: cfg.Progress}
 	}
 
 	options := container.CopyToContainerOptions{
@@ -75,11 +78,13 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 // Download copies a remote file/dir to the local path.
 func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.FileOption) error {
 	e.mu.Lock()
+
 	if e.closed {
 		e.mu.Unlock()
 
 		return fmt.Errorf("cannot download files: %w", invoke.ErrEnvironmentClosed)
 	}
+
 	e.mu.Unlock()
 
 	cfg := invoke.DefaultFileConfig()
@@ -96,7 +101,7 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 
 	var r io.Reader = reader
 	if cfg.Progress != nil {
-		r = &progressReader{Reader: reader, total: 0, fn: cfg.Progress}
+		r = &fileutil.ProgressReader{Reader: reader, Total: 0, Fn: cfg.Progress}
 	}
 
 	return untar(r, localPath)
@@ -253,8 +258,7 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader) error {
 	// Security: prevent ZipSlip
 	target := filepath.Join(dstRoot, header.Name)
 
-	cleanDst := filepath.Clean(dstRoot) + string(os.PathSeparator)
-	if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), cleanDst) {
+	if err := fileutil.CheckPathTraversal(dstRoot, target); err != nil {
 		return fmt.Errorf("illegal file path in tar: %s", header.Name)
 	}
 
@@ -285,24 +289,4 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader) error {
 	}
 
 	return nil
-}
-
-type progressReader struct {
-	io.Reader
-
-	total   int64
-	current int64
-	fn      invoke.ProgressFunc
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.Reader.Read(p)
-	if n > 0 {
-		pr.current += int64(n)
-		if pr.fn != nil {
-			pr.fn(pr.current, pr.total)
-		}
-	}
-
-	return n, err
 }
