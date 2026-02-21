@@ -212,9 +212,12 @@ func untar(r io.Reader, dst string, perms os.FileMode) error {
 	if err != nil {
 		return err
 	}
-
 	// Optimization: If root is a file, extract directly
 	if firstHeader.Typeflag == tar.TypeReg {
+		if strings.Contains(firstHeader.Name, "..") {
+			return fmt.Errorf("illegal file path in tar: %s", firstHeader.Name)
+		}
+
 		dir := filepath.Dir(dst)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -244,6 +247,10 @@ func untar(r io.Reader, dst string, perms os.FileMode) error {
 	}
 
 	// Process first header
+	if strings.Contains(firstHeader.Name, "..") {
+		return fmt.Errorf("illegal file path in tar: %s", firstHeader.Name)
+	}
+
 	if err := extractEntry(dst, firstHeader, tr, perms); err != nil {
 		return err
 	}
@@ -257,6 +264,10 @@ func untar(r io.Reader, dst string, perms os.FileMode) error {
 
 		if err != nil {
 			return err
+		}
+
+		if strings.Contains(header.Name, "..") {
+			return fmt.Errorf("illegal file path in tar: %s", header.Name)
 		}
 
 		if err := extractEntry(dst, header, tr, perms); err != nil {
