@@ -186,13 +186,18 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 	}
 
 	if info.IsDir() {
-		return e.downloadDir(ctx, sftpClient, remotePath, localPath, cfg.Progress)
+		return e.downloadDir(ctx, sftpClient, remotePath, localPath, cfg)
 	}
 
-	return e.downloadFile(ctx, sftpClient, remotePath, localPath, info.Mode(), cfg.Progress)
+	mode := info.Mode()
+	if cfg.Permissions != 0 {
+		mode = cfg.Permissions
+	}
+
+	return e.downloadFile(ctx, sftpClient, remotePath, localPath, mode, cfg.Progress)
 }
 
-func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remoteBase, localBase string, progress invoke.ProgressFunc) error {
+func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remoteBase, localBase string, cfg invoke.FileConfig) error {
 	cleanBase := pathpkg.Clean(remoteBase)
 	if cleanBase == "/" {
 		cleanBase = ""
@@ -234,7 +239,12 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 			continue
 		}
 
-		if err := e.downloadFile(ctx, client, remotePath, localPath, info.Mode(), progress); err != nil {
+		mode := info.Mode()
+		if cfg.Permissions != 0 {
+			mode = cfg.Permissions
+		}
+
+		if err := e.downloadFile(ctx, client, remotePath, localPath, mode, cfg.Progress); err != nil {
 			return err
 		}
 	}

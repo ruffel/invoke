@@ -54,7 +54,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		remotePath = strings.TrimPrefix(remotePath, "/")
 	}
 
-	tarStream := tarArchive(localPath, remotePath)
+	tarStream := tarArchive(localPath, remotePath, cfg.Permissions)
 
 	defer func() { _ = tarStream.Close() }()
 
@@ -104,10 +104,10 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 		r = &fileutil.ProgressReader{Reader: r, Total: 0, Fn: cfg.Progress}
 	}
 
-	return untar(r, localPath)
+	return untar(r, localPath, cfg.Permissions)
 }
 
-func tarArchive(src, destName string) io.ReadCloser {
+func tarArchive(src, destName string, perms os.FileMode) io.ReadCloser {
 	r, w := io.Pipe()
 
 	go func() {
@@ -127,7 +127,7 @@ func tarArchive(src, destName string) io.ReadCloser {
 		baseDir := filepath.Dir(src)
 
 		err = filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-			return writeTarEntry(tw, path, info, err, src, destName, baseDir)
+			return writeTarEntry(tw, path, info, err, src, destName, baseDir, perms)
 		})
 		if err != nil {
 			_ = w.CloseWithError(err)
@@ -137,7 +137,7 @@ func tarArchive(src, destName string) io.ReadCloser {
 	return r
 }
 
-func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src, destName, baseDir string) error {
+func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src, destName, baseDir string, perms os.FileMode) error {
 	if err != nil {
 		return err
 	}
@@ -176,6 +176,10 @@ func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src
 
 	header.Name = headerName
 
+	if perms != 0 && !info.IsDir() {
+		header.Mode = int64(perms)
+	}
+
 	if err := tw.WriteHeader(header); err != nil {
 		return err
 	}
@@ -196,7 +200,7 @@ func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src
 	return nil
 }
 
-func untar(r io.Reader, dst string) error {
+func untar(r io.Reader, dst string, perms os.FileMode) error {
 	tr := tar.NewReader(r)
 
 	// Check first entry to determine mode
@@ -216,7 +220,12 @@ func untar(r io.Reader, dst string) error {
 			return err
 		}
 
-		f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(firstHeader.Mode))
+		mode := os.FileMode(firstHeader.Mode)
+		if perms != 0 {
+			mode = perms
+		}
+
+		f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, mode)
 		if err != nil {
 			return err
 		}
@@ -231,7 +240,7 @@ func untar(r io.Reader, dst string) error {
 	}
 
 	// Process first header
-	if err := extractEntry(dst, firstHeader, tr); err != nil {
+	if err := extractEntry(dst, firstHeader, tr, perms); err != nil {
 		return err
 	}
 
@@ -246,7 +255,7 @@ func untar(r io.Reader, dst string) error {
 			return err
 		}
 
-		if err := extractEntry(dst, header, tr); err != nil {
+		if err := extractEntry(dst, header, tr, perms); err != nil {
 			return err
 		}
 	}
@@ -254,7 +263,7 @@ func untar(r io.Reader, dst string) error {
 	return nil
 }
 
-func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader) error {
+func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader, perms os.FileMode) error {
 	// Security: prevent ZipSlip
 	target := filepath.Join(dstRoot, header.Name)
 
@@ -274,7 +283,12 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader) error {
 			return err
 		}
 
-		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+		mode := os.FileMode(header.Mode)
+		if perms != 0 {
+			mode = perms
+		}
+
+		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 		if err != nil {
 			return err
 		}

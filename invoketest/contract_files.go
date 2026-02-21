@@ -38,7 +38,9 @@ func joinRemote(env invoke.Environment, base string, parts ...string) string {
 	return path.Join(append([]string{base}, parts...)...)
 }
 
-//nolint:funlen // Test functions are often longer due to setup/assertions.
+const testPermissions = 0o600
+
+//nolint:funlen,maintidx // Contract registration function; complexity comes from many test cases.
 func fileContracts() []TestCase {
 	return []TestCase{
 		{
@@ -270,6 +272,57 @@ func fileContracts() []TestCase {
 				downloaded, err := os.ReadFile(localPath)
 				require.NoError(t, err)
 				require.Equal(t, []byte(smallContent), downloaded)
+			},
+		},
+		{
+			Category:    CategoryFilesystem,
+			Name:        "upload-respects-permissions",
+			Description: "Uploaded file has the mode set by WithPermissions",
+			Prereq: func(_ T, env invoke.Environment) (bool, string) {
+				return env.TargetOS() != invoke.OSWindows, "permissions not applicable on Windows"
+			},
+			Run: func(t T, env invoke.Environment) {
+				content := "permissions test"
+				dstBase, _ := getTestPaths(t, env)
+
+				srcPath := filepath.Join(t.TempDir(), "perms-upload.txt")
+				require.NoError(t, os.WriteFile(srcPath, []byte(content), 0o644))
+
+				dstPath := joinRemote(env, dstBase, "perms-upload.txt")
+				require.NoError(t, env.Upload(t.Context(), srcPath, dstPath, invoke.WithPermissions(testPermissions)))
+
+				// Download the file back and verify the mode was preserved.
+				verifyPath := filepath.Join(t.TempDir(), "perms-verify.txt")
+				require.NoError(t, env.Download(t.Context(), dstPath, verifyPath))
+
+				info, err := os.Stat(verifyPath)
+				require.NoError(t, err)
+				require.Equal(t, os.FileMode(testPermissions), info.Mode().Perm())
+			},
+		},
+		{
+			Category:    CategoryFilesystem,
+			Name:        "download-respects-permissions",
+			Description: "Downloaded file has the mode set by WithPermissions",
+			Prereq: func(_ T, env invoke.Environment) (bool, string) {
+				return env.TargetOS() != invoke.OSWindows, "permissions not applicable on Windows"
+			},
+			Run: func(t T, env invoke.Environment) {
+				content := "permissions download test"
+
+				seedPath := filepath.Join(t.TempDir(), "perms-seed.txt")
+				require.NoError(t, os.WriteFile(seedPath, []byte(content), 0o644))
+
+				remoteBase, _ := getTestPaths(t, env)
+				remotePath := joinRemote(env, remoteBase, "perms-download-src.txt")
+				require.NoError(t, env.Upload(t.Context(), seedPath, remotePath))
+
+				localPath := filepath.Join(t.TempDir(), "perms-downloaded.txt")
+				require.NoError(t, env.Download(t.Context(), remotePath, localPath, invoke.WithPermissions(testPermissions)))
+
+				info, err := os.Stat(localPath)
+				require.NoError(t, err)
+				require.Equal(t, os.FileMode(testPermissions), info.Mode().Perm())
 			},
 		},
 	}
