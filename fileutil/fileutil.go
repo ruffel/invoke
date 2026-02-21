@@ -59,17 +59,24 @@ func (cr *ContextReader) Read(p []byte) (int, error) {
 }
 
 // CheckPathTraversal validates that target is a child of root using local filesystem
-// path conventions (filepath.Clean, os.PathSeparator). Returns an error if target
+// path conventions (filepath.Abs, os.PathSeparator). Returns an error if target
 // escapes the root directory (ZipSlip protection).
 func CheckPathTraversal(root, target string) error {
-	cleanRoot := filepath.Clean(root)
-	cleanTarget := filepath.Clean(target)
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return fmt.Errorf("illegal file path: cannot resolve root %s: %w", root, err)
+	}
 
-	if cleanRoot == cleanTarget {
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return fmt.Errorf("illegal file path: cannot resolve target %s: %w", target, err)
+	}
+
+	if absRoot == absTarget {
 		return nil
 	}
 
-	if !strings.HasPrefix(cleanTarget, cleanRoot+string(os.PathSeparator)) {
+	if !strings.HasPrefix(absTarget, absRoot+string(os.PathSeparator)) {
 		return fmt.Errorf("illegal file path: %s is not within %s", target, root)
 	}
 
