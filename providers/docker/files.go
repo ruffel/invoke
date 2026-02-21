@@ -177,7 +177,7 @@ func writeTarEntry(tw *tar.Writer, path string, info os.FileInfo, err error, src
 	header.Name = headerName
 
 	if perms != 0 && !info.IsDir() {
-		header.Mode = int64(perms)
+		header.Mode = int64(perms.Perm())
 	}
 
 	if err := tw.WriteHeader(header); err != nil {
@@ -222,7 +222,7 @@ func untar(r io.Reader, dst string, perms os.FileMode) error {
 
 		mode := os.FileMode(firstHeader.Mode)
 		if perms != 0 {
-			mode = perms
+			mode = perms.Perm()
 		}
 
 		f, err := os.OpenFile(dst, os.O_CREATE|os.O_RDWR|os.O_TRUNC, mode)
@@ -236,7 +236,11 @@ func untar(r io.Reader, dst string, perms os.FileMode) error {
 			return err
 		}
 
-		return f.Close()
+		if err := f.Close(); err != nil {
+			return err
+		}
+
+		return os.Chmod(dst, mode)
 	}
 
 	// Process first header
@@ -285,7 +289,7 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader, perms os.F
 
 		mode := os.FileMode(header.Mode)
 		if perms != 0 {
-			mode = perms
+			mode = perms.Perm()
 		}
 
 		f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
@@ -299,7 +303,11 @@ func extractEntry(dstRoot string, header *tar.Header, tr *tar.Reader, perms os.F
 			return err
 		}
 
-		return f.Close()
+		if err := f.Close(); err != nil {
+			return err
+		}
+
+		return os.Chmod(target, mode)
 	}
 
 	return nil

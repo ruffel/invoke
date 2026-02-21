@@ -191,7 +191,7 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 
 	mode := info.Mode()
 	if cfg.Permissions != 0 {
-		mode = cfg.Permissions
+		mode = cfg.Permissions.Perm()
 	}
 
 	return e.downloadFile(ctx, sftpClient, remotePath, localPath, mode, cfg.Progress)
@@ -241,7 +241,7 @@ func (e *Environment) downloadDir(ctx context.Context, client *sftp.Client, remo
 
 		mode := info.Mode()
 		if cfg.Permissions != 0 {
-			mode = cfg.Permissions
+			mode = cfg.Permissions.Perm()
 		}
 
 		if err := e.downloadFile(ctx, client, remotePath, localPath, mode, cfg.Progress); err != nil {
