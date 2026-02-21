@@ -58,9 +58,9 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 
 	defer func() { _ = tarStream.Close() }()
 
-	var reader io.Reader = tarStream
+	var reader io.Reader = &fileutil.ContextReader{Ctx: ctx, Reader: tarStream}
 	if cfg.Progress != nil {
-		reader = &fileutil.ProgressReader{Reader: tarStream, Total: 0, Fn: cfg.Progress}
+		reader = &fileutil.ProgressReader{Reader: reader, Total: 0, Fn: cfg.Progress}
 	}
 
 	options := container.CopyToContainerOptions{
@@ -99,9 +99,9 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 
 	defer func() { _ = reader.Close() }()
 
-	var r io.Reader = reader
+	var r io.Reader = &fileutil.ContextReader{Ctx: ctx, Reader: reader}
 	if cfg.Progress != nil {
-		r = &fileutil.ProgressReader{Reader: reader, Total: 0, Fn: cfg.Progress}
+		r = &fileutil.ProgressReader{Reader: r, Total: 0, Fn: cfg.Progress}
 	}
 
 	return untar(r, localPath)
