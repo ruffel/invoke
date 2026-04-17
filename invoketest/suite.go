@@ -11,6 +11,7 @@ import (
 // Standard categories for grouping tests.
 const (
 	CategoryCore        = "core"
+	CategoryLifecycle   = "lifecycle"
 	CategoryEnvironment = "environment"
 	CategoryFilesystem  = "filesystem"
 	CategorySystem      = "system"

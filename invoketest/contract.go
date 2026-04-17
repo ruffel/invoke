@@ -13,6 +13,7 @@ func AllContracts() []TestCase {
 	contracts := make([]TestCase, 0, initialCapacity)
 
 	contracts = append(contracts, coreContracts()...)
+	contracts = append(contracts, lifecycleContracts()...)
 	contracts = append(contracts, systemContracts()...)
 	contracts = append(contracts, fileContracts()...)
 	contracts = append(contracts, errorContracts()...)
