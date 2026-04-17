@@ -216,6 +216,9 @@ func setupSSHEnvironment(t *testing.T) (Config, func()) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("SSH_TEST_HOST not set and docker not found in PATH")
 	}
+	if out, err := exec.Command("docker", "info", "--format", "{{.ServerVersion}}").CombinedOutput(); err != nil {
+		t.Skipf("SSH_TEST_HOST not set and docker daemon unavailable: %v: %s", err, out)
+	}
 
 	privKey, pubKey, err := generateSSHKey()
 	require.NoError(t, err)
