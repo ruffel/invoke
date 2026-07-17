@@ -171,33 +171,61 @@ func runPrintf(s *session, args []string) (int, bool) {
 }
 
 // applyPrintfFormat writes one pass of format, consuming %s conversions
-// from values starting at next, and returns the new value index.
+// from values starting at next, and returns the new value index. It
+// interprets the common backslash escapes in the format string, as POSIX
+// printf does.
 func applyPrintfFormat(out *strings.Builder, format string, values []string, next int) int {
 	for i := 0; i < len(format); i++ {
-		if format[i] == '%' && i+1 < len(format) {
-			switch format[i+1] {
-			case 's':
-				if next < len(values) {
-					out.WriteString(values[next])
-					next++
-				}
-
-				i++
-
-				continue
-			case '%':
-				out.WriteByte('%')
-
-				i++
-
-				continue
-			}
+		switch {
+		case format[i] == '%' && i+1 < len(format):
+			consumed, adv := printfConversion(out, format[i+1], values, next)
+			next = consumed
+			i += adv
+		case format[i] == '\\' && i+1 < len(format):
+			out.WriteByte(printfEscape(format[i+1]))
+			i++
+		default:
+			out.WriteByte(format[i])
 		}
-
-		out.WriteByte(format[i])
 	}
 
 	return next
+}
+
+// printfConversion handles a %-conversion, returning the updated value
+// index and how many extra bytes of format were consumed.
+func printfConversion(out *strings.Builder, verb byte, values []string, next int) (int, int) {
+	switch verb {
+	case 's':
+		if next < len(values) {
+			out.WriteString(values[next])
+			next++
+		}
+
+		return next, 1
+	case '%':
+		out.WriteByte('%')
+
+		return next, 1
+	default:
+		out.WriteByte('%')
+
+		return next, 0
+	}
+}
+
+// printfEscape maps a backslash escape character to its byte.
+func printfEscape(c byte) byte {
+	switch c {
+	case 'n':
+		return '\n'
+	case 't':
+		return '\t'
+	case 'r':
+		return '\r'
+	default:
+		return c
+	}
 }
 
 func runTest(s *session, args []string) int {

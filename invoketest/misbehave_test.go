@@ -389,25 +389,34 @@ func (m *misbehaveEnv) mutateStdio(stdio invoke.IO) invoke.IO {
 	return stdio
 }
 
-// misbehaveProcess applies process-level defects.
+// misbehaveProcess applies process-level defects. It guards its own
+// bookkeeping so it is as concurrency-safe as the provider it wraps, which
+// the concurrent-wait contract requires.
 type misbehaveProcess struct {
-	base       invoke.Process
-	d          defects
-	env        *misbehaveEnv
-	startCtx   context.Context //nolint:containedctx // Mirrors the real providers, which store the start context.
+	base     invoke.Process
+	d        defects
+	env      *misbehaveEnv
+	startCtx context.Context //nolint:containedctx // Mirrors the real providers, which store the start context.
+	released sync.Once
+
+	mu         sync.Mutex
 	waitCalls  int
 	closeCalls int
 	closed     bool
-	released   sync.Once
 }
 
 func (p *misbehaveProcess) Wait() (invoke.Result, error) {
+	// base.Wait is idempotent and concurrency-safe; call it without the
+	// lock so concurrent callers do not serialize on a blocking wait.
 	res, err := p.base.Wait()
 	p.released.Do(p.env.release)
 
+	p.mu.Lock()
 	p.waitCalls++
+	waitCall, closed := p.waitCalls, p.closed
+	p.mu.Unlock()
 
-	if got, done := p.corruptWait(res, err); done {
+	if got, done := p.corruptWait(res, err, waitCall, closed); done {
 		return got.result, got.err
 	}
 
@@ -439,15 +448,19 @@ func (p *misbehaveProcess) Signal(sig invoke.Signal) error {
 }
 
 func (p *misbehaveProcess) Close() error {
+	p.mu.Lock()
 	p.closeCalls++
 	p.closed = true
+	closeCall := p.closeCalls
+	p.mu.Unlock()
+
 	p.released.Do(p.env.release)
 
 	if p.d.closeNoOp {
 		return nil
 	}
 
-	if p.d.secondCloseErrors && p.closeCalls > 1 {
+	if p.d.secondCloseErrors && closeCall > 1 {
 		return errors.New("misbehave: already closed")
 	}
 
@@ -455,12 +468,12 @@ func (p *misbehaveProcess) Close() error {
 }
 
 // corruptWait applies defects that depend on Wait's call sequence or the
-// process's own lifecycle bookkeeping.
-func (p *misbehaveProcess) corruptWait(res invoke.Result, err error) (waitOutcome, bool) {
+// process's own lifecycle bookkeeping, using a snapshot of that state.
+func (p *misbehaveProcess) corruptWait(res invoke.Result, err error, waitCall int, closed bool) (waitOutcome, bool) {
 	switch {
-	case p.d.waitFlipFlops && p.waitCalls > 1:
+	case p.d.waitFlipFlops && waitCall > 1:
 		return waitOutcome{result: invoke.Result{ExitCode: res.ExitCode + 1, Duration: res.Duration}}, true
-	case p.d.closeForgets && p.closed:
+	case p.d.closeForgets && closed:
 		return waitOutcome{err: errors.New("misbehave: outcome discarded by close")}, true
 	case p.d.cancelOverwritesExit && err == nil && p.startCtx.Err() != nil:
 		return waitOutcome{
