@@ -102,26 +102,6 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 	return path, nil
 }
 
-// Upload copies a local path to another local path. File transfer lands as
-// its own change; until then the method reports that plainly.
-func (e *Environment) Upload(_ context.Context, _, _ string, _ ...invoke.TransferOption) error {
-	if err := e.checkOpen("upload"); err != nil {
-		return err
-	}
-
-	return errors.New("local: upload: not implemented yet")
-}
-
-// Download copies a local path to another local path. File transfer lands
-// as its own change; until then the method reports that plainly.
-func (e *Environment) Download(_ context.Context, _, _ string, _ ...invoke.TransferOption) error {
-	if err := e.checkOpen("download"); err != nil {
-		return err
-	}
-
-	return errors.New("local: download: not implemented yet")
-}
-
 func (e *Environment) checkOpen(op string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
