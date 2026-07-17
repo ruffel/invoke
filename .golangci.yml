@@ -155,6 +155,12 @@ linters:
       text: "G301|G304"
       linters:
         - gosec
+    # The fake's transfer layer moves caller-specified paths between the
+    # host and the virtual filesystem — same rationale as local/files.go.
+    - path: 'fake/transfer\.go'
+      text: "G301|G304"
+      linters:
+        - gosec
     # NOTE: gosec has no blanket exclusions, by policy. When provider code
     # needs an exemption, scope it to the file and justify it inline so real
     # findings are never masked wholesale.
