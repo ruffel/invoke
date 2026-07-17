@@ -144,7 +144,7 @@ linters:
     # (G304). Directories are created at the conventional 0755: walked
     # directories are then chmod'd to the source's real mode, and created
     # parents keep the same default cp and install use (G301).
-    - path: 'local/files\.go'
+    - path: 'internal/transfer/hostfs\.go'
       text: "G301|G304"
       linters:
         - gosec
