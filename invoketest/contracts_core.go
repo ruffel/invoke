@@ -23,11 +23,16 @@ func coreContracts() []TestCase {
 		coreStreamsStaySeparate(),
 		coreNilStdinIsEOF(),
 		coreStdinIsDelivered(),
+		coreLargeStdinIsDelivered(),
 		coreLargeOutputIsComplete(),
 		coreEnvOverlaysBase(),
+		coreEnvOverrideWins(),
 		coreWorkdirIsHonored(),
+		coreArgsAreLiteral(),
 		coreExitCodeIsReported(),
+		coreExitCodePastSignalBoundary(),
 		coreDurationIsMeasured(),
+		coreOSMatchesTarget(),
 	}
 }
 
@@ -115,6 +120,173 @@ func coreStdinIsDelivered() TestCase {
 				t.Errorf("stdout = %q, want %q", got, "piped through")
 			}
 		},
+	}
+}
+
+func coreLargeStdinIsDelivered() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "large-stdin-is-delivered",
+		Description: "Stdin far beyond pipe-buffer size reaches the process intact, without deadlock",
+		Run: func(t T, env invoke.Environment) {
+			const chunk = "abcdefgh"
+
+			payload := strings.Repeat(chunk, largeOutputBytes/len(chunk))
+
+			var stdout bytes.Buffer
+
+			proc := startCommand(t.Context(), t, env, invoke.New("cat"), invoke.IO{
+				Stdin:  strings.NewReader(payload),
+				Stdout: &stdout,
+			})
+
+			outcome := waitOrTimeout(t, proc)
+			if outcome.err != nil {
+				failf(t, "cat failed: %v", outcome.err)
+			}
+
+			if got := stdout.Len(); got != len(payload) {
+				t.Errorf("cat echoed %d bytes, want %d", got, len(payload))
+			}
+
+			if stdout.String() != payload {
+				t.Errorf("large stdin was corrupted in transit")
+			}
+		},
+	}
+}
+
+func coreEnvOverrideWins() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "env-override-wins",
+		Description: "Command.Env overrides an existing base variable, and the last of duplicate keys wins",
+		Run: func(t T, env invoke.Environment) {
+			// HOME is in every provider's base environment; the overlay
+			// must win over it. The duplicate INVOKE_DUP entries pin
+			// os/exec's last-wins semantics.
+			cmd := invoke.Shell(`printf '%s|%s' "$HOME" "$INVOKE_DUP"`)
+			cmd.Env = []string{"HOME=/overridden", "INVOKE_DUP=first", "INVOKE_DUP=second"}
+
+			stdout := runSucceeds(t, env, cmd)
+
+			home, dup, _ := strings.Cut(stdout, "|")
+			if home != "/overridden" {
+				t.Errorf("$HOME = %q, want the overlay value /overridden to win over the base", home)
+			}
+
+			if dup != "second" {
+				t.Errorf("$INVOKE_DUP = %q, want the last duplicate (second) to win", dup)
+			}
+		},
+	}
+}
+
+func coreArgsAreLiteral() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "args-are-literal",
+		Description: "Arguments reach the process verbatim, with no shell interpretation of spaces, quotes, or metacharacters",
+		Run: func(t T, env invoke.Environment) {
+			// Each argument is delivered to printf %s and must round-trip
+			// exactly. A provider that shell-joins argv (the classic
+			// remote-command-line hazard) corrupts these.
+			args := []string{
+				"a b c",           // internal spaces
+				"has'single",      // single quote
+				`has"double`,      // double quote
+				"semi;colon",      // command separator
+				"dollar$VAR",      // no expansion must occur
+				"star*glob?",      // no globbing must occur
+				"back`tick`",      // no substitution must occur
+				"",                // empty argument must survive
+				"trailing-space ", // trailing whitespace
+			}
+
+			printfArgs := append([]string{"[%s]\n"}, args...)
+
+			outcome, stdout, _ := runCapture(t, env, invoke.New("printf", printfArgs...))
+			if outcome.err != nil {
+				failf(t, "printf failed: %v", outcome.err)
+			}
+
+			var want strings.Builder
+			for _, arg := range args {
+				want.WriteString("[" + arg + "]\n")
+			}
+
+			if stdout != want.String() {
+				t.Errorf("argv round-trip mismatch:\n got %q\nwant %q", stdout, want.String())
+			}
+		},
+	}
+}
+
+func coreExitCodePastSignalBoundary() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "exit-code-past-signal-boundary",
+		Description: "A plain exit with a status of 128 or more stays an exit code, not a signal death",
+		Run: func(t T, env invoke.Environment) {
+			// 137 is 128+9; a provider that reads any status >= 128 as a
+			// signal (the shell's own convention, but wrong for a plain
+			// exit) would report a SIGKILL death here.
+			const wantCode = 137
+
+			outcome, _, _ := runCapture(t, env, invoke.Shell("exit 137"))
+
+			exitErr := requireExitError(t, outcome.err)
+			if exitErr.Code != wantCode {
+				t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, wantCode)
+			}
+
+			if exitErr.Signal != "" {
+				t.Errorf("ExitError.Signal = %q for a plain exit 137, want empty", exitErr.Signal)
+			}
+
+			if outcome.result.ExitCode != wantCode {
+				t.Errorf("Result.ExitCode = %d, want %d", outcome.result.ExitCode, wantCode)
+			}
+		},
+	}
+}
+
+func coreOSMatchesTarget() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "os-matches-target",
+		Description: "OS() agrees with the target's own uname, and is never OSUnknown for a working target",
+		Run: func(t T, env invoke.Environment) {
+			if env.OS() == invoke.OSUnknown {
+				failf(t, "OS() = OSUnknown for a working target")
+			}
+
+			outcome, stdout, _ := runCapture(t, env, invoke.New("uname", "-s"))
+			if outcome.err != nil {
+				t.Skipf("target has no usable uname: %v", outcome.err)
+			}
+
+			want, ok := osFromUname(strings.TrimSpace(stdout))
+			if !ok {
+				t.Skipf("uname reported %q, outside the declared OS set", strings.TrimSpace(stdout))
+			}
+
+			if env.OS() != want {
+				t.Errorf("OS() = %q, but the target's uname says %q", env.OS(), want)
+			}
+		},
+	}
+}
+
+// osFromUname maps a uname -s string onto a declared TargetOS.
+func osFromUname(name string) (invoke.TargetOS, bool) {
+	switch name {
+	case "Linux":
+		return invoke.OSLinux, true
+	case "Darwin":
+		return invoke.OSDarwin, true
+	default:
+		return invoke.OSUnknown, false
 	}
 }
 

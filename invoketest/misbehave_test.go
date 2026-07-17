@@ -10,9 +10,11 @@ package invoketest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
@@ -29,10 +31,17 @@ type defects struct {
 	stdinNeverEOF  bool // replace nil Stdin with a never-ending reader
 
 	// Execution semantics defects.
-	dropEnv       bool // discard Command.Env
-	ignoreWorkdir bool // discard Command.Dir
-	exitZeroLie   bool // report success for non-zero exits
-	zeroDuration  bool // report a zero Duration
+	dropEnv            bool // discard Command.Env
+	reverseEnv         bool // reverse Command.Env so first-wins instead of last-wins
+	ignoreWorkdir      bool // discard Command.Dir
+	shellJoinArgs      bool // collapse argv into one shell-joined argument
+	exitZeroLie        bool // report success for non-zero exits
+	clampExitCode      bool // reinterpret an exit status >= 128 as a signal death
+	zeroDuration       bool // report a zero Duration
+	truncateStdin      bool // forward only the first 64 KiB of stdin
+	lieOS              bool // swap the reported OSLinux/OSDarwin
+	bareLookPath       bool // return LookPath results without a path separator
+	shell127AsNotFound bool // reclassify a shell exit 127 as ErrNotFound
 
 	// Lifecycle defects.
 	ignoreCancel      bool // detach the process from the caller's context
@@ -98,6 +107,10 @@ func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error
 	path, err := m.base.LookPath(ctx, name)
 	if err != nil && m.d.plainLookPathError && errors.Is(err, invoke.ErrNotFound) {
 		return "", errors.New("misbehave: something went wrong")
+	}
+
+	if err == nil && m.d.bareLookPath {
+		return filepath.Base(path), nil
 	}
 
 	return path, err
@@ -170,7 +183,21 @@ func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath strin
 	return m.base.Download(ctx, remotePath, localPath, opts...)
 }
 
-func (m *misbehaveEnv) OS() invoke.TargetOS { return m.base.OS() }
+func (m *misbehaveEnv) OS() invoke.TargetOS {
+	os := m.base.OS()
+	if m.d.lieOS {
+		switch os {
+		case invoke.OSLinux:
+			return invoke.OSDarwin
+		case invoke.OSDarwin:
+			return invoke.OSLinux
+		default:
+			return invoke.OSLinux
+		}
+	}
+
+	return os
+}
 
 func (m *misbehaveEnv) Capabilities() invoke.Capabilities {
 	caps := m.base.Capabilities()
@@ -265,8 +292,21 @@ func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
 		cmd.Env = nil
 	}
 
+	if m.d.reverseEnv && len(cmd.Env) > 1 {
+		reversed := make([]string, len(cmd.Env))
+		for i, pair := range cmd.Env {
+			reversed[len(cmd.Env)-1-i] = pair
+		}
+
+		cmd.Env = reversed
+	}
+
 	if m.d.ignoreWorkdir {
 		cmd.Dir = ""
+	}
+
+	if m.d.shellJoinArgs && len(cmd.Args) > 0 {
+		cmd.Args = []string{strings.Join(cmd.Args, " ")}
 	}
 
 	return cmd
@@ -279,6 +319,10 @@ func (m *misbehaveEnv) mutateStdio(stdio invoke.IO) invoke.IO {
 
 	if m.d.stdinNeverEOF && stdio.Stdin == nil {
 		stdio.Stdin = neverEOFReader{}
+	}
+
+	if m.d.truncateStdin && stdio.Stdin != nil {
+		stdio.Stdin = io.LimitReader(stdio.Stdin, 64*1024)
 	}
 
 	if m.d.mergeStreams && stdio.Stdout != nil {
@@ -332,11 +376,31 @@ func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 		return res, &invoke.ExitError{Code: -1}
 	}
 
+	if exitErr := asExitError(err); exitErr != nil {
+		if p.d.clampExitCode && exitErr.Code >= 128 {
+			return invoke.Result{ExitCode: -1, Duration: res.Duration},
+				&invoke.ExitError{Code: -1, Signal: invoke.SIGKILL}
+		}
+
+		if p.d.shell127AsNotFound && exitErr.Code == 127 {
+			return res, fmt.Errorf("misbehave: %w", invoke.ErrNotFound)
+		}
+	}
+
 	if p.d.zeroDuration {
 		res.Duration = 0
 	}
 
 	return res, err
+}
+
+func asExitError(err error) *invoke.ExitError {
+	var exitErr *invoke.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr
+	}
+
+	return nil
 }
 
 func (p *misbehaveProcess) Signal(sig invoke.Signal) error {
@@ -441,10 +505,15 @@ func defectCatalog() []defectCase {
 		{name: "stdin never EOF", contract: "core/nil-stdin-is-eof", defects: defects{stdinNeverEOF: true}},
 		{name: "swallowed stdin", contract: "core/stdin-is-delivered", defects: defects{swallowStdin: true}},
 		{name: "truncated large output", contract: "core/large-output-is-complete", defects: defects{truncateOutput: true}},
+		{name: "truncated large stdin", contract: "core/large-stdin-is-delivered", defects: defects{truncateStdin: true}},
 		{name: "dropped env", contract: "core/env-overlays-base", defects: defects{dropEnv: true}},
+		{name: "first-wins env", contract: "core/env-override-wins", defects: defects{reverseEnv: true}},
 		{name: "ignored workdir", contract: "core/workdir-is-honored", defects: defects{ignoreWorkdir: true}},
+		{name: "shell-joined argv", contract: "core/args-are-literal", defects: defects{shellJoinArgs: true}},
 		{name: "exit-zero lie", contract: "core/exit-code-is-reported", defects: defects{exitZeroLie: true}},
+		{name: "clamped exit code", contract: "core/exit-code-past-signal-boundary", defects: defects{clampExitCode: true}},
 		{name: "zero duration", contract: "core/duration-is-measured", defects: defects{zeroDuration: true}},
+		{name: "lying OS", contract: "core/os-matches-target", defects: defects{lieOS: true}},
 
 		{name: "flip-flopping wait", contract: "lifecycle/wait-is-idempotent", defects: defects{waitFlipFlops: true}},
 		{name: "ignored cancel", contract: "lifecycle/cancel-unblocks-wait", defects: defects{ignoreCancel: true}},
@@ -460,8 +529,10 @@ func defectCatalog() []defectCase {
 		{name: "plain signal error", contract: "lifecycle/unsupported-signal-normalized", defects: defects{plainSignalError: true}},
 
 		{name: "unclassified missing binary", contract: "errors/missing-binary-not-found", defects: defects{plainMissingBinary: true}},
+		{name: "shell 127 as not-found", contract: "errors/shell-missing-binary-is-exit-127", defects: defects{shell127AsNotFound: true}},
 		{name: "unclassified workdir", contract: "errors/bad-workdir-classified", defects: defects{plainWorkdirError: true}},
 		{name: "unclassified lookpath", contract: "errors/lookpath-classifies", defects: defects{plainLookPathError: true}},
+		{name: "bare lookpath name", contract: "errors/lookpath-classifies", defects: defects{bareLookPath: true}},
 		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
 
 		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},

@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/ruffel/invoke"
 )
@@ -9,9 +10,37 @@ import (
 func errorsContracts() []TestCase {
 	return []TestCase{
 		errorsMissingBinaryNotFound(),
+		errorsShellMissingBinaryIsExit127(),
 		errorsBadWorkdirClassified(),
 		errorsLookPathClassifies(),
 		errorsClosedEnvRefusesAll(),
+	}
+}
+
+func errorsShellMissingBinaryIsExit127() TestCase {
+	return TestCase{
+		Category:    CategoryErrors,
+		Name:        "shell-missing-binary-is-exit-127",
+		Description: "A missing binary inside a shell command is the shell's exit 127, not a start-time ErrNotFound",
+		Run: func(t T, env invoke.Environment) {
+			// The command that runs is the shell, which exists; the
+			// missing binary is the shell's own runtime failure, so this
+			// must be an ExitError(127), never conflated with the
+			// start-time not-found classification.
+			outcome, _, _ := runCapture(t, env,
+				invoke.Shell("invoke-missing-"+token(t)))
+
+			if errors.Is(outcome.err, invoke.ErrNotFound) {
+				failf(t, "a missing binary inside a shell command surfaced as ErrNotFound; the shell ran and exited")
+			}
+
+			const wantCode = 127
+
+			exitErr := requireExitError(t, outcome.err)
+			if exitErr.Code != wantCode {
+				t.Errorf("ExitError.Code = %d, want %d (shell command-not-found)", exitErr.Code, wantCode)
+			}
+		},
 	}
 }
 
@@ -69,11 +98,17 @@ func errorsLookPathClassifies() TestCase {
 	return TestCase{
 		Category:    CategoryErrors,
 		Name:        "lookpath-classifies",
-		Description: "LookPath resolves real names and wraps ErrNotFound for unresolvable ones",
+		Description: "LookPath resolves real names to a path (not a bare name) and wraps ErrNotFound for unresolvable ones",
 		Run: func(t T, env invoke.Environment) {
 			path, err := env.LookPath(t.Context(), "sh")
 			if err != nil || path == "" {
 				failf(t, "LookPath(sh) = (%q, %v), want a resolved path", path, err)
+			}
+
+			// A resolved executable is a path, not a bare command name:
+			// callers use it as something they can exec directly.
+			if !strings.Contains(path, "/") {
+				t.Errorf("LookPath(sh) = %q, want a path containing a separator, not a bare name", path)
 			}
 
 			_, err = env.LookPath(t.Context(), "invoke-definitely-missing-"+token(t))

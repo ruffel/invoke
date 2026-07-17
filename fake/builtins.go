@@ -17,7 +17,7 @@ import (
 func builtinKnown(name string) bool {
 	switch name {
 	case "sh", "echo", "cat", "true", "false", "sleep", "printf", "test",
-		"find", "mkdir", "touch", "rm", "pwd", "dd":
+		"find", "mkdir", "touch", "rm", "pwd", "dd", "uname":
 		return true
 	default:
 		return false
@@ -26,6 +26,8 @@ func builtinKnown(name string) bool {
 
 // dispatch runs one command (top-level argv or a shell word) and returns
 // its exit code plus whether it was interrupted by cancellation.
+//
+//nolint:cyclop // A flat dispatch table over the builtin vocabulary.
 func dispatch(ctx context.Context, s *session, name string, args []string) (int, bool) {
 	switch name {
 	case "sh":
@@ -56,6 +58,10 @@ func dispatch(ctx context.Context, s *session, name string, args []string) (int,
 		return writeLine(s, s.dir)
 	case "dd":
 		return runDD(ctx, s, args)
+	case "uname":
+		// The fake simulates a Linux target (see Environment.OS); report
+		// it so the os-matches-target contract can verify that claim.
+		return writeLine(s, "Linux")
 	default:
 		_, _ = io.WriteString(s.stderr, "sh: "+name+": command not found\n")
 
@@ -146,8 +152,27 @@ func runPrintf(s *session, args []string) (int, bool) {
 
 	var out strings.Builder
 
+	// POSIX printf reuses the format string until the argument list is
+	// exhausted, then applies it once more if it never consumed an
+	// argument (the no-conversion case).
 	next := 0
+	for {
+		consumedBefore := next
+		next = applyPrintfFormat(&out, format, values, next)
 
+		if next >= len(values) || next == consumedBefore {
+			break
+		}
+	}
+
+	_, _ = io.WriteString(s.stdout, out.String())
+
+	return 0, false
+}
+
+// applyPrintfFormat writes one pass of format, consuming %s conversions
+// from values starting at next, and returns the new value index.
+func applyPrintfFormat(out *strings.Builder, format string, values []string, next int) int {
 	for i := 0; i < len(format); i++ {
 		if format[i] == '%' && i+1 < len(format) {
 			switch format[i+1] {
@@ -172,9 +197,7 @@ func runPrintf(s *session, args []string) (int, bool) {
 		out.WriteByte(format[i])
 	}
 
-	_, _ = io.WriteString(s.stdout, out.String())
-
-	return 0, false
+	return next
 }
 
 func runTest(s *session, args []string) int {
