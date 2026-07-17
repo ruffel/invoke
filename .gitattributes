@@ -1,0 +1,2 @@
+# Normalize line endings; this library targets POSIX systems.
+* text=auto eol=lf

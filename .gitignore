@@ -1,0 +1,17 @@
+# Build and test artifacts
+/.bin/
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
