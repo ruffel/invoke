@@ -31,6 +31,17 @@ type defects struct {
 	ignoreWorkdir bool // discard Command.Dir
 	exitZeroLie   bool // report success for non-zero exits
 	zeroDuration  bool // report a zero Duration
+
+	// Lifecycle defects.
+	ignoreCancel      bool // detach the process from the caller's context
+	exitErrorOnCancel bool // misreport cancellation as an ExitError
+	closeNoOp         bool // process Close does nothing
+	secondCloseErrors bool // a second Close returns an error
+	closeForgets      bool // Wait after Close loses the cached outcome
+	envCloseNoOp      bool // environment Close does nothing
+	silentSignal      bool // Signal reports success and delivers nothing
+	plainSignalError  bool // unsupported signal errors without ErrNotSupported
+	waitFlipFlops     bool // a second Wait returns a different outcome
 }
 
 // misbehaveEnv wraps a real Environment and applies the configured
@@ -41,6 +52,10 @@ type misbehaveEnv struct {
 }
 
 func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
+	if m.d.ignoreCancel {
+		ctx = context.WithoutCancel(ctx)
+	}
+
 	if m.d.dropEnv {
 		cmd.Env = nil
 	}
@@ -91,22 +106,45 @@ func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath strin
 
 func (m *misbehaveEnv) OS() invoke.TargetOS               { return m.base.OS() }
 func (m *misbehaveEnv) Capabilities() invoke.Capabilities { return m.base.Capabilities() }
-func (m *misbehaveEnv) Close() error                      { return m.base.Close() }
+
+func (m *misbehaveEnv) Close() error {
+	if m.d.envCloseNoOp {
+		return nil
+	}
+
+	return m.base.Close()
+}
 
 // misbehaveProcess applies process-level defects.
 type misbehaveProcess struct {
-	base invoke.Process
-	d    defects
+	base       invoke.Process
+	d          defects
+	waitCalls  int
+	closeCalls int
+	closed     bool
 }
 
 func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 	res, err := p.base.Wait()
+
+	p.waitCalls++
+	if p.d.waitFlipFlops && p.waitCalls > 1 {
+		return invoke.Result{ExitCode: res.ExitCode + 1, Duration: res.Duration}, nil
+	}
+
+	if p.d.closeForgets && p.closed {
+		return invoke.Result{}, errors.New("misbehave: outcome discarded by close")
+	}
 
 	if p.d.exitZeroLie {
 		var exitErr *invoke.ExitError
 		if errors.As(err, &exitErr) {
 			return invoke.Result{ExitCode: 0, Duration: res.Duration}, nil
 		}
+	}
+
+	if p.d.exitErrorOnCancel && err != nil && errors.Is(err, context.Canceled) {
+		return res, &invoke.ExitError{Code: -1}
 	}
 
 	if p.d.zeroDuration {
@@ -116,8 +154,36 @@ func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 	return res, err
 }
 
-func (p *misbehaveProcess) Signal(sig invoke.Signal) error { return p.base.Signal(sig) }
-func (p *misbehaveProcess) Close() error                   { return p.base.Close() }
+func (p *misbehaveProcess) Signal(sig invoke.Signal) error {
+	if p.d.silentSignal {
+		return nil
+	}
+
+	if p.d.plainSignalError {
+		if err := p.base.Signal(sig); err != nil {
+			return errors.New("misbehave: signal failed for unstated reasons")
+		}
+
+		return nil
+	}
+
+	return p.base.Signal(sig)
+}
+
+func (p *misbehaveProcess) Close() error {
+	p.closeCalls++
+	p.closed = true
+
+	if p.d.closeNoOp {
+		return nil
+	}
+
+	if p.d.secondCloseErrors && p.closeCalls > 1 {
+		return errors.New("misbehave: already closed")
+	}
+
+	return p.base.Close()
+}
 
 // neverEOFReader blocks forever, simulating an inherited terminal stdin.
 type neverEOFReader struct{}
@@ -194,6 +260,19 @@ func defectCatalog() []defectCase {
 		{name: "ignored workdir", contract: "core/workdir-is-honored", defects: defects{ignoreWorkdir: true}},
 		{name: "exit-zero lie", contract: "core/exit-code-is-reported", defects: defects{exitZeroLie: true}},
 		{name: "zero duration", contract: "core/duration-is-measured", defects: defects{zeroDuration: true}},
+
+		{name: "flip-flopping wait", contract: "lifecycle/wait-is-idempotent", defects: defects{waitFlipFlops: true}},
+		{name: "ignored cancel", contract: "lifecycle/cancel-unblocks-wait", defects: defects{ignoreCancel: true}},
+		{name: "cancel as exit error", contract: "lifecycle/cancel-unblocks-wait", defects: defects{exitErrorOnCancel: true}},
+		{name: "surviving process", contract: "lifecycle/cancel-terminates-process", defects: defects{ignoreCancel: true}},
+		{name: "start despite cancel", contract: "lifecycle/start-on-canceled-context", defects: defects{ignoreCancel: true}},
+		{name: "close no-op", contract: "lifecycle/close-unblocks-wait", defects: defects{closeNoOp: true}},
+		{name: "second close errors", contract: "lifecycle/close-is-idempotent", defects: defects{secondCloseErrors: true}},
+		{name: "close forgets outcome", contract: "lifecycle/close-after-wait-keeps-outcome", defects: defects{closeForgets: true}},
+		{name: "env close no-op", contract: "lifecycle/env-close-terminates-processes", defects: defects{envCloseNoOp: true}},
+		{name: "silent signal", contract: "lifecycle/signal-terminates-process", defects: defects{silentSignal: true}},
+		{name: "silent unsupported signal", contract: "lifecycle/unsupported-signal-normalized", defects: defects{silentSignal: true}},
+		{name: "plain signal error", contract: "lifecycle/unsupported-signal-normalized", defects: defects{plainSignalError: true}},
 	}
 }
 

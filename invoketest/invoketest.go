@@ -143,6 +143,7 @@ func AllContracts() []TestCase {
 	contracts := make([]TestCase, 0, expectedContracts)
 
 	contracts = append(contracts, coreContracts()...)
+	contracts = append(contracts, lifecycleContracts()...)
 
 	validateContracts(contracts)
 

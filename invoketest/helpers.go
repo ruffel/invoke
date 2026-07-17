@@ -103,6 +103,56 @@ func runSucceeds(t T, env invoke.Environment, cmd invoke.Command) string {
 	return stdout
 }
 
+// requireNotExitError fails the contract when a lifecycle error (cancel,
+// close, transport) is misclassified as a command outcome.
+func requireNotExitError(t T, err error, situation string) {
+	t.Helper()
+
+	var exitErr *invoke.ExitError
+	if errors.As(err, &exitErr) {
+		failf(t, "%s surfaced as *ExitError (%v); lifecycle errors must never be command outcomes", situation, exitErr)
+	}
+}
+
+// closeOrTimeout closes proc with the contract deadline, so a Close that
+// blocks indefinitely fails the contract instead of hanging it.
+func closeOrTimeout(t T, proc invoke.Process) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+
+	go func() { done <- proc.Close() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(contractTimeout):
+		failf(t, "Close did not return within %v", contractTimeout)
+
+		return nil
+	}
+}
+
+// targetProbe runs a shell probe on the target and reports whether it
+// exited zero, failing the contract if the probe could not run at all.
+func targetProbe(t T, env invoke.Environment, script string) bool {
+	t.Helper()
+
+	outcome, _, stderr := runCapture(t, env, invoke.Shell(script))
+	if outcome.err == nil {
+		return true
+	}
+
+	var exitErr *invoke.ExitError
+	if errors.As(outcome.err, &exitErr) {
+		return false
+	}
+
+	failf(t, "probe %q could not run: %v (stderr %q)", script, outcome.err, stderr)
+
+	return false
+}
+
 // requireExitError extracts the ExitError from err or fails the contract.
 func requireExitError(t T, err error) *invoke.ExitError {
 	t.Helper()
