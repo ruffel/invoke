@@ -11,6 +11,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
@@ -42,6 +44,26 @@ type defects struct {
 	silentSignal      bool // Signal reports success and delivers nothing
 	plainSignalError  bool // unsupported signal errors without ErrNotSupported
 	waitFlipFlops     bool // a second Wait returns a different outcome
+
+	// Classification defects.
+	plainMissingBinary bool // strip ErrNotFound from missing-binary failures
+	plainWorkdirError  bool // strip ErrInvalidWorkdir from workdir failures
+	plainLookPathError bool // strip ErrNotFound from LookPath failures
+
+	// Transfer defects.
+	corruptUploads     bool // upload garbage in place of the source
+	flattenModes       bool // force a fixed mode, ignoring source and option
+	dropModeOption     bool // strip WithMode from the options
+	destroyOnFailure   bool // clobber the destination when a transfer fails
+	shallowTrees       bool // upload only a tree's top-level files
+	dropSymlinks       bool // silently skip symlinks in transfers
+	followLies         bool // treat SymlinkFollow as SymlinkSkip
+	alwaysSkipSpecial  bool // force WithSkipSpecial regardless of options
+	zeroProgressTotals bool // report Total as zero in progress callbacks
+
+	// TTY defects.
+	claimTTY bool // advertise the TTY capability while allocating nothing
+	stripTTY bool // discard IO.TTY instead of refusing it
 }
 
 // misbehaveEnv wraps a real Environment and applies the configured
@@ -56,6 +78,189 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		ctx = context.WithoutCancel(ctx)
 	}
 
+	proc, err := m.base.Start(ctx, m.mutateCommand(cmd), m.mutateStdio(stdio))
+	if err != nil {
+		if m.d.plainMissingBinary && errors.Is(err, invoke.ErrNotFound) {
+			return nil, errors.New("misbehave: something went wrong")
+		}
+
+		if m.d.plainWorkdirError && errors.Is(err, invoke.ErrInvalidWorkdir) {
+			return nil, errors.New("misbehave: something went wrong")
+		}
+
+		return nil, err
+	}
+
+	return &misbehaveProcess{base: proc, d: m.d}, nil
+}
+
+func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error) {
+	path, err := m.base.LookPath(ctx, name)
+	if err != nil && m.d.plainLookPathError && errors.Is(err, invoke.ErrNotFound) {
+		return "", errors.New("misbehave: something went wrong")
+	}
+
+	return path, err
+}
+
+func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	cfg := invoke.NewTransferConfig(opts...)
+
+	if m.d.dropModeOption {
+		cfg.Mode = nil
+	}
+
+	if m.d.dropSymlinks || m.d.followLies {
+		cfg.Symlinks = invoke.SymlinkSkip
+	}
+
+	if m.d.alwaysSkipSpecial {
+		cfg.SkipSpecial = true
+	}
+
+	if m.d.zeroProgressTotals && cfg.Progress != nil {
+		forward := cfg.Progress
+		cfg.Progress = func(p invoke.TransferProgress) {
+			p.Total = 0
+			forward(p)
+		}
+	}
+
+	src := localPath
+
+	if m.d.corruptUploads {
+		corrupted, err := corruptCopyOf(localPath)
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = os.RemoveAll(filepath.Dir(corrupted)) }()
+
+		src = corrupted
+	}
+
+	if m.d.shallowTrees {
+		shallow, err := shallowCopyOf(localPath)
+		if err == nil {
+			defer func() { _ = os.RemoveAll(filepath.Dir(shallow)) }()
+
+			src = shallow
+		}
+	}
+
+	rebuilt := rebuildOpts(cfg)
+	if m.d.flattenModes {
+		rebuilt = append(rebuilt, invoke.WithMode(0o644))
+	}
+
+	err := m.base.Upload(ctx, src, remotePath, rebuilt...)
+	if err != nil && m.d.destroyOnFailure {
+		junk, junkErr := corruptCopyOf(localPath)
+		if junkErr == nil {
+			defer func() { _ = os.RemoveAll(filepath.Dir(junk)) }()
+
+			_ = m.base.Upload(context.WithoutCancel(ctx), junk, remotePath)
+		}
+	}
+
+	return err
+}
+
+func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
+	return m.base.Download(ctx, remotePath, localPath, opts...)
+}
+
+func (m *misbehaveEnv) OS() invoke.TargetOS { return m.base.OS() }
+
+func (m *misbehaveEnv) Capabilities() invoke.Capabilities {
+	caps := m.base.Capabilities()
+	if m.d.claimTTY {
+		caps.TTY = true
+	}
+
+	return caps
+}
+
+// rebuildOpts converts a materialized TransferConfig back into options,
+// letting defects manipulate a call's configuration.
+func rebuildOpts(cfg invoke.TransferConfig) []invoke.TransferOption {
+	opts := []invoke.TransferOption{invoke.WithSymlinks(cfg.Symlinks)}
+
+	if cfg.Mode != nil {
+		opts = append(opts, invoke.WithMode(*cfg.Mode))
+	}
+
+	if cfg.SkipSpecial {
+		opts = append(opts, invoke.WithSkipSpecial())
+	}
+
+	if cfg.Progress != nil {
+		opts = append(opts, invoke.WithProgress(cfg.Progress))
+	}
+
+	return opts
+}
+
+// corruptCopyOf writes a corrupted stand-in for path in a fresh temp dir.
+func corruptCopyOf(path string) (string, error) {
+	dir, err := os.MkdirTemp("", "misbehave-*")
+	if err != nil {
+		return "", err
+	}
+
+	corrupted := filepath.Join(dir, filepath.Base(path))
+	if err := os.WriteFile(corrupted, []byte("CORRUPTED"), 0o600); err != nil {
+		return "", err
+	}
+
+	return corrupted, nil
+}
+
+// shallowCopyOf copies only the top-level regular files of a directory
+// tree into a fresh temp dir, dropping everything nested.
+func shallowCopyOf(path string) (string, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return "", err
+	}
+
+	dir, err := os.MkdirTemp("", "misbehave-*")
+	if err != nil {
+		return "", err
+	}
+
+	shallow := filepath.Join(dir, filepath.Base(path))
+	if err := os.Mkdir(shallow, 0o755); err != nil {
+		return "", err
+	}
+
+	for _, entry := range entries {
+		if !entry.Type().IsRegular() {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(path, entry.Name()))
+		if err != nil {
+			return "", err
+		}
+
+		if err := os.WriteFile(filepath.Join(shallow, entry.Name()), content, 0o600); err != nil {
+			return "", err
+		}
+	}
+
+	return shallow, nil
+}
+
+func (m *misbehaveEnv) Close() error {
+	if m.d.envCloseNoOp {
+		return nil
+	}
+
+	return m.base.Close()
+}
+
+func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
 	if m.d.dropEnv {
 		cmd.Env = nil
 	}
@@ -64,6 +269,10 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		cmd.Dir = ""
 	}
 
+	return cmd
+}
+
+func (m *misbehaveEnv) mutateStdio(stdio invoke.IO) invoke.IO {
 	if m.d.swallowStdin {
 		stdio.Stdin = nil
 	}
@@ -84,35 +293,11 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		stdio.Stdout = &garbleWriter{w: stdio.Stdout}
 	}
 
-	proc, err := m.base.Start(ctx, cmd, stdio)
-	if err != nil {
-		return nil, err
+	if (m.d.claimTTY || m.d.stripTTY) && stdio.TTY != nil {
+		stdio.TTY = nil
 	}
 
-	return &misbehaveProcess{base: proc, d: m.d}, nil
-}
-
-func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error) {
-	return m.base.LookPath(ctx, name)
-}
-
-func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
-	return m.base.Upload(ctx, localPath, remotePath, opts...)
-}
-
-func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
-	return m.base.Download(ctx, remotePath, localPath, opts...)
-}
-
-func (m *misbehaveEnv) OS() invoke.TargetOS               { return m.base.OS() }
-func (m *misbehaveEnv) Capabilities() invoke.Capabilities { return m.base.Capabilities() }
-
-func (m *misbehaveEnv) Close() error {
-	if m.d.envCloseNoOp {
-		return nil
-	}
-
-	return m.base.Close()
+	return stdio
 }
 
 // misbehaveProcess applies process-level defects.
@@ -273,6 +458,25 @@ func defectCatalog() []defectCase {
 		{name: "silent signal", contract: "lifecycle/signal-terminates-process", defects: defects{silentSignal: true}},
 		{name: "silent unsupported signal", contract: "lifecycle/unsupported-signal-normalized", defects: defects{silentSignal: true}},
 		{name: "plain signal error", contract: "lifecycle/unsupported-signal-normalized", defects: defects{plainSignalError: true}},
+
+		{name: "unclassified missing binary", contract: "errors/missing-binary-not-found", defects: defects{plainMissingBinary: true}},
+		{name: "unclassified workdir", contract: "errors/bad-workdir-classified", defects: defects{plainWorkdirError: true}},
+		{name: "unclassified lookpath", contract: "errors/lookpath-classifies", defects: defects{plainLookPathError: true}},
+		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
+
+		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},
+		{name: "flattened modes", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{flattenModes: true}},
+		{name: "dropped mode option", contract: "transfer/mode-override-applies-on-overwrite", defects: defects{dropModeOption: true}},
+		{name: "destroy on failure", contract: "transfer/failure-preserves-destination", defects: defects{destroyOnFailure: true}},
+		{name: "destroy on cancel", contract: "transfer/cancel-preserves-destination", defects: defects{destroyOnFailure: true}},
+		{name: "shallow trees", contract: "transfer/tree-roundtrip-creates-parents", defects: defects{shallowTrees: true}},
+		{name: "dropped symlinks", contract: "transfer/symlinks-preserve", defects: defects{dropSymlinks: true}},
+		{name: "follow lies", contract: "transfer/follow-rejects-escapes", defects: defects{followLies: true}},
+		{name: "forced special skip", contract: "transfer/special-files-error-by-default", defects: defects{alwaysSkipSpecial: true}},
+		{name: "zeroed progress totals", contract: "transfer/progress-reports-totals", defects: defects{zeroProgressTotals: true}},
+
+		{name: "pretend TTY", contract: "tty/allocates-terminal", defects: defects{claimTTY: true}},
+		{name: "silently stripped TTY", contract: "tty/unsupported-errors", defects: defects{stripTTY: true}},
 	}
 }
 

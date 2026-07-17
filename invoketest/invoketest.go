@@ -144,6 +144,9 @@ func AllContracts() []TestCase {
 
 	contracts = append(contracts, coreContracts()...)
 	contracts = append(contracts, lifecycleContracts()...)
+	contracts = append(contracts, errorsContracts()...)
+	contracts = append(contracts, transferContracts()...)
+	contracts = append(contracts, ttyContracts()...)
 
 	validateContracts(contracts)
 

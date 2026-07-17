@@ -148,6 +148,13 @@ linters:
       text: "G301|G304"
       linters:
         - gosec
+    # Transfer contracts build fixtures and read them back at paths they
+    # construct themselves; the file operations are the subject under
+    # test.
+    - path: 'invoketest/contracts_transfer\.go'
+      text: "G301|G304"
+      linters:
+        - gosec
     # NOTE: gosec has no blanket exclusions, by policy. When provider code
     # needs an exemption, scope it to the file and justify it inline so real
     # findings are never masked wholesale.
@@ -170,6 +177,7 @@ linters:
       - "0644"
       - "0666"
       - "0755"
+      - "0o600"
       - "0o644"
       - "0o666"
       - "0o755"
