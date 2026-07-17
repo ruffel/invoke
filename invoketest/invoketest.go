@@ -138,9 +138,11 @@ func Verify(t *testing.T, factory Factory, opts ...Option) {
 // enumerate or filter it. The returned cases are safe to inspect; run them
 // via [Verify] where possible.
 func AllContracts() []TestCase {
-	var contracts []TestCase
+	const expectedContracts = 64
 
-	// Contract categories register here as they are implemented.
+	contracts := make([]TestCase, 0, expectedContracts)
+
+	contracts = append(contracts, coreContracts()...)
 
 	validateContracts(contracts)
 
