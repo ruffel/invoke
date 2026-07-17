@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
@@ -44,15 +45,19 @@ type defects struct {
 	shell127AsNotFound bool // reclassify a shell exit 127 as ErrNotFound
 
 	// Lifecycle defects.
-	ignoreCancel      bool // detach the process from the caller's context
-	exitErrorOnCancel bool // misreport cancellation as an ExitError
-	closeNoOp         bool // process Close does nothing
-	secondCloseErrors bool // a second Close returns an error
-	closeForgets      bool // Wait after Close loses the cached outcome
-	envCloseNoOp      bool // environment Close does nothing
-	silentSignal      bool // Signal reports success and delivers nothing
-	plainSignalError  bool // unsupported signal errors without ErrNotSupported
-	waitFlipFlops     bool // a second Wait returns a different outcome
+	ignoreCancel         bool // detach the process from the caller's context
+	exitErrorOnCancel    bool // misreport cancellation as an ExitError
+	cancelOverwritesExit bool // rewrite a completed success as a late cancellation
+	hardcodeCanceled     bool // report every context error as Canceled, even a deadline
+	collapseSignalNames  bool // report every signal death as SIGTERM
+	singleProcess        bool // refuse a second concurrent Start
+	closeNoOp            bool // process Close does nothing
+	secondCloseErrors    bool // a second Close returns an error
+	closeForgets         bool // Wait after Close loses the cached outcome
+	envCloseNoOp         bool // environment Close does nothing
+	silentSignal         bool // Signal reports success and delivers nothing
+	plainSignalError     bool // unsupported signal errors without ErrNotSupported
+	waitFlipFlops        bool // a second Wait returns a different outcome
 
 	// Classification defects.
 	plainMissingBinary bool // strip ErrNotFound from missing-binary failures
@@ -80,15 +85,35 @@ type defects struct {
 type misbehaveEnv struct {
 	base invoke.Environment
 	d    defects
+
+	mu     sync.Mutex
+	active int // outstanding processes, for the singleProcess defect
 }
 
 func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
+	startCtx := ctx
 	if m.d.ignoreCancel {
-		ctx = context.WithoutCancel(ctx)
+		startCtx = context.WithoutCancel(ctx)
 	}
 
-	proc, err := m.base.Start(ctx, m.mutateCommand(cmd), m.mutateStdio(stdio))
+	if m.d.singleProcess {
+		m.mu.Lock()
+
+		if m.active > 0 {
+			m.mu.Unlock()
+
+			return nil, errors.New("misbehave: only one process at a time")
+		}
+
+		m.active++
+
+		m.mu.Unlock()
+	}
+
+	proc, err := m.base.Start(startCtx, m.mutateCommand(cmd), m.mutateStdio(stdio))
 	if err != nil {
+		m.release()
+
 		if m.d.plainMissingBinary && errors.Is(err, invoke.ErrNotFound) {
 			return nil, errors.New("misbehave: something went wrong")
 		}
@@ -100,7 +125,7 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		return nil, err
 	}
 
-	return &misbehaveProcess{base: proc, d: m.d}, nil
+	return &misbehaveProcess{base: proc, d: m.d, env: m, startCtx: ctx}, nil
 }
 
 func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error) {
@@ -287,6 +312,20 @@ func (m *misbehaveEnv) Close() error {
 	return m.base.Close()
 }
 
+// release drops one outstanding process from the singleProcess counter.
+func (m *misbehaveEnv) release() {
+	if !m.d.singleProcess {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.active > 0 {
+		m.active--
+	}
+}
+
 func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
 	if m.d.dropEnv {
 		cmd.Env = nil
@@ -348,43 +387,26 @@ func (m *misbehaveEnv) mutateStdio(stdio invoke.IO) invoke.IO {
 type misbehaveProcess struct {
 	base       invoke.Process
 	d          defects
+	env        *misbehaveEnv
+	startCtx   context.Context //nolint:containedctx // Mirrors the real providers, which store the start context.
 	waitCalls  int
 	closeCalls int
 	closed     bool
+	released   sync.Once
 }
 
 func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 	res, err := p.base.Wait()
+	p.released.Do(p.env.release)
 
 	p.waitCalls++
-	if p.d.waitFlipFlops && p.waitCalls > 1 {
-		return invoke.Result{ExitCode: res.ExitCode + 1, Duration: res.Duration}, nil
+
+	if got, done := p.corruptWait(res, err); done {
+		return got.result, got.err
 	}
 
-	if p.d.closeForgets && p.closed {
-		return invoke.Result{}, errors.New("misbehave: outcome discarded by close")
-	}
-
-	if p.d.exitZeroLie {
-		var exitErr *invoke.ExitError
-		if errors.As(err, &exitErr) {
-			return invoke.Result{ExitCode: 0, Duration: res.Duration}, nil
-		}
-	}
-
-	if p.d.exitErrorOnCancel && err != nil && errors.Is(err, context.Canceled) {
-		return res, &invoke.ExitError{Code: -1}
-	}
-
-	if exitErr := asExitError(err); exitErr != nil {
-		if p.d.clampExitCode && exitErr.Code >= 128 {
-			return invoke.Result{ExitCode: -1, Duration: res.Duration},
-				&invoke.ExitError{Code: -1, Signal: invoke.SIGKILL}
-		}
-
-		if p.d.shell127AsNotFound && exitErr.Code == 127 {
-			return res, fmt.Errorf("misbehave: %w", invoke.ErrNotFound)
-		}
+	if got, done := p.corruptError(res, err); done {
+		return got.result, got.err
 	}
 
 	if p.d.zeroDuration {
@@ -392,15 +414,6 @@ func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 	}
 
 	return res, err
-}
-
-func asExitError(err error) *invoke.ExitError {
-	var exitErr *invoke.ExitError
-	if errors.As(err, &exitErr) {
-		return exitErr
-	}
-
-	return nil
 }
 
 func (p *misbehaveProcess) Signal(sig invoke.Signal) error {
@@ -422,6 +435,7 @@ func (p *misbehaveProcess) Signal(sig invoke.Signal) error {
 func (p *misbehaveProcess) Close() error {
 	p.closeCalls++
 	p.closed = true
+	p.released.Do(p.env.release)
 
 	if p.d.closeNoOp {
 		return nil
@@ -432,6 +446,70 @@ func (p *misbehaveProcess) Close() error {
 	}
 
 	return p.base.Close()
+}
+
+// corruptWait applies defects that depend on Wait's call sequence or the
+// process's own lifecycle bookkeeping.
+func (p *misbehaveProcess) corruptWait(res invoke.Result, err error) (waitOutcome, bool) {
+	switch {
+	case p.d.waitFlipFlops && p.waitCalls > 1:
+		return waitOutcome{result: invoke.Result{ExitCode: res.ExitCode + 1, Duration: res.Duration}}, true
+	case p.d.closeForgets && p.closed:
+		return waitOutcome{err: errors.New("misbehave: outcome discarded by close")}, true
+	case p.d.cancelOverwritesExit && err == nil && p.startCtx.Err() != nil:
+		return waitOutcome{
+			result: invoke.Result{ExitCode: -1, Duration: res.Duration},
+			err:    fmt.Errorf("misbehave: %w", p.startCtx.Err()),
+		}, true
+	default:
+		return waitOutcome{}, false
+	}
+}
+
+// corruptError applies defects that rewrite the classification of a
+// finished process's error.
+func (p *misbehaveProcess) corruptError(res invoke.Result, err error) (waitOutcome, bool) {
+	const signalBoundary = 128
+
+	switch {
+	case p.d.exitZeroLie && asExitError(err) != nil:
+		return waitOutcome{result: invoke.Result{ExitCode: 0, Duration: res.Duration}}, true
+	case p.d.exitErrorOnCancel && errors.Is(err, context.Canceled):
+		return waitOutcome{result: res, err: &invoke.ExitError{Code: -1}}, true
+	case p.d.hardcodeCanceled && errors.Is(err, context.DeadlineExceeded):
+		return waitOutcome{result: res, err: fmt.Errorf("misbehave: %w", context.Canceled)}, true
+	}
+
+	exitErr := asExitError(err)
+	if exitErr == nil {
+		return waitOutcome{}, false
+	}
+
+	switch {
+	case p.d.collapseSignalNames && exitErr.Signal != "":
+		return waitOutcome{result: res, err: &invoke.ExitError{Code: exitErr.Code, Signal: invoke.SIGTERM}}, true
+	case p.d.clampExitCode && exitErr.Code >= signalBoundary:
+		return waitOutcome{
+			result: invoke.Result{ExitCode: -1, Duration: res.Duration},
+			err:    &invoke.ExitError{Code: -1, Signal: invoke.SIGKILL},
+		}, true
+	case p.d.shell127AsNotFound && exitErr.Code == exitCommandNotFound:
+		return waitOutcome{result: res, err: fmt.Errorf("misbehave: %w", invoke.ErrNotFound)}, true
+	default:
+		return waitOutcome{}, false
+	}
+}
+
+// exitCommandNotFound is the shell's status for an unknown command.
+const exitCommandNotFound = 127
+
+func asExitError(err error) *invoke.ExitError {
+	var exitErr *invoke.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr
+	}
+
+	return nil
 }
 
 // neverEOFReader blocks forever, simulating an inherited terminal stdin.
@@ -516,15 +594,21 @@ func defectCatalog() []defectCase {
 		{name: "lying OS", contract: "core/os-matches-target", defects: defects{lieOS: true}},
 
 		{name: "flip-flopping wait", contract: "lifecycle/wait-is-idempotent", defects: defects{waitFlipFlops: true}},
+		{name: "flip-flopping concurrent wait", contract: "lifecycle/concurrent-wait-is-safe", defects: defects{waitFlipFlops: true}},
 		{name: "ignored cancel", contract: "lifecycle/cancel-unblocks-wait", defects: defects{ignoreCancel: true}},
 		{name: "cancel as exit error", contract: "lifecycle/cancel-unblocks-wait", defects: defects{exitErrorOnCancel: true}},
+		{name: "deadline as cancel", contract: "lifecycle/deadline-unblocks-wait", defects: defects{hardcodeCanceled: true}},
 		{name: "surviving process", contract: "lifecycle/cancel-terminates-process", defects: defects{ignoreCancel: true}},
+		{name: "late cancel overwrites exit", contract: "lifecycle/cancel-after-exit-keeps-outcome", defects: defects{cancelOverwritesExit: true}},
 		{name: "start despite cancel", contract: "lifecycle/start-on-canceled-context", defects: defects{ignoreCancel: true}},
+		{name: "single process only", contract: "lifecycle/concurrent-processes-run", defects: defects{singleProcess: true}},
 		{name: "close no-op", contract: "lifecycle/close-unblocks-wait", defects: defects{closeNoOp: true}},
 		{name: "second close errors", contract: "lifecycle/close-is-idempotent", defects: defects{secondCloseErrors: true}},
 		{name: "close forgets outcome", contract: "lifecycle/close-after-wait-keeps-outcome", defects: defects{closeForgets: true}},
 		{name: "env close no-op", contract: "lifecycle/env-close-terminates-processes", defects: defects{envCloseNoOp: true}},
 		{name: "silent signal", contract: "lifecycle/signal-terminates-process", defects: defects{silentSignal: true}},
+		{name: "collapsed signal names", contract: "lifecycle/signal-attribution-round-trips", defects: defects{collapseSignalNames: true}},
+		{name: "silent signal after exit", contract: "lifecycle/signal-after-exit-errors", defects: defects{silentSignal: true}},
 		{name: "silent unsupported signal", contract: "lifecycle/unsupported-signal-normalized", defects: defects{silentSignal: true}},
 		{name: "plain signal error", contract: "lifecycle/unsupported-signal-normalized", defects: defects{plainSignalError: true}},
 

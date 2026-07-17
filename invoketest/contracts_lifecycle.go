@@ -16,15 +16,149 @@ const terminationGrace = 2 * time.Second
 func lifecycleContracts() []TestCase {
 	return []TestCase{
 		lifecycleWaitIsIdempotent(),
+		lifecycleConcurrentWaitIsSafe(),
 		lifecycleCancelUnblocksWait(),
+		lifecycleDeadlineUnblocksWait(),
 		lifecycleCancelTerminatesProcess(),
+		lifecycleCancelAfterExitKeepsOutcome(),
 		lifecycleStartOnCanceledContext(),
+		lifecycleConcurrentProcessesRun(),
 		lifecycleCloseUnblocksWait(),
 		lifecycleCloseIsIdempotent(),
 		lifecycleCloseAfterWaitKeepsOutcome(),
 		lifecycleEnvCloseTerminatesProcesses(),
 		lifecycleSignalTerminatesProcess(),
+		lifecycleSignalAttributionRoundTrips(),
+		lifecycleSignalAfterExitErrors(),
 		lifecycleUnsupportedSignalNormalized(),
+	}
+}
+
+func lifecycleConcurrentWaitIsSafe() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "concurrent-wait-is-safe",
+		Description: "Concurrent Wait callers all observe the same outcome without racing or deadlocking",
+		Run: func(t T, env invoke.Environment) {
+			proc := startCommand(t.Context(), t, env, invoke.Shell("exit 7"), invoke.IO{})
+
+			const callers = 4
+
+			results := make(chan waitOutcome, callers)
+
+			for range callers {
+				go func() {
+					res, err := proc.Wait()
+					results <- waitOutcome{result: res, err: err}
+				}()
+			}
+
+			var first waitOutcome
+
+			for i := range callers {
+				select {
+				case got := <-results:
+					if i == 0 {
+						first = got
+
+						continue
+					}
+
+					if got.result != first.result {
+						t.Errorf("concurrent Wait results differ: %+v vs %+v", got.result, first.result)
+					}
+				case <-time.After(contractTimeout):
+					failf(t, "concurrent Wait callers did not all return within %v", contractTimeout)
+				}
+			}
+		},
+	}
+}
+
+func lifecycleDeadlineUnblocksWait() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "deadline-unblocks-wait",
+		Description: "A context deadline unblocks Wait with an error matching DeadlineExceeded, distinct from a plain cancel",
+		Run: func(t T, env invoke.Environment) {
+			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			defer cancel()
+
+			proc := startCommand(ctx, t, env, invoke.New("sleep", "30"), invoke.IO{})
+
+			defer func() { _ = proc.Close() }()
+
+			outcome := waitOrTimeout(t, proc)
+			if outcome.err == nil {
+				failf(t, "Wait after deadline returned nil error")
+			}
+
+			if !errors.Is(outcome.err, context.DeadlineExceeded) {
+				t.Errorf("Wait after deadline = %v, want an error matching context.DeadlineExceeded", outcome.err)
+			}
+
+			requireNotExitError(t, outcome.err, "deadline expiry")
+		},
+	}
+}
+
+func lifecycleCancelAfterExitKeepsOutcome() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "cancel-after-exit-keeps-outcome",
+		Description: "Cancellation observed after a process already exited must not rewrite its real outcome",
+		Run: func(t T, env invoke.Environment) {
+			ctx, cancel := context.WithCancel(t.Context())
+
+			proc := startCommand(ctx, t, env, invoke.New("true"), invoke.IO{})
+
+			// Let the process finish on its own, then cancel before Wait
+			// reads the outcome: the real exit-zero must win over the
+			// late cancellation.
+			outcome := waitOrTimeout(t, proc)
+
+			cancel()
+
+			// Re-read: a provider that lazily consults ctx.Err() at Wait
+			// time would corrupt the cached success here.
+			second := waitOrTimeout(t, proc)
+
+			if outcome.err != nil || second.err != nil {
+				t.Errorf("Wait = (%v, then %v), want success: the process exited 0 before cancellation",
+					outcome.err, second.err)
+			}
+
+			if second.result.ExitCode != 0 {
+				t.Errorf("ExitCode = %d after late cancel, want 0", second.result.ExitCode)
+			}
+		},
+	}
+}
+
+func lifecycleConcurrentProcessesRun() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "concurrent-processes-run",
+		Description: "One environment runs multiple processes simultaneously, each with an independent outcome",
+		Run: func(t T, env invoke.Environment) {
+			const codeA, codeB = 3, 4
+
+			procA := startCommand(t.Context(), t, env, invoke.Shell("exit 3"), invoke.IO{})
+			procB := startCommand(t.Context(), t, env, invoke.Shell("exit 4"), invoke.IO{})
+
+			// Both are alive at once (neither has been waited yet);
+			// their outcomes must not interfere.
+			outcomeA := waitOrTimeout(t, procA)
+			outcomeB := waitOrTimeout(t, procB)
+
+			if code := requireExitError(t, outcomeA.err).Code; code != codeA {
+				t.Errorf("process A exit = %d, want %d", code, codeA)
+			}
+
+			if code := requireExitError(t, outcomeB.err).Code; code != codeB {
+				t.Errorf("process B exit = %d, want %d", code, codeB)
+			}
+		},
 	}
 }
 
@@ -267,6 +401,66 @@ func lifecycleSignalTerminatesProcess() TestCase {
 
 			if exitErr.Code != -1 {
 				t.Errorf("ExitError.Code = %d for a signal death, want -1", exitErr.Code)
+			}
+		},
+	}
+}
+
+func lifecycleSignalAttributionRoundTrips() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "signal-attribution-round-trips",
+		Description: "Each supported signal name is delivered faithfully and reported back under the same name",
+		Gate: func(caps invoke.Capabilities) (bool, string) {
+			return caps.Signals, "target does not declare signal delivery; lifecycle/unsupported-signal-normalized covers it"
+		},
+		Run: func(t T, env invoke.Environment) {
+			// A provider whose name->wire mapping is wrong for any of
+			// these delivers the wrong signal (or reports the wrong name
+			// back); the kernel's own attribution catches both, since
+			// each of these signals default-terminates an untrapped
+			// process. SIGTERM is covered by signal-terminates-process.
+			for _, sig := range []invoke.Signal{invoke.SIGINT, invoke.SIGQUIT, invoke.SIGUSR1, invoke.SIGUSR2} {
+				proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
+
+				if err := proc.Signal(sig); err != nil {
+					_ = proc.Close()
+
+					failf(t, "Signal(%s) = %v, want nil on a target declaring signal delivery", sig, err)
+				}
+
+				outcome := waitOrTimeout(t, proc)
+
+				exitErr := requireExitError(t, outcome.err)
+				if exitErr.Signal != sig {
+					t.Errorf("sent %s but Wait reports Signal=%q; the name mapping is not faithful", sig, exitErr.Signal)
+				}
+
+				if exitErr.Code != -1 {
+					t.Errorf("ExitError.Code = %d for a %s death, want -1", exitErr.Code, sig)
+				}
+			}
+		},
+	}
+}
+
+func lifecycleSignalAfterExitErrors() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "signal-after-exit-errors",
+		Description: "Signaling a process that has already exited returns an error, never a silent success",
+		Gate: func(caps invoke.Capabilities) (bool, string) {
+			return caps.Signals, "target does not declare signal delivery"
+		},
+		Run: func(t T, env invoke.Environment) {
+			proc := startCommand(t.Context(), t, env, invoke.New("true"), invoke.IO{})
+
+			if outcome := waitOrTimeout(t, proc); outcome.err != nil {
+				failf(t, "Wait = %v, want success", outcome.err)
+			}
+
+			if err := proc.Signal(invoke.SIGTERM); err == nil {
+				t.Errorf("Signal after exit = nil; signaling a gone process must report an error, not silently succeed")
 			}
 		},
 	}
