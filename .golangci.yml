@@ -127,11 +127,36 @@ linters:
       linters:
         - forcetypeassert  # Test assertions on known types.
         - funlen           # Table-driven tests read better unsplit.
+    # Test fixtures pin exact file and directory modes on purpose, at
+    # paths derived from t.TempDir; the modes and paths are the subject
+    # under test, not a hardening oversight.
+    - path: '(.+)_test\.go'
+      text: "G301|G302|G304|G306"
+      linters:
+        - gosec
+    # Launching caller-specified processes is this file's entire purpose;
+    # the command comes from the API caller, not from external input.
+    - path: 'local/process\.go'
+      text: "G204"
+      linters:
+        - gosec
+    # Transferring caller-specified paths is this file's entire purpose
+    # (G304). Directories are created at the conventional 0755: walked
+    # directories are then chmod'd to the source's real mode, and created
+    # parents keep the same default cp and install use (G301).
+    - path: 'local/files\.go'
+      text: "G301|G304"
+      linters:
+        - gosec
     # NOTE: gosec has no blanket exclusions, by policy. When provider code
     # needs an exemption, scope it to the file and justify it inline so real
     # findings are never masked wholesale.
 
   settings:
+    exhaustive:
+      # A default case is a deliberate catch-all; switches without one
+      # remain fully checked.
+      default-signifies-exhaustive: true
     funlen:
       lines: 80
       statements: 50
