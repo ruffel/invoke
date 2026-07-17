@@ -65,15 +65,16 @@ type defects struct {
 	plainLookPathError bool // strip ErrNotFound from LookPath failures
 
 	// Transfer defects.
-	corruptUploads     bool // upload garbage in place of the source
-	flattenModes       bool // force a fixed mode, ignoring source and option
-	dropModeOption     bool // strip WithMode from the options
-	destroyOnFailure   bool // clobber the destination when a transfer fails
-	shallowTrees       bool // upload only a tree's top-level files
-	dropSymlinks       bool // silently skip symlinks in transfers
-	followLies         bool // treat SymlinkFollow as SymlinkSkip
-	alwaysSkipSpecial  bool // force WithSkipSpecial regardless of options
-	zeroProgressTotals bool // report Total as zero in progress callbacks
+	corruptUploads           bool // upload garbage in place of the source
+	flattenModes             bool // force a fixed mode, ignoring source and option
+	dropModeOption           bool // strip WithMode from the options
+	destroyOnFailure         bool // clobber the upload destination when a transfer fails
+	destroyDownloadOnFailure bool // clobber the local destination when a download fails
+	shallowTrees             bool // upload only a tree's top-level files
+	dropSymlinks             bool // silently skip symlinks in transfers
+	followLies               bool // treat SymlinkFollow as SymlinkSkip
+	alwaysSkipSpecial        bool // force WithSkipSpecial regardless of options
+	zeroProgressTotals       bool // report Total as zero in progress callbacks
 
 	// TTY defects.
 	claimTTY bool // advertise the TTY capability while allocating nothing
@@ -205,7 +206,12 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 }
 
 func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
-	return m.base.Download(ctx, remotePath, localPath, opts...)
+	err := m.base.Download(ctx, remotePath, localPath, opts...)
+	if err != nil && m.d.destroyDownloadOnFailure {
+		_ = os.WriteFile(localPath, []byte("CLOBBERED"), 0o600)
+	}
+
+	return err
 }
 
 func (m *misbehaveEnv) OS() invoke.TargetOS {
@@ -620,13 +626,17 @@ func defectCatalog() []defectCase {
 		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
 
 		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},
+		{name: "corrupted binary", contract: "transfer/binary-content-survives", defects: defects{corruptUploads: true}},
 		{name: "flattened modes", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{flattenModes: true}},
 		{name: "dropped mode option", contract: "transfer/mode-override-applies-on-overwrite", defects: defects{dropModeOption: true}},
 		{name: "destroy on failure", contract: "transfer/failure-preserves-destination", defects: defects{destroyOnFailure: true}},
 		{name: "destroy on cancel", contract: "transfer/cancel-preserves-destination", defects: defects{destroyOnFailure: true}},
+		{name: "destroy download on cancel", contract: "transfer/download-cancel-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
 		{name: "shallow trees", contract: "transfer/tree-roundtrip-creates-parents", defects: defects{shallowTrees: true}},
+		{name: "shallow empty tree", contract: "transfer/empty-files-and-dirs", defects: defects{shallowTrees: true}},
 		{name: "dropped symlinks", contract: "transfer/symlinks-preserve", defects: defects{dropSymlinks: true}},
-		{name: "follow lies", contract: "transfer/follow-rejects-escapes", defects: defects{followLies: true}},
+		{name: "follow lies on escape", contract: "transfer/follow-rejects-escapes", defects: defects{followLies: true}},
+		{name: "follow lies on content", contract: "transfer/symlink-follow-copies-content", defects: defects{followLies: true}},
 		{name: "forced special skip", contract: "transfer/special-files-error-by-default", defects: defects{alwaysSkipSpecial: true}},
 		{name: "zeroed progress totals", contract: "transfer/progress-reports-totals", defects: defects{zeroProgressTotals: true}},
 

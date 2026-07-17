@@ -61,12 +61,6 @@ func (v *vfs) isDir(p string) bool {
 	return ok && node.dir
 }
 
-func (v *vfs) exists(p string) bool {
-	_, ok := v.get(p)
-
-	return ok
-}
-
 func (v *vfs) mkdirAll(p string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()

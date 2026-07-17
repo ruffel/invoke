@@ -1,6 +1,7 @@
 package invoketest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
@@ -21,17 +22,187 @@ const (
 	bigFileBytes = 1 << 20
 )
 
+// binaryTail returns bytes appended after the 0-255 ramp in the
+// binary-fidelity fixture: a NUL, a high byte, a newline, and a trailing
+// NUL.
+func binaryTail() []byte {
+	return []byte{0x00, 0xFF, '\n', 0x00}
+}
+
 func transferContracts() []TestCase {
 	return []TestCase{
 		transferRoundTrip(),
+		transferBinaryContentSurvives(),
 		transferModeOverride(),
 		transferFailurePreservesDestination(),
 		transferCancelPreservesDestination(),
+		transferDownloadCancelPreservesDestination(),
 		transferTreeCreatesParents(),
+		transferEmptyFilesAndDirs(),
 		transferSymlinksPreserve(),
+		transferSymlinkFollowCopiesContent(),
 		transferFollowRejectsEscapes(),
 		transferSpecialFiles(),
 		transferProgressTotals(),
+	}
+}
+
+func transferBinaryContentSurvives() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "binary-content-survives",
+		Description: "Arbitrary bytes, including NUL and high bytes, round-trip through a transfer unchanged",
+		Run: func(t T, env invoke.Environment) {
+			// A spread of bytes that trips text-mode or C-string
+			// assumptions: a full 0-255 ramp, then a NUL-bracketed tail.
+			const rampSize = 256
+
+			payload := make([]byte, 0, rampSize+len(binaryTail()))
+			for b := range rampSize {
+				payload = append(payload, byte(b))
+			}
+
+			payload = append(payload, binaryTail()...)
+
+			src := filepath.Join(t.TempDir(), "blob.bin")
+			if err := os.WriteFile(src, payload, 0o600); err != nil {
+				failf(t, "writing binary fixture: %v", err)
+			}
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			if err := env.Upload(t.Context(), src, remote); err != nil {
+				failf(t, "Upload = %v", err)
+			}
+
+			back := filepath.Join(t.TempDir(), "back.bin")
+			if err := env.Download(t.Context(), remote, back); err != nil {
+				failf(t, "Download = %v", err)
+			}
+
+			got, err := os.ReadFile(back)
+			if err != nil {
+				failf(t, "reading round-tripped blob: %v", err)
+			}
+
+			if !bytes.Equal(got, payload) {
+				t.Errorf("binary content changed in transit: got %d bytes, want %d", len(got), len(payload))
+			}
+		},
+	}
+}
+
+func transferDownloadCancelPreservesDestination() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "download-cancel-preserves-destination",
+		Description: "A download canceled mid-flight errors and leaves an existing local destination intact",
+		Run: func(t T, env invoke.Environment) {
+			// Seed a large file on the target, and a precious local
+			// destination the canceled download must not corrupt.
+			srcDir := t.TempDir()
+			big := writeHostFixture(t, srcDir, "big.bin", strings.Repeat("y", bigFileBytes))
+			remote := "/tmp/invoke-xfer-" + token(t)
+
+			defer cleanupTargetPath(t, env, remote)
+
+			if err := env.Upload(t.Context(), big, remote); err != nil {
+				failf(t, "seeding Upload = %v", err)
+			}
+
+			dstDir := t.TempDir()
+			dst := writeHostFixture(t, dstDir, "dst.bin", "precious local destination")
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			err := env.Download(ctx, remote, dst, invoke.WithProgress(func(_ invoke.TransferProgress) {
+				cancel()
+			}))
+			if err == nil {
+				failf(t, "canceled Download reported success")
+			}
+
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("canceled Download = %v, want an error matching context.Canceled", err)
+			}
+
+			if got := readHostFile(t, dst); got != "precious local destination" {
+				t.Errorf("local destination = %q after a canceled download; atomicity was violated", got)
+			}
+		},
+	}
+}
+
+func transferEmptyFilesAndDirs() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "empty-files-and-dirs",
+		Description: "Zero-byte files and empty directories survive a directory transfer",
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			writeHostFixture(t, srcDir, "empty.txt", "")
+
+			emptyDir := filepath.Join(srcDir, "hollow")
+			if err := os.Mkdir(emptyDir, 0o750); err != nil {
+				failf(t, "mkdir: %v", err)
+			}
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			if err := env.Upload(t.Context(), srcDir, remote); err != nil {
+				failf(t, "Upload = %v", err)
+			}
+
+			if !targetProbe(t, env, "test -d "+shellQuote(remote+"/hollow")) {
+				t.Errorf("empty directory did not survive the transfer")
+			}
+
+			local := downloadBack(t, env, remote)
+			if got := readHostFile(t, filepath.Join(local, "empty.txt")); got != "" {
+				t.Errorf("empty.txt round-tripped as %q, want empty", got)
+			}
+		},
+	}
+}
+
+func transferSymlinkFollowCopiesContent() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "symlink-follow-copies-content",
+		Description: "SymlinkFollow replaces an in-root link with its target's content, not a link and not nothing",
+		Gate: func(caps invoke.Capabilities) (bool, string) {
+			return caps.SymlinkPreserve, "target does not declare symlink handling"
+		},
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			writeHostFixture(t, srcDir, "real.txt", "followed content")
+
+			if err := os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")); err != nil {
+				failf(t, "symlink: %v", err)
+			}
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			if err := env.Upload(t.Context(), srcDir, remote, invoke.WithSymlinks(invoke.SymlinkFollow)); err != nil {
+				failf(t, "Upload = %v", err)
+			}
+
+			// On the target, the link path must be a regular file whose
+			// content matches the target — not a symlink, not missing.
+			linkPath := shellQuote(remote + "/link.txt")
+			if !targetProbe(t, env, "test -f "+linkPath+" && test ! -L "+linkPath) {
+				t.Errorf("followed link is not a regular file on the target")
+			}
+
+			local := downloadBack(t, env, remote)
+			if got := readHostFile(t, filepath.Join(local, "link.txt")); got != "followed content" {
+				t.Errorf("followed link content = %q, want the target's content", got)
+			}
+		},
 	}
 }
 
@@ -236,8 +407,13 @@ func transferTreeCreatesParents() TestCase {
 			writeHostFixture(t, srcDir, "top.txt", "top")
 
 			nested := filepath.Join(srcDir, "nested")
-			if err := os.Mkdir(nested, 0o755); err != nil {
+			if err := os.Mkdir(nested, 0o700); err != nil {
 				failf(t, "mkdir: %v", err)
+			}
+
+			// os.Mkdir is umask-subject; pin the intended dir mode.
+			if err := os.Chmod(nested, 0o700); err != nil {
+				failf(t, "chmod: %v", err)
 			}
 
 			writeHostFixture(t, nested, "deep.txt", "deep")
@@ -249,6 +425,12 @@ func transferTreeCreatesParents() TestCase {
 
 			if err := env.Upload(t.Context(), srcDir, remote); err != nil {
 				failf(t, "Upload = %v", err)
+			}
+
+			// The nested directory's own mode must survive the upload,
+			// verified on the target rather than through a download.
+			if !probeTargetMode(t, env, remote+"/nested", 0o700) {
+				t.Errorf("nested directory mode was not preserved on the target")
 			}
 
 			local := downloadBack(t, env, remote)

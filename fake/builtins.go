@@ -224,9 +224,22 @@ func evalTest(s *session, args []string) bool {
 		return false
 	}
 
+	path := vfsClean(s.dir, args[1])
+
+	node, exists := s.fs.snapshot(path)
+
 	switch args[0] {
 	case "-e":
-		return s.fs.exists(vfsClean(s.dir, args[1]))
+		return exists
+	case "-d":
+		return exists && node.dir
+	case "-f":
+		// A regular file: present, and neither a directory nor a link.
+		// The fake does not follow links here, which suffices for the
+		// contracts that probe already-materialized regular files.
+		return exists && !node.dir && node.link == ""
+	case "-L":
+		return exists && node.link != ""
 	case "-n":
 		return args[1] != ""
 	case "-t":

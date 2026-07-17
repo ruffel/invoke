@@ -152,7 +152,7 @@ linters:
     # construct themselves; the file operations are the subject under
     # test.
     - path: 'invoketest/contracts_transfer\.go'
-      text: "G301|G304"
+      text: "G301|G302|G304"
       linters:
         - gosec
     # The fake's transfer layer moves caller-specified paths between the
@@ -194,6 +194,9 @@ linters:
       # Terminal dimensions.
       - "40"
       - "80"
+      # Additional directory/file permissions used in fixtures.
+      - "0o700"
+      - "0o750"
       # Common timeouts/intervals.
       - "10"
       - "30"
