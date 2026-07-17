@@ -16,7 +16,8 @@ type Result struct {
 	// which one).
 	ExitCode int
 
-	// Duration is the wall-clock time from process start to process
-	// exit. It excludes time spent draining output after exit.
+	// Duration is the wall-clock time from process start until its exit
+	// was observed. Observation can lag the exit itself by output-drain
+	// time, bounded by the provider's wait timeout.
 	Duration time.Duration
 }
