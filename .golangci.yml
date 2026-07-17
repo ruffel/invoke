@@ -1,0 +1,178 @@
+version: "2"
+
+run:
+  concurrency: 4
+  timeout: 5m
+  issues-exit-code: 1
+  tests: true
+
+linters:
+  enable:
+  - asasalint                  # Check for pass []any as any in variadic func(...any).
+  - asciicheck                 # Checks that all code identifiers does not have non-ASCII symbols in the name.
+  - bidichk                    # Checks for dangerous unicode character sequences.
+  - bodyclose                  # Checks whether HTTP response body is closed successfully.
+  - canonicalheader            # Checks whether net/http.Header uses canonical header.
+  - containedctx               # Detects struct contained context.Context field.
+  - contextcheck               # Check whether the function uses a non-inherited context.
+  - copyloopvar                # Detects places where loop variables are copied.
+  - cyclop                     # Checks function and package cyclomatic complexity.
+  - decorder                   # Check declaration order and count of types, constants, variables and functions.
+  - dogsled                    # Checks assignments with too many blank identifiers.
+  - dupl                       # Detects duplicate fragments of code.
+  - dupword                    # Checks for duplicate words in the source code.
+  - durationcheck              # Check for two durations multiplied together.
+  - embeddedstructfieldcheck   # Embedded types should be at the top of the field list of a struct.
+  - errcheck                   # Checks for unchecked errors in Go code.
+  - errchkjson                 # Checks types passed to the json encoding functions.
+  - errname                    # Checks that sentinel errors are prefixed with Err and error types are suffixed with Error.
+  - errorlint                  # Find code that can cause problems with the error wrapping scheme.
+  - exhaustive                 # Check exhaustiveness of enum switch statements.
+  - exptostd                   # Detects functions from golang.org/x/exp/ that can be replaced by std functions.
+  - fatcontext                 # Detects nested contexts in loops and function literals.
+  - forbidigo                  # Forbids identifiers.
+  - forcetypeassert            # Find forced type assertions.
+  - funcorder                  # Checks the order of functions, methods, and constructors.
+  - funlen                     # Checks for long functions.
+  - ginkgolinter               # Enforces standards of using ginkgo and gomega.
+  - gocheckcompilerdirectives  # Checks that go compiler directive comments (//go:) are valid.
+  - gochecknoglobals           # Check that no global variables exist.
+  - gochecknoinits             # Checks that no init functions are present in Go code.
+  - gochecksumtype             # Run exhaustiveness checks on Go "sum types".
+  - gocognit                   # Computes and checks the cognitive complexity of functions.
+  - goconst                    # Finds repeated strings that could be replaced by a constant.
+  - gocritic                   # Provides diagnostics that check for bugs, performance and style issues.
+  - gocyclo                    # Computes and checks the cyclomatic complexity of functions.
+  - godoclint                  # Checks Golang's documentation practice (godoc).
+  - godot                      # Check if comments end in a period.
+  - godox                      # Detects usage of FIXME, TODO and other keywords inside comments.
+  - goheader                   # Check if file header matches to pattern.
+  - gomoddirectives            # Manage the use of 'replace', 'retract', and 'excludes' directives in go.mod.
+  - gomodguard                 # Allow and blocklist linter for direct Go module dependencies.
+  - goprintffuncname           # Checks that printf-like functions are named with f at the end.
+  - gosec                      # Inspects source code for security problems.
+  - gosmopolitan               # Report certain i18n/l10n anti-patterns.
+  - govet                      # Examines Go source code and reports suspicious constructs.
+  - grouper                    # Analyze expression groups.
+  - iface                      # Detect the incorrect use of interfaces.
+  - importas                   # Enforces consistent import aliases.
+  - inamedparam                # Reports interfaces with unnamed method parameters.
+  - ineffassign                # Detects when assignments to existing variables are not used.
+  - interfacebloat             # Checks the number of methods inside an interface.
+  - intrange                   # Finds places where for loops could make use of an integer range.
+  - iotamixing                 # Checks if iotas are being used in const blocks with other declarations.
+  - lll                        # Reports long lines.
+  - loggercheck                # Checks key value pairs for common logger libraries.
+  - maintidx                   # Measures the maintainability index of each function.
+  - makezero                   # Find slice declarations with non-zero initial length.
+  - mirror                     # Reports wrong mirror patterns of bytes/strings usage.
+  - misspell                   # Finds commonly misspelled English words.
+  - mnd                        # Detects magic numbers.
+  - modernize                  # Suggests simplifications using modern language and library features.
+  - musttag                    # Enforce field tags in (un)marshaled structs.
+  - nakedret                   # Checks that functions with naked returns are not longer than a maximum size.
+  - nestif                     # Reports deeply nested if statements.
+  - nilerr                     # Find the code that returns nil even if it checks that the error is not nil.
+  - nilnesserr                 # Reports constructs that check err != nil but return a different nil value error.
+  - nilnil                     # Checks that there is no simultaneous return of nil error and an invalid value.
+  - nlreturn                   # Checks for a new line before return and branch statements.
+  - noctx                      # Detects function and method with missing usage of context.Context.
+  - nolintlint                 # Reports ill-formed or insufficient nolint directives.
+  - nonamedreturns             # Reports all named returns.
+  - nosprintfhostport          # Checks for misuse of Sprintf to construct a host with port in a URL.
+  - paralleltest               # Detects missing usage of t.Parallel() in tests.
+  - perfsprint                 # Checks that fmt.Sprintf can be replaced with a faster alternative.
+  - prealloc                   # Find slice declarations that could potentially be pre-allocated.
+  - predeclared                # Find code that shadows one of Go's predeclared identifiers.
+  - promlinter                 # Check Prometheus metrics naming via promlint.
+  - protogetter                # Reports direct reads from proto message fields when getters should be used.
+  - reassign                   # Checks that package variables are not reassigned.
+  - recvcheck                  # Checks for receiver type consistency.
+  - revive                     # Fast, configurable, extensible, flexible, and beautiful linter for Go.
+  - rowserrcheck               # Checks whether Rows.Err of rows is checked successfully.
+  - sloglint                   # Ensure consistent code style when using log/slog.
+  - spancheck                  # Checks for mistakes with OpenTelemetry/Census spans.
+  - sqlclosecheck              # Checks that sql.Rows, sql.Stmt, sqlx.NamedStmt, pgx.Query are closed.
+  - staticcheck                # The set of rules from staticcheck.
+  - tagalign                   # Check that struct tags are well aligned.
+  - tagliatelle                # Checks the struct tags.
+  - testableexamples           # Checks if examples are testable (have an expected output).
+  - testifylint                # Checks usage of github.com/stretchr/testify.
+  - thelper                    # Detects test helpers which do not start with the t.Helper() method.
+  - tparallel                  # Detects inappropriate usage of t.Parallel().
+  - unconvert                  # Remove unnecessary type conversions.
+  - unparam                    # Reports unused function parameters.
+  - unqueryvet                 # Detects SELECT * in SQL queries and SQL builders.
+  - unused                     # Checks Go code for unused constants, variables, functions and types.
+  - usestdlibvars              # Detect the possibility to use variables/constants from the Go standard library.
+  - usetesting                 # Reports uses of functions with replacement inside the testing package.
+  - wastedassign               # Finds wasted assignment statements.
+  - whitespace                 # Checks for unnecessary newlines at the start and end of functions, if, for, etc.
+  - wsl_v5                     # Add or remove empty lines.
+
+  disable:
+  # Each disable is a deliberate design choice, not a convenience.
+  - depguard                   # No import policy needed; gomodguard covers modules.
+  - err113                     # Sentinel-wrapping taxonomy is the design; dynamic errors are fine at leaves.
+  - exhaustruct                # Zero-value structs are a design feature (IO's zero value is safe).
+  - ireturn                    # Constructors return concrete types, but factories/interfaces are idiomatic elsewhere.
+  - noinlineerr                # Inline `if err := ...; err != nil` is idiomatic Go.
+  - testpackage                # Internal tests are used deliberately alongside black-box tests.
+  - varnamelen                 # Idiomatic short names in small scopes.
+  - wrapcheck                  # The error taxonomy defines wrapping points; blanket wrapping fights it.
+
+  exclusions:
+    rules:
+    - path: '(.+)_test\.go'
+      linters:
+        - forcetypeassert  # Test assertions on known types.
+        - funlen           # Table-driven tests read better unsplit.
+    # NOTE: gosec has no blanket exclusions, by policy. When provider code
+    # needs an exemption, scope it to the file and justify it inline so real
+    # findings are never masked wholesale.
+
+  settings:
+    funlen:
+      lines: 80
+      statements: 50
+    cyclop:
+      max-complexity: 16
+    lll:
+      line-length: 200
+    mnd:
+      ignored-numbers:
+      # Common file/directory permissions.
+      - "0644"
+      - "0666"
+      - "0755"
+      - "0o644"
+      - "0o666"
+      - "0o755"
+      # Not really magic: a double, or a pair.
+      - "2"
+      # SSH port.
+      - "22"
+      # Terminal dimensions.
+      - "40"
+      - "80"
+      # Common timeouts/intervals.
+      - "10"
+      - "30"
+      - "100"
+      - "500"
+    goconst:
+      ignore-string-values:
+      - "localhost"
+      - "127.0.0.1"
+      - "::1"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+  # gofumpt supersedes gofmt; gci owns import grouping (goimports would
+  # fight it). Exactly one formatter per concern.
+  - gci
+  - gofumpt
