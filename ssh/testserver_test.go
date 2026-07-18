@@ -45,6 +45,27 @@ type testServer struct {
 	sessions   int
 	keepAlives int
 	execLines  []string
+	conns      []net.Conn
+}
+
+// sever drops every accepted connection, standing in for a link that
+// dies without a close.
+func (s *testServer) sever() {
+	s.mu.Lock()
+	conns := append([]net.Conn(nil), s.conns...)
+	s.conns = nil
+	s.mu.Unlock()
+
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+func (s *testServer) trackConn(conn net.Conn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.conns = append(s.conns, conn)
 }
 
 // recordExec notes a command line the server was asked to run, so tests
@@ -212,6 +233,8 @@ func (s *testServer) acceptLoop() {
 }
 
 func (s *testServer) handleConn(conn net.Conn) {
+	s.trackConn(conn)
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
 		_ = conn.Close()

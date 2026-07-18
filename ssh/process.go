@@ -216,13 +216,20 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 		return invoke.Result{ExitCode: code, Duration: duration}, &invoke.ExitError{Code: code}
 	}
 
-	// ExitMissingError: the command ran but the server never reported a
-	// status. It is terminal — the command may have had side effects, so
-	// retrying is not safe — but it is not an exit code we can trust.
+	// ExitMissingError: the command ran but no status came back, which is
+	// what a connection dying under a running command looks like.
+	//
+	// This is deliberately terminal rather than a TransportError. The
+	// command may have already taken effect, and nothing here can tell
+	// whether it did, so retrying it would be at-least-once execution of
+	// an arbitrary command. File transfers classify the same outage as
+	// retryable because their delivery is atomic; commands have no such
+	// guarantee, and the caller must decide.
 	var missing *ssh.ExitMissingError
 	if errors.As(err, &missing) {
 		return invoke.Result{ExitCode: -1, Duration: duration},
-			fmt.Errorf("ssh: wait: remote command exited without reporting a status: %w", err)
+			fmt.Errorf("ssh: wait: the connection ended before the remote command reported a status, "+
+				"so it may or may not have run to completion: %w", err)
 	}
 
 	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.TransportError{Op: "wait", Err: err}
