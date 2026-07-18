@@ -62,6 +62,7 @@ func transferGaps() []invoketest.Option {
 		"transfer/follow-rejects-escapes",
 		"transfer/special-files-error-by-default",
 		"transfer/progress-reports-totals",
+		"transfer/canceled-before-start-does-nothing",
 	}
 
 	opts := make([]invoketest.Option, 0, len(ids))

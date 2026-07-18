@@ -75,6 +75,7 @@ type defects struct {
 	followLies               bool // treat SymlinkFollow as SymlinkSkip
 	alwaysSkipSpecial        bool // force WithSkipSpecial regardless of options
 	zeroProgressTotals       bool // report Total as zero in progress callbacks
+	transferIgnoresCancel    bool // detach a transfer from the caller's context
 
 	// TTY defects.
 	claimTTY bool // advertise the TTY capability while allocating nothing
@@ -143,6 +144,10 @@ func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error
 }
 
 func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	if m.d.transferIgnoresCancel {
+		ctx = context.WithoutCancel(ctx)
+	}
+
 	cfg := invoke.NewTransferConfig(opts...)
 
 	if m.d.dropModeOption {
@@ -652,6 +657,7 @@ func defectCatalog() []defectCase {
 		{name: "follow lies on content", contract: "transfer/symlink-follow-copies-content", defects: defects{followLies: true}},
 		{name: "forced special skip", contract: "transfer/special-files-error-by-default", defects: defects{alwaysSkipSpecial: true}},
 		{name: "zeroed progress totals", contract: "transfer/progress-reports-totals", defects: defects{zeroProgressTotals: true}},
+		{name: "transfer ignores cancel", contract: "transfer/canceled-before-start-does-nothing", defects: defects{transferIgnoresCancel: true}},
 
 		{name: "pretend TTY", contract: "tty/allocates-terminal", defects: defects{claimTTY: true}},
 		{name: "silently stripped TTY", contract: "tty/unsupported-errors", defects: defects{stripTTY: true}},

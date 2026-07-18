@@ -97,6 +97,13 @@ type FS interface {
 // transfer is safe: on a shared filesystem the paths must not alias each
 // other, and a directory may not be copied into its own subtree.
 func Copy(ctx context.Context, src FS, srcPath string, dst FS, dstPath string, cfg invoke.TransferConfig) error {
+	// Checked before anything is created, so a caller whose deadline has
+	// already expired never sees success and never leaves a destination
+	// root behind.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	e := endpoints{src: src, dst: dst}
 
 	absSrc, err := src.Abs(srcPath)

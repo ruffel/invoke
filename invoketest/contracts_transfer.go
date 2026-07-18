@@ -44,6 +44,34 @@ func transferContracts() []TestCase {
 		transferFollowRejectsEscapes(),
 		transferSpecialFiles(),
 		transferProgressTotals(),
+		transferCanceledBeforeStartDoesNothing(),
+	}
+}
+
+func transferCanceledBeforeStartDoesNothing() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "canceled-before-start-does-nothing",
+		Description: "A transfer whose context is already canceled fails without creating anything, even for an empty source",
+		Run: func(t T, env invoke.Environment) {
+			// An empty directory is the case that slips through a
+			// per-entry cancellation check: there are no entries.
+			srcDir := t.TempDir()
+
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			if err := env.Upload(ctx, srcDir, remote); !errors.Is(err, context.Canceled) {
+				t.Errorf("Upload with a canceled context = %v, want an error matching context.Canceled", err)
+			}
+
+			if targetProbe(t, env, "test -e "+shellQuote(remote)) {
+				t.Errorf("a canceled transfer created %q; it must not touch the destination", remote)
+			}
+		},
 	}
 }
 
