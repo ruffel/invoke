@@ -96,6 +96,13 @@ type FS interface {
 // Copy copies srcPath on src to dstPath on dst after validating the
 // transfer is safe: on a shared filesystem the paths must not alias each
 // other, and a directory may not be copied into its own subtree.
+//
+// The overlap guard applies only when both sides are the same filesystem,
+// which is the only case where a path on one side means anything on the
+// other. Two endpoints that happen to reach the same machine by different
+// routes — an upload to the host the caller is running on, say — cannot be
+// recognized as overlapping, and copying a directory into its own subtree
+// that way will recurse into what it is writing.
 func Copy(ctx context.Context, src FS, srcPath string, dst FS, dstPath string, cfg invoke.TransferConfig) error {
 	// Checked before anything is created, so a caller whose deadline has
 	// already expired never sees success and never leaves a destination
@@ -235,6 +242,10 @@ func (e endpoints) walk(ctx context.Context, srcDir, dstDir, rel string, dirMode
 		dstPath := e.dst.Join(dstDir, info.Name())
 		entryRel := e.src.Join(rel, info.Name())
 
+		if err := e.checkContained(srcDir, srcPath, dstDir, dstPath, info.Name()); err != nil {
+			return err
+		}
+
 		if info.IsDir() {
 			if err := e.makeDir(dstPath); err != nil {
 				return err
@@ -252,6 +263,31 @@ func (e endpoints) walk(ctx context.Context, srcDir, dstDir, rel string, dirMode
 		if err := e.copyEntry(ctx, srcPath, dstPath, entryRel, info, tctx); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+// checkContained rejects a directory entry whose name does not stay inside
+// the directory it was listed from, on either side of the transfer.
+//
+// The two sides can disagree about what separates a path: a name that is
+// an ordinary filename to the source — "a\b" on a POSIX host — is a
+// directory traversal to a Windows destination. Each side is asked with
+// its own path algebra rather than screening the name against a fixed set
+// of characters, so legitimate names are not rejected and hostile ones
+// cannot slip through on a technicality.
+func (e endpoints) checkContained(srcDir, srcPath, dstDir, dstPath, name string) error {
+	if name == "" || name == "." || name == ".." {
+		return fmt.Errorf("directory entry %q in %q is not a usable name", name, srcDir)
+	}
+
+	if !e.src.Contains(srcDir, srcPath) || srcPath == srcDir {
+		return fmt.Errorf("directory entry %q escapes its source directory %q", name, srcDir)
+	}
+
+	if !e.dst.Contains(dstDir, dstPath) || dstPath == dstDir {
+		return fmt.Errorf("directory entry %q escapes the destination directory %q", name, dstDir)
 	}
 
 	return nil
