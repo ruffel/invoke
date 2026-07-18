@@ -45,34 +45,6 @@ func asTestingT(it invoketest.T) *testing.T {
 	return tt
 }
 
-// transferGaps declares the transfer contracts as known gaps until the
-// SFTP-backed file transfer lands.
-func transferGaps() []invoketest.Option {
-	ids := []string{
-		"transfer/roundtrip-preserves-content-and-mode",
-		"transfer/binary-content-survives",
-		"transfer/mode-override-applies-on-overwrite",
-		"transfer/failure-preserves-destination",
-		"transfer/cancel-preserves-destination",
-		"transfer/download-cancel-preserves-destination",
-		"transfer/tree-roundtrip-creates-parents",
-		"transfer/empty-files-and-dirs",
-		"transfer/symlinks-preserve",
-		"transfer/symlink-follow-copies-content",
-		"transfer/follow-rejects-escapes",
-		"transfer/special-files-error-by-default",
-		"transfer/progress-reports-totals",
-		"transfer/canceled-before-start-does-nothing",
-	}
-
-	opts := make([]invoketest.Option, 0, len(ids))
-	for _, id := range ids {
-		opts = append(opts, invoketest.WithKnownGap(id, "SFTP file transfer not implemented yet"))
-	}
-
-	return opts
-}
-
 // TestSSHContractSuite runs the shared behavioral contracts against the SSH
 // provider talking to the embedded server.
 func TestSSHContractSuite(t *testing.T) {
@@ -80,7 +52,7 @@ func TestSSHContractSuite(t *testing.T) {
 
 	invoketest.Verify(t, func(it invoketest.T) invoke.Environment {
 		return dialTestServer(asTestingT(it))
-	}, transferGaps()...)
+	})
 }
 
 func TestConnectionRejectsWrongPassword(t *testing.T) {

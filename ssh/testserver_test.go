@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,13 +28,60 @@ type testServer struct {
 	config    *ssh.ServerConfig
 	listener  net.Listener
 	closeOnce sync.Once
+
+	// rejectSFTP refuses the sftp subsystem, as a host with SFTP
+	// disabled does.
+	rejectSFTP bool
+
+	// stallSFTP accepts the subsystem and then stops answering, as a
+	// half-open connection does.
+	stallSFTP bool
+
+	mu       sync.Mutex
+	sessions int
+}
+
+// serverOption configures a test server before it starts listening.
+type serverOption func(*testServer)
+
+// withoutSFTP builds a server that refuses the sftp subsystem.
+func withoutSFTP() serverOption {
+	return func(s *testServer) { s.rejectSFTP = true }
+}
+
+// withStalledSFTP builds a server whose sftp subsystem never answers.
+func withStalledSFTP() serverOption {
+	return func(s *testServer) { s.stallSFTP = true }
+}
+
+// openSessions reports how many session channels are currently open, so
+// leaks are observable.
+func (s *testServer) openSessions() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.sessions
+}
+
+func (s *testServer) sessionOpened() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sessions++
+}
+
+func (s *testServer) sessionClosed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.sessions--
 }
 
 const testPassword = "correct-horse"
 
 // startTestServer launches a server on a random localhost port and stops it
 // when the test finishes.
-func startTestServer(t *testing.T) *testServer {
+func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	t.Helper()
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -67,6 +115,10 @@ func startTestServer(t *testing.T) *testServer {
 		hostKey:  signer.PublicKey(),
 		config:   config,
 		listener: listener,
+	}
+
+	for _, opt := range opts {
+		opt(srv)
 	}
 
 	go srv.acceptLoop()
@@ -128,7 +180,13 @@ func (s *testServer) handleConn(conn net.Conn) {
 			continue
 		}
 
-		go handleSession(channel, requests)
+		s.sessionOpened()
+
+		go func() {
+			defer s.sessionClosed()
+
+			s.handleSession(channel, requests)
+		}()
 	}
 }
 
@@ -155,7 +213,7 @@ func (s *sessionState) setCmd(cmd *exec.Cmd) {
 	}
 }
 
-func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 	state := &sessionState{}
 
 	for req := range requests {
@@ -170,11 +228,33 @@ func handleSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 		case "signal":
 			state.forwardSignal(signalName(req.Payload))
 			reply(req, true)
+		case "subsystem":
+			s.startSubsystem(channel, req)
 		default:
-			// pty-req, shell, subsystem, and the rest are unsupported.
+			// pty-req, shell, and the rest are unsupported.
 			reply(req, false)
 		}
 	}
+}
+
+// startSubsystem answers a subsystem request according to the server's
+// configured SFTP behavior.
+func (s *testServer) startSubsystem(channel ssh.Channel, req *ssh.Request) {
+	if subsystemName(req.Payload) != "sftp" || s.rejectSFTP {
+		reply(req, false)
+
+		return
+	}
+
+	reply(req, true)
+
+	// A stalled server accepts the subsystem and then never answers,
+	// leaving the client blocked on a round trip.
+	if s.stallSFTP {
+		return
+	}
+
+	go serveSFTP(channel)
 }
 
 func (s *sessionState) addEnv(payload []byte) {
@@ -295,6 +375,28 @@ func signalName(payload []byte) string {
 	name, _ := readString(payload)
 
 	return name
+}
+
+// subsystemName extracts the name from a subsystem request payload.
+func subsystemName(payload []byte) string {
+	name, _ := readString(payload)
+
+	return name
+}
+
+// serveSFTP serves the SFTP subsystem for one session, backed by the
+// host's real filesystem — the same one the exec-backed probes inspect.
+func serveSFTP(channel ssh.Channel) {
+	server, err := sftp.NewServer(channel)
+	if err != nil {
+		_ = channel.Close()
+
+		return
+	}
+
+	_ = server.Serve()
+	_ = server.Close()
+	_ = channel.Close()
 }
 
 // readString reads an SSH wire string (uint32 length prefix) from b.
