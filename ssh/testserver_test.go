@@ -44,6 +44,24 @@ type testServer struct {
 	mu         sync.Mutex
 	sessions   int
 	keepAlives int
+	execLines  []string
+}
+
+// recordExec notes a command line the server was asked to run, so tests
+// can assert on what actually crossed the wire.
+func (s *testServer) recordExec(line string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.execLines = append(s.execLines, line)
+}
+
+// execLine returns the command lines the server has been asked to run.
+func (s *testServer) recordedExecs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.execLines...)
 }
 
 // serverOption configures a test server before it starts listening.
@@ -259,7 +277,10 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 			state.addEnv(req.Payload)
 			reply(req, true)
 		case "exec":
-			go runExec(channel, state, execCommand(req.Payload))
+			line := execCommand(req.Payload)
+			s.recordExec(line)
+
+			go runExec(channel, state, line)
 
 			reply(req, true)
 		case "signal":

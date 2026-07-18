@@ -48,11 +48,18 @@ const (
 // preCheckLine builds a command that validates a command's working
 // directory and executable before the real command runs, so those setup
 // failures are reported distinctly rather than as an exit code.
+//
+// The check enters the working directory first, exactly as the command
+// itself does. Resolving the executable from anywhere else would disagree
+// with where it actually runs, and would report a relative path as
+// missing when it is present. Entering the directory also covers a
+// directory that exists but cannot be used, which a type test alone would
+// let through.
 func preCheckLine(cmd invoke.Command) string {
 	var b strings.Builder
 
 	if cmd.Dir != "" {
-		b.WriteString("test -d " + quoteArg(cmd.Dir))
+		b.WriteString("cd " + quoteArg(cmd.Dir) + " 2>/dev/null")
 		b.WriteString(" || exit " + strconv.Itoa(preCheckBadDir) + "; ")
 	}
 
