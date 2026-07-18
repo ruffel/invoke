@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os/user"
 	"strconv"
@@ -30,6 +31,15 @@ type Environment struct {
 	cfg    *Config
 	client *ssh.Client
 	os     invoke.TargetOS
+
+	// agentConn is the SSH agent socket, held open for the life of the
+	// connection because agent authentication signs on demand.
+	agentConn io.Closer
+
+	// stopKeepAlive ends the keepalive loop, and keepAliveDone closes once
+	// it has actually stopped, so Close never outlives its own goroutine.
+	stopKeepAlive context.CancelFunc
+	keepAliveDone chan struct{}
 
 	mu     sync.Mutex
 	closed bool
@@ -54,35 +64,39 @@ func NewFromConfig(cfg *Config) (*Environment, error) {
 		return nil, errors.New("ssh: host is required")
 	}
 
-	client, err := connect(cfg)
+	client, agentConn, err := connect(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	env := &Environment{
-		cfg:    cfg,
-		client: client,
-		active: make(map[*process]struct{}),
+		cfg:       cfg,
+		client:    client,
+		agentConn: agentConn,
+		active:    make(map[*process]struct{}),
 	}
 
 	env.os = env.detectOS()
+	env.startKeepAlive()
 
 	return env, nil
 }
 
 // connect establishes the SSH client connection, bounding both the TCP
 // dial and the handshake by the configured timeout.
-func connect(cfg *Config) (*ssh.Client, error) {
-	auth, err := authMethods(cfg)
+func connect(cfg *Config) (*ssh.Client, io.Closer, error) {
+	auth, agentConn, err := authMethods(cfg)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.port()))
 
 	hostKeyCB, algorithms, err := resolveHostKey(cfg, addr)
 	if err != nil {
-		return nil, err
+		closeAgent(agentConn)
+
+		return nil, nil, err
 	}
 
 	clientCfg := &ssh.ClientConfig{
@@ -97,7 +111,9 @@ func connect(cfg *Config) (*ssh.Client, error) {
 	// configured timeout instead.
 	conn, err := net.DialTimeout("tcp", addr, cfg.timeout()) //nolint:noctx // Connection setup is timeout-bounded, not ctx-bounded.
 	if err != nil {
-		return nil, &invoke.TransportError{Op: "dial", Err: err}
+		closeAgent(agentConn)
+
+		return nil, nil, &invoke.TransportError{Op: "dial", Err: err}
 	}
 
 	// Bound the handshake too: ssh.Timeout only covers the TCP dial.
@@ -107,12 +123,14 @@ func connect(cfg *Config) (*ssh.Client, error) {
 	if err != nil {
 		_ = conn.Close()
 
-		return nil, &invoke.TransportError{Op: "handshake", Err: err}
+		closeAgent(agentConn)
+
+		return nil, nil, &invoke.TransportError{Op: "handshake", Err: err}
 	}
 
 	_ = conn.SetDeadline(time.Time{})
 
-	return ssh.NewClient(sshConn, chans, reqs), nil
+	return ssh.NewClient(sshConn, chans, reqs), agentConn, nil
 }
 
 // loginUser returns the configured user or the current OS user.
@@ -181,11 +199,57 @@ func (e *Environment) Close() error {
 
 	e.mu.Unlock()
 
+	// Stop probing and wait for the loop to finish before the connection
+	// goes away, so no probe outlives Close.
+	if e.stopKeepAlive != nil {
+		e.stopKeepAlive()
+		<-e.keepAliveDone
+	}
+
 	for _, p := range procs {
 		_ = p.Close()
 	}
 
-	return e.client.Close()
+	err := e.client.Close()
+
+	closeAgent(e.agentConn)
+
+	return err
+}
+
+// startKeepAlive probes the server periodically so a connection that dies
+// without a close — a dropped link, a NAT timeout — is discovered rather
+// than leaving the next operation blocked on a socket nobody is serving.
+func (e *Environment) startKeepAlive() {
+	interval := e.cfg.keepAlive()
+	if interval <= 0 {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	e.stopKeepAlive = cancel
+	e.keepAliveDone = make(chan struct{})
+
+	go func() {
+		defer close(e.keepAliveDone)
+
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				// A failed probe means the connection is gone; the
+				// operations using it report that themselves, so the
+				// loop only needs to stop asking.
+				if _, _, err := e.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 // detectOS runs uname on the remote host to classify its operating system,

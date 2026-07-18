@@ -4,8 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/skeema/knownhosts"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // resolveHostKey produces the host-key callback and the host-key algorithm
@@ -30,17 +30,19 @@ func resolveHostKey(cfg *Config, addr string) (ssh.HostKeyCallback, []string, er
 			"(or WithInsecureIgnoreHostKey for tests)")
 }
 
-// fromKnownHosts builds a host-key callback from a known_hosts file.
+// fromKnownHosts builds a host-key callback from a known_hosts file, along
+// with the host-key algorithms recorded there for this host.
 //
-// The negotiated host-key algorithms are left at the SSH defaults for now;
-// constraining them to the key types recorded for the host (which avoids a
-// mismatch error when a host is known under one key type but the server
-// offers another) lands with the provider hardening work.
-func fromKnownHosts(path, _ string) (ssh.HostKeyCallback, []string, error) {
-	cb, err := knownhosts.New(path)
+// Constraining negotiation to the recorded algorithms is what makes the
+// check usable: a server offers its preferred key type, so a host recorded
+// under one type would otherwise be reported as an unknown host — the
+// warning that means a machine-in-the-middle — merely because it was first
+// seen under another.
+func fromKnownHosts(path, addr string) (ssh.HostKeyCallback, []string, error) {
+	db, err := knownhosts.NewDB(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("ssh: loading known_hosts %q: %w", path, err)
 	}
 
-	return cb, nil, nil
+	return db.HostKeyCallback(), db.HostKeyAlgorithms(addr), nil
 }

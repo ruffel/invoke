@@ -37,8 +37,13 @@ type testServer struct {
 	// half-open connection does.
 	stallSFTP bool
 
-	mu       sync.Mutex
-	sessions int
+	// extraHostKey is offered alongside the primary key, so a client
+	// whose known_hosts records only one of them must ask for that one.
+	extraHostKey ssh.Signer
+
+	mu         sync.Mutex
+	sessions   int
+	keepAlives int
 }
 
 // serverOption configures a test server before it starts listening.
@@ -52,6 +57,34 @@ func withoutSFTP() serverOption {
 // withStalledSFTP builds a server whose sftp subsystem never answers.
 func withStalledSFTP() serverOption {
 	return func(s *testServer) { s.stallSFTP = true }
+}
+
+// withExtraHostKey offers a second host key of a different type, which
+// the client will prefer unless it constrains negotiation.
+func withExtraHostKey(signer ssh.Signer) serverOption {
+	return func(s *testServer) { s.extraHostKey = signer }
+}
+
+// keepAliveCount reports how many keepalive probes the server answered.
+func (s *testServer) keepAliveCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.keepAlives
+}
+
+// handleGlobalRequests answers connection-level requests, counting
+// keepalive probes.
+func (s *testServer) handleGlobalRequests(reqs <-chan *ssh.Request) {
+	for req := range reqs {
+		if req.Type == "keepalive@openssh.com" {
+			s.mu.Lock()
+			s.keepAlives++
+			s.mu.Unlock()
+		}
+
+		reply(req, false)
+	}
 }
 
 // openSessions reports how many session channels are currently open, so
@@ -121,6 +154,10 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 		opt(srv)
 	}
 
+	if srv.extraHostKey != nil {
+		config.AddHostKey(srv.extraHostKey)
+	}
+
 	go srv.acceptLoop()
 
 	t.Cleanup(srv.close)
@@ -166,7 +203,7 @@ func (s *testServer) handleConn(conn net.Conn) {
 
 	defer func() { _ = sshConn.Close() }()
 
-	go ssh.DiscardRequests(reqs)
+	go s.handleGlobalRequests(reqs)
 
 	for newChannel := range chans {
 		if newChannel.ChannelType() != "session" {

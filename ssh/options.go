@@ -13,6 +13,10 @@ const defaultPort = 22
 // handshake) when none is configured.
 const defaultTimeout = 30 * time.Second
 
+// defaultKeepAlive is how often the connection is probed when no interval
+// is configured.
+const defaultKeepAlive = 30 * time.Second
+
 // Config holds the settings for connecting to an SSH target. Callers
 // normally build it with [New] and the With options rather than by hand;
 // [NewFromConfig] accepts one directly.
@@ -53,6 +57,10 @@ type Config struct {
 
 	// Timeout bounds connection establishment; zero means 30s.
 	Timeout time.Duration
+
+	// KeepAlive is how often to probe the server so a silently dropped
+	// connection is discovered. Zero means 30s; negative disables it.
+	KeepAlive time.Duration
 }
 
 // Option configures a [Config].
@@ -110,6 +118,22 @@ func WithInsecureIgnoreHostKey() Option {
 // WithTimeout sets the connection establishment timeout.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Config) { c.Timeout = d }
+}
+
+// WithKeepAlive sets how often the connection is probed so a silently
+// dropped link is discovered. A non-positive interval disables probing.
+func WithKeepAlive(d time.Duration) Option {
+	return func(c *Config) { c.KeepAlive = d }
+}
+
+// keepAlive returns the configured keepalive interval or the default. A
+// negative value disables probing.
+func (c *Config) keepAlive() time.Duration {
+	if c.KeepAlive == 0 {
+		return defaultKeepAlive
+	}
+
+	return c.KeepAlive
 }
 
 // port returns the configured port or the default.

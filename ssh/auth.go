@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 
@@ -15,10 +16,14 @@ import (
 // is skipped with its reason collected, rather than aborting the whole
 // connection, so long as some method remains. If none can be assembled,
 // the collected reasons are returned.
-func authMethods(cfg *Config) ([]ssh.AuthMethod, error) {
+//
+// The returned closer releases any agent connection the methods hold; the
+// caller owns it for the life of the connection.
+func authMethods(cfg *Config) ([]ssh.AuthMethod, io.Closer, error) {
 	var (
-		methods []ssh.AuthMethod
-		skipped []error
+		methods   []ssh.AuthMethod
+		skipped   []error
+		agentConn io.Closer
 	)
 
 	if cfg.Password != "" {
@@ -34,22 +39,33 @@ func authMethods(cfg *Config) ([]ssh.AuthMethod, error) {
 	}
 
 	if cfg.UseAgent {
-		if m, err := agentAuth(); err != nil {
+		m, conn, err := agentAuth()
+		if err != nil {
 			skipped = append(skipped, err)
 		} else {
 			methods = append(methods, m)
+			agentConn = conn
 		}
 	}
 
 	if len(methods) == 0 {
+		closeAgent(agentConn)
+
 		if len(skipped) > 0 {
-			return nil, fmt.Errorf("ssh: no usable authentication method: %w", errors.Join(skipped...))
+			return nil, nil, fmt.Errorf("ssh: no usable authentication method: %w", errors.Join(skipped...))
 		}
 
-		return nil, errors.New("ssh: no authentication method configured")
+		return nil, nil, errors.New("ssh: no authentication method configured")
 	}
 
-	return methods, nil
+	return methods, agentConn, nil
+}
+
+// closeAgent releases an agent connection when one was opened.
+func closeAgent(conn io.Closer) {
+	if conn != nil {
+		_ = conn.Close()
+	}
 }
 
 // keyAuth loads a private key, decrypting it with the passphrase when one
@@ -75,20 +91,20 @@ func keyAuth(cfg *Config) (ssh.AuthMethod, error) {
 }
 
 // agentAuth connects to the SSH agent and offers its keys. The returned
-// closer must be closed when the connection is done; the caller (New)
-// tracks it on the Environment.
-func agentAuth() (ssh.AuthMethod, error) {
+// closer must be closed when the connection is done; the caller tracks it
+// on the Environment so the socket is released by Close.
+func agentAuth() (ssh.AuthMethod, io.Closer, error) {
 	socket := os.Getenv("SSH_AUTH_SOCK")
 	if socket == "" {
-		return nil, errors.New("ssh: agent requested but SSH_AUTH_SOCK is unset")
+		return nil, nil, errors.New("ssh: agent requested but SSH_AUTH_SOCK is unset")
 	}
 
 	conn, err := net.Dial("unix", socket) //nolint:noctx // Local agent socket; connection is immediate.
 	if err != nil {
-		return nil, fmt.Errorf("ssh: dialing agent: %w", err)
+		return nil, nil, fmt.Errorf("ssh: dialing agent: %w", err)
 	}
 
 	client := agent.NewClient(conn)
 
-	return ssh.PublicKeysCallback(client.Signers), nil
+	return ssh.PublicKeysCallback(client.Signers), conn, nil
 }
