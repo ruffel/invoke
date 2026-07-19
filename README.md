@@ -3,9 +3,10 @@
 Run commands and transfer files on the local machine, remote SSH hosts, and
 containers through one provider-agnostic Go interface.
 
-> **Status: pre-release.** All four providers are implemented and pass the
-> contract suite, but there is no tagged release yet, so the import path is
-> not installable.
+```sh
+go get github.com/ruffel/invoke@v0.2.0
+go get github.com/ruffel/invoke/docker@v0.2.0   # only if you need containers
+```
 
 ```go
 env, err := local.New()          // or ssh.New(ctx, host, ...), docker.New(ctx, container, ...)

@@ -2,6 +2,10 @@
 // the local machine, remote hosts over SSH, and containers — through one
 // provider-agnostic interface.
 //
+// The Docker provider lives in a separate module,
+// github.com/ruffel/invoke/docker, so its dependency tree stays out of the
+// graph of anyone who does not use it.
+//
 // # Getting started
 //
 // An [Environment] is a target. An [Executor] wraps one and adds the
