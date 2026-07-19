@@ -9,7 +9,26 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default: check
 
 # Format-check, lint, tidy-check, cross-build, race tests.
-check: fmt-check lint tidy-check build-windows test-race
+check: workspace-check fmt-check lint tidy-check build-windows test-race
+
+# Fail if the workspace demands a newer toolchain than the modules do.
+#
+# `go work init` and `go work sync` stamp the running toolchain's exact
+# patch version into go.work. Whoever runs them on a newer Go than the
+# modules declare makes the tree unbuildable for everyone else — including
+# CI, which installs the version go.mod names.
+workspace-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    workspace=$(awk '/^go /{print $2; exit}' go.work)
+    module=$(awk '/^go /{print $2; exit}' go.mod)
+
+    if [[ "$workspace" != "$module" ]]; then
+        echo "go.work declares go $workspace but go.mod declares go $module" >&2
+        echo "run: go work edit -go=$module" >&2
+        exit 1
+    fi
 
 # Build all packages, in every module.
 build:

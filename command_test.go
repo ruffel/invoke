@@ -5,6 +5,7 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
@@ -53,5 +54,46 @@ func TestCommandValidate(t *testing.T) {
 				assert.NoError(t, err)
 			}
 		})
+	}
+}
+
+// TestValidateRefusesUnusableEnvironmentEntries pins the environment names
+// a Command may carry.
+//
+// The names matter beyond tidiness: one provider has to render the
+// environment as shell text, where a name carrying punctuation stops being
+// a name and becomes commands to run. Refusing the same names on every
+// target keeps that from depending on where the command happens to run.
+func TestValidateRefusesUnusableEnvironmentEntries(t *testing.T) {
+	t.Parallel()
+
+	refused := map[string]string{
+		"shell separator":      `X; id > /tmp/pwned; Y=1`,
+		"command substitution": "A`id`=1",
+		"dollar substitution":  "B$(id)=1",
+		"no separator":         "NO_EQUALS",
+		"empty name":           "=value",
+		"leading digit":        "9LEADING=x",
+		"embedded space":       "TWO WORDS=x",
+	}
+
+	for name, entry := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := invoke.New("true")
+			cmd.Env = []string{entry}
+
+			require.Error(t, cmd.Validate(), "%q must be refused", entry)
+		})
+	}
+
+	accepted := []string{"GOOD_NAME=ok", "EMPTY=", "_LEADING_UNDERSCORE=1", "MIXED123=a=b=c"}
+
+	for _, entry := range accepted {
+		cmd := invoke.New("true")
+		cmd.Env = []string{entry}
+
+		assert.NoError(t, cmd.Validate(), "%q must be accepted", entry)
 	}
 }

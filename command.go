@@ -2,6 +2,7 @@ package invoke
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -49,6 +50,48 @@ func Shell(script string) Command {
 func (c Command) Validate() error {
 	if strings.TrimSpace(c.Path) == "" {
 		return errors.New("invoke: command path is empty")
+	}
+
+	for _, entry := range c.Env {
+		if err := validateEnvEntry(entry); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateEnvEntry rejects an environment entry that cannot be delivered
+// faithfully to every target.
+//
+// A name outside the portable set is refused rather than passed on. Some
+// targets hand the environment to the kernel, which would accept it; one
+// has to render it as shell text, where a name carrying punctuation stops
+// being a name and becomes script. Accepting it where it is harmless and
+// executing it where it is not is the worst of both, so the same names are
+// refused everywhere.
+//
+// An entry with no separator is refused for a plainer reason: nothing
+// consumes it. Every target discards it, so it can only ever be a mistake.
+func validateEnvEntry(entry string) error {
+	name, _, ok := strings.Cut(entry, "=")
+	if !ok {
+		return fmt.Errorf("invoke: environment entry %q is not KEY=VALUE", entry)
+	}
+
+	if name == "" {
+		return fmt.Errorf("invoke: environment entry %q has an empty name", entry)
+	}
+
+	for i, r := range name {
+		alpha := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if alpha || (i > 0 && r >= '0' && r <= '9') {
+			continue
+		}
+
+		return fmt.Errorf(
+			"invoke: environment name %q may contain only letters, digits and underscore, "+
+				"and may not start with a digit", name)
 	}
 
 	return nil

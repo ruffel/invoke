@@ -121,9 +121,36 @@ func TestEnvIsNotVisibleInTheCommandLine(t *testing.T) {
 	}
 }
 
-// TestMalformedEnvEntryIsIgnored checks an entry that is not KEY=VALUE is
-// dropped rather than corrupting the environment or the command line.
-func TestMalformedEnvEntryIsIgnored(t *testing.T) {
+// TestHostileEnvNameIsRefusedBeforeTheCommandRuns checks a name that would
+// become script when rendered for the shell never reaches it.
+//
+// Variables the server declines are delivered by generating shell text, so
+// a name carrying punctuation would stop being a name and start being
+// commands. The refusal happens before anything is started.
+func TestHostileEnvNameIsRefusedBeforeTheCommandRuns(t *testing.T) {
+	t.Parallel()
+
+	env := dialServer(t, startTestServer(t))
+
+	for _, hostile := range []string{
+		`X; touch /tmp/invoke-pwned; Y=1`,
+		"A`touch /tmp/invoke-pwned`=1",
+		"B$(touch /tmp/invoke-pwned)=1",
+	} {
+		cmd := invoke.New("true")
+		cmd.Env = []string{hostile}
+
+		_, err := env.Start(t.Context(), cmd, invoke.IO{})
+		require.Error(t, err, "a hostile environment name must be refused: %q", hostile)
+	}
+
+	assert.NoFileExists(t, "/tmp/invoke-pwned", "the injected command ran")
+}
+
+// TestMalformedEnvEntryIsRefused checks an entry that is not KEY=VALUE
+// fails the command rather than being dropped. No target consumes such an
+// entry, so accepting it would only ever hide a mistake.
+func TestMalformedEnvEntryIsRefused(t *testing.T) {
 	t.Parallel()
 
 	env := dialServer(t, startTestServer(t))
@@ -131,11 +158,8 @@ func TestMalformedEnvEntryIsIgnored(t *testing.T) {
 	cmd := invoke.New("printenv", "KEEP")
 	cmd.Env = []string{"NO_EQUALS_SIGN", "KEEP=kept"}
 
-	out, result, err := runOutput(t, env, cmd)
-	require.NoError(t, err)
-	require.Equal(t, 0, result.ExitCode, "a malformed entry must not break the command")
-
-	assert.Equal(t, "kept", strings.TrimSpace(out))
+	_, err := env.Start(t.Context(), cmd, invoke.IO{})
+	require.ErrorContains(t, err, "NO_EQUALS_SIGN", "the error must name the offending entry")
 }
 
 // TestUnexecutableFileIsNotFound checks a file that exists but cannot be
