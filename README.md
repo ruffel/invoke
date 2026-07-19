@@ -8,7 +8,7 @@ containers through one provider-agnostic Go interface.
 > not installable.
 
 ```go
-env, err := local.New()          // or ssh.New(host, ...), docker.New(container, ...)
+env, err := local.New()          // or ssh.New(ctx, host, ...), docker.New(ctx, container, ...)
 if err != nil {
     return err
 }

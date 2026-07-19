@@ -19,7 +19,7 @@ func dialTestServer(t *testing.T) *ssh.Environment {
 
 	srv := startTestServer(t)
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -59,7 +59,7 @@ func TestConnectionRejectsWrongPassword(t *testing.T) {
 
 	srv := startTestServer(t)
 
-	_, err := ssh.New(srv.host(),
+	_, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithPassword("wrong"),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
@@ -73,7 +73,7 @@ func TestConnectionRequiresHostKeyVerification(t *testing.T) {
 	srv := startTestServer(t)
 
 	// No known_hosts, no callback, no insecure override: fail closed.
-	_, err := ssh.New(srv.host(),
+	_, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithPassword(testPassword),
 	)
@@ -87,7 +87,7 @@ func TestWrongHostKeyIsRejected(t *testing.T) {
 	other := startTestServer(t)
 
 	// Verify against a different server's key: the handshake must fail.
-	_, err := ssh.New(srv.host(),
+	_, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithPassword(testPassword),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(other.hostKey)),

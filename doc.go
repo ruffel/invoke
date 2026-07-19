@@ -9,7 +9,7 @@
 // sudo. Constructing the target is the only line that changes between
 // them.
 //
-//	env, err := local.New()          // or ssh.New(host, ...), docker.New(container, ...)
+//	env, err := local.New()          // or ssh.New(ctx, host, ...), docker.New(ctx, container, ...)
 //	if err != nil {
 //	    return err
 //	}

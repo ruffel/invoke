@@ -1,6 +1,7 @@
 package ssh_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -62,7 +63,7 @@ func TestKnownHostsConstrainsHostKeyAlgorithms(t *testing.T) {
 	// the server would answer with, and it is not in known_hosts.
 	path := writeKnownHosts(t, srv, srv.hostKey)
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -88,7 +89,7 @@ func TestKnownHostsRejectsUnrecordedHost(t *testing.T) {
 	// Record a different server's key for this address.
 	path := writeKnownHosts(t, srv, other.hostKey)
 
-	_, err := ssh.New(srv.host(),
+	_, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -105,7 +106,7 @@ func TestKeepAliveProbesTheServer(t *testing.T) {
 
 	srv := startTestServer(t)
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -135,7 +136,7 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 
 	srv := startTestServer(t)
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -198,7 +199,7 @@ func TestAgentSocketIsReleasedOnClose(t *testing.T) {
 
 	srv := startTestServer(t)
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),
@@ -214,4 +215,26 @@ func TestAgentSocketIsReleasedOnClose(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		assert.Fail(t, "the agent socket was still open after Close; it leaks for the process lifetime")
 	}
+}
+
+// TestConstructionHonoursItsContext checks the caller's context bounds
+// connecting, which is where the blocking actually happens: a dial, a
+// handshake and a probe round trip, none of which a caller could
+// previously abandon.
+func TestConstructionHonoursItsContext(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := ssh.New(ctx, srv.host(),
+		ssh.WithPort(srv.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
+	)
+	require.Error(t, err, "construction with a canceled context must fail")
+	assert.ErrorIs(t, err, context.Canceled)
 }

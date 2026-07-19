@@ -42,17 +42,22 @@ var _ invoke.Environment = (*Environment)(nil)
 
 // New connects to the daemon and returns an Environment for the named
 // container, which must already be running.
-func New(container string, opts ...Option) (*Environment, error) {
+//
+// ctx bounds establishing the connection only — which is several round
+// trips to the daemon, not one. It does not govern the Environment
+// afterwards, which lives until Close.
+func New(ctx context.Context, container string, opts ...Option) (*Environment, error) {
 	cfg := &Config{Container: container}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	return NewFromConfig(cfg)
+	return NewFromConfig(ctx, cfg)
 }
 
-// NewFromConfig connects using a Config assembled directly.
-func NewFromConfig(cfg *Config) (*Environment, error) {
+// NewFromConfig connects using a Config assembled directly. ctx bounds
+// establishing the connection, as in [New].
+func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	if strings.TrimSpace(cfg.Container) == "" {
 		return nil, errors.New("docker: container is required")
 	}
@@ -73,14 +78,14 @@ func NewFromConfig(cfg *Config) (*Environment, error) {
 		active: make(map[*process]struct{}),
 	}
 
-	if err := env.inspectContainer(); err != nil {
+	if err := env.inspectContainer(ctx); err != nil {
 		_ = cli.Close()
 
 		return nil, err
 	}
 
-	env.os = env.detectOS()
-	env.hasShell = env.detectShell()
+	env.os = env.detectOS(ctx)
+	env.hasShell = env.detectShell(ctx)
 
 	return env, nil
 }
@@ -158,11 +163,11 @@ func (e *Environment) Close() error {
 
 // inspectContainer verifies the target exists and is running, so a
 // mistyped name fails at construction rather than on first use.
-func (e *Environment) inspectContainer() error {
-	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.timeout())
+func (e *Environment) inspectContainer(ctx context.Context) error {
+	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	info, err := e.client.ContainerInspect(ctx, e.cfg.Container)
+	info, err := e.client.ContainerInspect(probeCtx, e.cfg.Container)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return fmt.Errorf("docker: container %q: %w", e.cfg.Container, invoke.ErrNotFound)
@@ -183,11 +188,11 @@ func (e *Environment) inspectContainer() error {
 // detectOS classifies the container's operating system by asking it,
 // rather than trusting the daemon's platform label, so the answer matches
 // what commands actually run against.
-func (e *Environment) detectOS() invoke.TargetOS {
-	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.timeout())
+func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
+	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	out, code, err := e.runRaw(ctx, []string{"uname", "-s"})
+	out, code, err := e.runRaw(probeCtx, []string{"uname", "-s"})
 	if err != nil || code != 0 {
 		return invoke.OSLinux
 	}
@@ -204,11 +209,11 @@ func (e *Environment) detectOS() invoke.TargetOS {
 
 // detectShell reports whether the container has a shell, which signal
 // delivery and path lookup depend on.
-func (e *Environment) detectShell() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.timeout())
+func (e *Environment) detectShell(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	_, code, err := e.runRaw(ctx, []string{"sh", "-c", "exit 0"})
+	_, code, err := e.runRaw(probeCtx, []string{"sh", "-c", "exit 0"})
 
 	return err == nil && code == 0
 }

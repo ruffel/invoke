@@ -21,7 +21,7 @@ import (
 func dialServer(t *testing.T, srv *testServer) *ssh.Environment {
 	t.Helper()
 
-	env, err := ssh.New(srv.host(),
+	env, err := ssh.New(t.Context(), srv.host(),
 		ssh.WithPort(srv.port()),
 		ssh.WithUser("tester"),
 		ssh.WithPassword(testPassword),

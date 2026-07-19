@@ -91,7 +91,7 @@ func waitForSSHD(t *testing.T, id string) int {
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		env, err := ssh.New("127.0.0.1",
+		env, err := ssh.New(t.Context(), "127.0.0.1",
 			ssh.WithPort(port),
 			ssh.WithUser(opensshUser),
 			ssh.WithPassword(opensshPassword),
@@ -148,7 +148,7 @@ func dialOpenSSH(t *testing.T, port int, opts ...ssh.Option) *ssh.Environment {
 		ssh.WithInsecureIgnoreHostKey(),
 	}
 
-	env, err := ssh.New("127.0.0.1", append(base, opts...)...)
+	env, err := ssh.New(t.Context(), "127.0.0.1", append(base, opts...)...)
 	require.NoError(t, err, "connecting to the containerized sshd")
 
 	t.Cleanup(func() { _ = env.Close() })

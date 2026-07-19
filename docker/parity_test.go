@@ -281,7 +281,7 @@ func startProviders(t *testing.T) map[string]invoke.Environment {
 
 	id := startContainer(t)
 
-	dockerEnv, err := docker.New(id, docker.WithHost(daemonHost(t)))
+	dockerEnv, err := docker.New(t.Context(), id, docker.WithHost(daemonHost(t)))
 	require.NoError(t, err, "docker.New")
 
 	t.Cleanup(func() { _ = dockerEnv.Close() })
@@ -330,7 +330,7 @@ func startParitySSHD(t *testing.T) invoke.Environment {
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		env, dialErr := ssh.New("127.0.0.1",
+		env, dialErr := ssh.New(t.Context(), "127.0.0.1",
 			ssh.WithPort(port), ssh.WithUser(user), ssh.WithPassword(password),
 			ssh.WithInsecureIgnoreHostKey())
 		if dialErr == nil {

@@ -49,22 +49,26 @@ type Environment struct {
 var _ invoke.Environment = (*Environment)(nil)
 
 // New connects to host over SSH and returns an Environment for it.
-func New(host string, opts ...Option) (*Environment, error) {
+//
+// ctx bounds establishing the connection only. It does not govern the
+// Environment afterwards, which lives until Close.
+func New(ctx context.Context, host string, opts ...Option) (*Environment, error) {
 	cfg := &Config{Host: host}
 	for _, opt := range opts {
 		opt(cfg)
 	}
 
-	return NewFromConfig(cfg)
+	return NewFromConfig(ctx, cfg)
 }
 
-// NewFromConfig connects using a Config assembled directly.
-func NewFromConfig(cfg *Config) (*Environment, error) {
+// NewFromConfig connects using a Config assembled directly. ctx bounds
+// establishing the connection, as in [New].
+func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	if strings.TrimSpace(cfg.Host) == "" {
 		return nil, errors.New("ssh: host is required")
 	}
 
-	client, agentConn, err := connect(cfg)
+	client, agentConn, err := connect(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +80,13 @@ func NewFromConfig(cfg *Config) (*Environment, error) {
 		active:    make(map[*process]struct{}),
 	}
 
-	env.os = env.detectOS()
+	env.os = env.detectOS(ctx)
+
+	// Deliberately not the caller's context: the probe loop belongs to
+	// the connection, which outlives whatever was being done when it was
+	// opened. Ending it with that work would leave the connection
+	// unwatched for the rest of its life.
+	//nolint:contextcheck // The loop's lifetime is the connection's; Close ends it.
 	env.startKeepAlive()
 
 	return env, nil
@@ -84,7 +94,7 @@ func NewFromConfig(cfg *Config) (*Environment, error) {
 
 // connect establishes the SSH client connection, bounding both the TCP
 // dial and the handshake by the configured timeout.
-func connect(cfg *Config) (*ssh.Client, io.Closer, error) {
+func connect(ctx context.Context, cfg *Config) (*ssh.Client, io.Closer, error) {
 	auth, agentConn, err := authMethods(cfg)
 	if err != nil {
 		return nil, nil, err
@@ -107,17 +117,24 @@ func connect(cfg *Config) (*ssh.Client, io.Closer, error) {
 		Timeout:           cfg.timeout(),
 	}
 
-	// New has no context; the dial and handshake are bounded by the
-	// configured timeout instead.
-	conn, err := net.DialTimeout("tcp", addr, cfg.timeout()) //nolint:noctx // Connection setup is timeout-bounded, not ctx-bounded.
+	// The configured timeout is an upper bound; the caller's context can
+	// cut setup shorter, and does when it carries the earlier deadline.
+	dialCtx, cancel := context.WithTimeout(ctx, cfg.timeout())
+	defer cancel()
+
+	var dialer net.Dialer
+
+	conn, err := dialer.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		closeAgent(agentConn)
 
 		return nil, nil, &invoke.TransportError{Op: "dial", Err: err}
 	}
 
-	// Bound the handshake too: ssh.Timeout only covers the TCP dial.
-	_ = conn.SetDeadline(time.Now().Add(cfg.timeout()))
+	// Bound the handshake too: the dial context does not reach it, and a
+	// server that accepts and then says nothing would otherwise hold the
+	// call open indefinitely.
+	_ = conn.SetDeadline(handshakeDeadline(dialCtx, cfg.timeout()))
 
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientCfg)
 	if err != nil {
@@ -131,6 +148,18 @@ func connect(cfg *Config) (*ssh.Client, io.Closer, error) {
 	_ = conn.SetDeadline(time.Time{})
 
 	return ssh.NewClient(sshConn, chans, reqs), agentConn, nil
+}
+
+// handshakeDeadline is the earlier of the context's deadline and the
+// configured timeout, so neither bound is exceeded.
+func handshakeDeadline(ctx context.Context, timeout time.Duration) time.Time {
+	deadline := time.Now().Add(timeout)
+
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		return ctxDeadline
+	}
+
+	return deadline
 }
 
 // loginUser returns the configured user or the current OS user.
@@ -256,11 +285,11 @@ func (e *Environment) startKeepAlive() {
 
 // detectOS runs uname on the remote host to classify its operating system,
 // defaulting to Linux when the answer is unrecognized.
-func (e *Environment) detectOS() invoke.TargetOS {
-	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.timeout())
+func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
+	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	out, code, err := e.runRaw(ctx, "uname -s")
+	out, code, err := e.runRaw(probeCtx, "uname -s")
 	if err != nil || code != 0 {
 		return invoke.OSLinux
 	}
