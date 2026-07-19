@@ -80,7 +80,7 @@ type defects struct {
 
 	// TTY defects.
 	claimTTY bool // advertise the TTY capability while allocating nothing
-	stripTTY bool // discard IO.TTY instead of refusing it
+	stripTTY bool // report no TTY support, then discard IO.TTY instead of refusing it
 }
 
 // misbehaveEnv wraps a real Environment and applies the configured
@@ -238,8 +238,16 @@ func (m *misbehaveEnv) OS() invoke.TargetOS {
 
 func (m *misbehaveEnv) Capabilities() invoke.Capabilities {
 	caps := m.base.Capabilities()
+
 	if m.d.claimTTY {
 		caps.TTY = true
+	}
+
+	// The defect being injected is a target that cannot allocate a
+	// terminal and ignores the request instead of refusing it, so it has
+	// to present itself as one — whatever the wrapped target can do.
+	if m.d.stripTTY {
+		caps.TTY = false
 	}
 
 	return caps

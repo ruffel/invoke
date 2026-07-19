@@ -191,13 +191,56 @@ func TestMissingBinaryIsNotFound(t *testing.T) {
 	assert.ErrorIs(t, err, invoke.ErrNotFound, "Start(missing path)")
 }
 
-func TestTTYIsNotSupported(t *testing.T) {
+// TestTTYMergesStderrIntoStdout checks what a terminal is, beyond
+// answering yes to "am I a terminal": one stream carrying both, because
+// a terminal has no second channel to keep them apart on.
+func TestTTYMergesStderrIntoStdout(t *testing.T) {
 	t.Parallel()
 
 	env := newEnv(t)
 
-	_, err := env.Start(t.Context(), invoke.New("true"), invoke.IO{TTY: &invoke.TTY{}})
-	assert.ErrorIs(t, err, invoke.ErrNotSupported, "Start with TTY")
+	var stdout, stderr strings.Builder
+
+	begun := time.Now()
+
+	proc, err := env.Start(t.Context(),
+		invoke.Shell("echo to-stdout; echo to-stderr >&2"),
+		invoke.IO{Stdout: &stdout, Stderr: &stderr, TTY: &invoke.TTY{}})
+	require.NoError(t, err, "Start with a terminal")
+
+	_, waitErr := proc.Wait()
+	require.NoError(t, waitErr)
+
+	// A terminal ends when nothing holds it open, so the parent must let
+	// go of the command's end. Holding it makes the read outlive the
+	// command and stall until the grace period expires — on the systems
+	// where reading a terminal nobody has finished with blocks at all.
+	assert.Less(t, time.Since(begun), time.Second,
+		"the wait stalled; the parent is still holding the command's end of the terminal")
+
+	assert.Contains(t, stdout.String(), "to-stdout")
+	assert.Contains(t, stdout.String(), "to-stderr", "a terminal merges the two streams")
+	assert.Empty(t, stderr.String(), "nothing is left for a separate stderr to carry")
+}
+
+// TestTTYReportsTheRequestedSize checks the dimensions reach the command,
+// since a terminal that is always 80x24 is not one the caller asked for.
+func TestTTYReportsTheRequestedSize(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(t)
+
+	var stdout strings.Builder
+
+	proc, err := env.Start(t.Context(),
+		invoke.Shell("stty size"),
+		invoke.IO{Stdout: &stdout, TTY: &invoke.TTY{Cols: 120, Rows: 40}})
+	require.NoError(t, err, "Start with a terminal")
+
+	_, waitErr := proc.Wait()
+	require.NoError(t, waitErr)
+
+	assert.Contains(t, stdout.String(), "40 120", "want the requested rows and columns")
 }
 
 func TestWaitIsIdempotent(t *testing.T) {

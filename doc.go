@@ -62,7 +62,7 @@
 // declared capability must work, and an undeclared one must fail with
 // [ErrNotSupported] rather than being quietly ignored.
 //
-//   - TTY — allocated by ssh and docker. Not by local.
+//   - TTY — allocated by every target that runs real processes.
 //   - Signals — delivered by every target, though a container must have a
 //     shell for one to reach the right process; without a shell the
 //     capability is not declared. The docker package documents why.

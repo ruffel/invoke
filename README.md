@@ -57,7 +57,7 @@ capability must work, and an undeclared one must fail with
 
 | Capability | local | ssh | docker | fake |
 |-------------------|:-----:|:---:|:------:|:----:|
-| `TTY`             | no    | yes | yes    | no   |
+| `TTY`             | yes   | yes | yes    | no   |
 | `Signals`         | yes   | yes | yes¹   | yes  |
 | `SymlinkPreserve` | yes   | yes | yes    | yes  |
 
@@ -92,8 +92,6 @@ misbehaving.
 passed to `WithHost`, then `DOCKER_HOST`, then the current context. A
 context reached over TLS is reported as unsupported rather than connected
 to without its certificates.
-
-**Local does not allocate terminals.** SSH and Docker do.
 
 **A command can outlive its own exit.** Something it left running may still
 hold its output open, so `Wait` gives up after a grace period rather than

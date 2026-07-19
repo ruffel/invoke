@@ -33,9 +33,8 @@ func TestNew(t *testing.T) {
 	assert.Equal(t, runtime.GOOS, string(env.OS()), "OS()")
 
 	caps := env.Capabilities()
-	assert.False(t, caps.TTY, "Capabilities().TTY = true; local does not implement PTY allocation this cycle")
-	assert.True(t, caps.Signals && caps.SymlinkPreserve,
-		"Capabilities() = %+v, want Signals and SymlinkPreserve declared", caps)
+	assert.True(t, caps.TTY && caps.Signals && caps.SymlinkPreserve,
+		"Capabilities() = %+v, want every capability declared", caps)
 }
 
 func TestCloseIsIdempotent(t *testing.T) {

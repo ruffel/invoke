@@ -5,6 +5,10 @@
 // Windows is not a supported execution target this cycle; the package
 // compiles there, but [New] returns an error wrapping
 // [invoke.ErrNotSupported].
+//
+// A command asked for a terminal gets a real one: its own session with a
+// controlling terminal, both output streams merged onto it, and the
+// dimensions the caller requested.
 package local
 
 import (
@@ -49,12 +53,12 @@ func (e *Environment) OS() invoke.TargetOS {
 	return invoke.LocalOS()
 }
 
-// Capabilities reports the local target's optional features: signal
-// delivery and symlink-preserving transfers work; TTY allocation is not
-// implemented this cycle.
+// Capabilities reports the local target's optional features. All of them
+// are available: signal delivery, symlink-preserving transfers, and
+// terminal allocation.
 func (e *Environment) Capabilities() invoke.Capabilities {
 	return invoke.Capabilities{
-		TTY:             false,
+		TTY:             true,
 		Signals:         true,
 		SymlinkPreserve: true,
 	}

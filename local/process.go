@@ -28,6 +28,8 @@ import (
 type process struct {
 	env     *Environment
 	execCmd *exec.Cmd
+	term    *terminal
+	stdinR  *os.File
 	started time.Time
 
 	// Attribution flags: set before the corresponding kill is issued, so
@@ -65,10 +67,6 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, fmt.Errorf("local: start: %w", err)
 	}
 
-	if stdio.TTY != nil {
-		return nil, fmt.Errorf("local: start: tty allocation: %w", invoke.ErrNotSupported)
-	}
-
 	if cmd.Dir != "" && !dirExists(cmd.Dir) {
 		return nil, fmt.Errorf("local: start: workdir %q: %w", cmd.Dir, invoke.ErrInvalidWorkdir)
 	}
@@ -83,24 +81,10 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		execCmd.Env = append(os.Environ(), cmd.Env...)
 	}
 
-	setProcessGroup(execCmd)
-
 	p := &process{env: e, execCmd: execCmd}
 
-	// Stdin goes through our own pipe: the child reads an *os.File, so
-	// os/exec spawns no stdin goroutine and Wait can never block on a
-	// Reader whose Read never returns.
-	var stdinR *os.File
-
-	if stdio.Stdin != nil {
-		var err error
-
-		stdinR, p.stdinW, err = os.Pipe()
-		if err != nil {
-			return nil, fmt.Errorf("local: start: stdin pipe: %w", err)
-		}
-
-		execCmd.Stdin = stdinR
+	if err := p.attachStreams(execCmd, stdio); err != nil {
+		return nil, err
 	}
 
 	// Cancellation kills the whole process group and records the cause
@@ -118,17 +102,25 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	p.started = time.Now()
 
 	if err := execCmd.Start(); err != nil {
-		if stdinR != nil {
-			_ = stdinR.Close()
+		if p.stdinR != nil {
+			_ = p.stdinR.Close()
 			_ = p.stdinW.Close()
+		}
+
+		if p.term != nil {
+			p.term.close()
 		}
 
 		return nil, classifyStartError(cmd, err)
 	}
 
-	if stdinR != nil {
+	if p.term != nil {
+		p.term.start(execCmd, stdio)
+	}
+
+	if p.stdinR != nil {
 		// The child holds its own copy of the read end.
-		_ = stdinR.Close()
+		_ = p.stdinR.Close()
 
 		go func(src io.Reader, dst *os.File) {
 			_, _ = io.Copy(dst, src)
@@ -193,11 +185,57 @@ func (p *process) Close() error {
 	return nil
 }
 
+// attachStreams wires the command's streams, recording the parent's
+// handle on the stdin pipe when one is made.
+//
+// A terminal supplies all three streams itself and starts its own
+// session, so it stands in for both the stdin pipe and the process group.
+// Signalling still reaches the whole tree either way: a session leader's
+// process group carries its own id.
+func (p *process) attachStreams(execCmd *exec.Cmd, stdio invoke.IO) error {
+	if stdio.TTY != nil {
+		term, err := attachTerminal(execCmd, stdio.TTY)
+		if err != nil {
+			return err
+		}
+
+		p.term = term
+
+		return nil
+	}
+
+	setProcessGroup(execCmd)
+
+	if stdio.Stdin == nil {
+		return nil
+	}
+
+	// Stdin goes through our own pipe: the child reads an *os.File, so
+	// os/exec spawns no stdin goroutine and Wait can never block on a
+	// Reader whose Read never returns.
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("local: start: stdin pipe: %w", err)
+	}
+
+	p.stdinR = stdinR
+	p.stdinW = stdinW
+	execCmd.Stdin = stdinR
+
+	return nil
+}
+
 func (p *process) doWait() {
 	defer p.env.untrack(p)
 
 	err := p.execCmd.Wait()
 	p.waitReturned.Store(true)
+
+	// The terminal's output must finish arriving before the outcome is
+	// reported, or the last of it is lost.
+	if p.term != nil {
+		p.term.finish(p.env.cfg.grace())
+	}
 
 	// Release the stdin pipe: a copy goroutine still parked in the
 	// caller's Reader is abandoned (its next write fails), never
