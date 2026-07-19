@@ -2,6 +2,11 @@
 // container. It implements [invoke.Environment], verified against the
 // invoketest contract suite.
 //
+// The daemon is found the way the docker command finds it: an endpoint
+// passed to [WithHost], then DOCKER_HOST, then the endpoint recorded by
+// the current context — which is where installations that do not use the
+// conventional socket, such as Colima and Rancher Desktop, put theirs.
+//
 // Commands are delivered to the daemon as a real argument vector, so
 // nothing is reinterpreted by a shell, and environment variables travel
 // over the API rather than on a command line. Signal delivery needs a
@@ -62,9 +67,14 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		return nil, errors.New("docker: container is required")
 	}
 
+	host, err := resolveHost(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
-	if cfg.Host != "" {
-		opts = append(opts, client.WithHost(cfg.Host))
+	if host != "" {
+		opts = append(opts, client.WithHost(host))
 	}
 
 	cli, err := client.NewClientWithOpts(opts...)

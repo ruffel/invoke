@@ -281,7 +281,7 @@ func startProviders(t *testing.T) map[string]invoke.Environment {
 
 	id := startContainer(t)
 
-	dockerEnv, err := docker.New(t.Context(), id, docker.WithHost(daemonHost(t)))
+	dockerEnv, err := docker.New(t.Context(), id)
 	require.NoError(t, err, "docker.New")
 
 	t.Cleanup(func() { _ = dockerEnv.Close() })

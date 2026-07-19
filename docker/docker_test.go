@@ -19,7 +19,7 @@ func dialContainer(t *testing.T) *docker.Environment {
 
 	id := startContainer(t)
 
-	env, err := docker.New(t.Context(), id, docker.WithHost(daemonHost(t)))
+	env, err := docker.New(t.Context(), id)
 	require.NoError(t, err, "docker.New")
 
 	t.Cleanup(func() { _ = env.Close() })
@@ -50,7 +50,7 @@ func TestDockerContractSuite(t *testing.T) {
 func TestMissingContainerIsNotFound(t *testing.T) {
 	t.Parallel()
 
-	_, err := docker.New(t.Context(), "invoke-no-such-container-9f3a1c", docker.WithHost(daemonHost(t)))
+	_, err := docker.New(t.Context(), "invoke-no-such-container-9f3a1c")
 	assert.ErrorIs(t, err, invoke.ErrNotFound, "a missing container must be reported as not found")
 }
 

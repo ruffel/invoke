@@ -184,6 +184,17 @@ linters:
       text: "G301|G304"
       linters:
         - gosec
+    # The field names are docker's on-disk format, not ours to style.
+    - path: 'docker/context\.go'
+      linters:
+        - tagliatelle
+    # Reading the docker installation's own configuration is this file's
+    # entire purpose (G304); the paths are derived from the documented
+    # layout and the context name, not from anything a container controls.
+    - path: 'docker/context\.go'
+      text: "G304"
+      linters:
+        - gosec
     # NOTE: gosec has no blanket exclusions, by policy. When provider code
     # needs an exemption, scope it to the file and justify it inline so real
     # findings are never masked wholesale.

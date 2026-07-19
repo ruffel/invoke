@@ -88,9 +88,10 @@ them.
 staging transfers. Without one, both report `ErrNotSupported` rather than
 misbehaving.
 
-**Docker finds its daemon through `DOCKER_HOST` or `WithHost`.** It does
-not read Docker CLI contexts, so Colima, Rancher and Docker Desktop users
-may need to pass the endpoint explicitly.
+**Docker finds its daemon the way the `docker` command does**: an endpoint
+passed to `WithHost`, then `DOCKER_HOST`, then the current context. A
+context reached over TLS is reported as unsupported rather than connected
+to without its certificates.
 
 **Local does not allocate terminals.** SSH and Docker do.
 

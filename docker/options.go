@@ -23,9 +23,14 @@ type Config struct {
 	// Privileged runs commands with elevated privileges.
 	Privileged bool
 
-	// Host is the daemon endpoint. Empty means the environment's own
-	// configuration (DOCKER_HOST and friends).
+	// Host is the daemon endpoint. Empty means the endpoint the local
+	// docker installation is configured to use: DOCKER_HOST when set,
+	// otherwise the current context's.
 	Host string
+
+	// Context names a docker context to take the endpoint from,
+	// overriding whichever one is current.
+	Context string
 
 	// Timeout bounds daemon calls that must not block indefinitely;
 	// zero means 30s.
@@ -45,9 +50,20 @@ func WithPrivileged() Option {
 	return func(c *Config) { c.Privileged = true }
 }
 
-// WithHost sets the daemon endpoint, overriding DOCKER_HOST.
+// WithHost sets the daemon endpoint, overriding both DOCKER_HOST and any
+// context.
 func WithHost(host string) Option {
 	return func(c *Config) { c.Host = host }
+}
+
+// WithContext takes the daemon endpoint from the named docker context,
+// rather than from whichever one the installation currently selects.
+//
+// Naming a context that cannot be read fails, rather than falling back to
+// the default endpoint: the fallback is a different daemon, and commands
+// would run somewhere the caller did not choose.
+func WithContext(name string) Option {
+	return func(c *Config) { c.Context = name }
 }
 
 // WithTimeout bounds daemon calls that must not block indefinitely.
