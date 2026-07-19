@@ -109,8 +109,17 @@ func preCheckLine(cmd invoke.Command) string {
 		b.WriteString(" || exit " + strconv.Itoa(preCheckBadDir) + "; ")
 	}
 
-	b.WriteString("command -v " + quoteArg(cmd.Path) + " >/dev/null 2>&1")
-	b.WriteString(" || exit " + strconv.Itoa(preCheckNotFound))
+	// A name is resolved through PATH, which only ever yields something
+	// executable. A path is checked directly, because "command -v" given
+	// a path answers whether the file exists on some shells and whether
+	// it can be executed on others — and the first answer would let a
+	// file that cannot run reach the caller as a runtime failure instead.
+	b.WriteString("case " + quoteArg(cmd.Path) + " in ")
+	b.WriteString("*/*) [ -f " + quoteArg(cmd.Path) + " ] && [ -x " + quoteArg(cmd.Path) + " ]")
+	b.WriteString(" || exit " + strconv.Itoa(preCheckNotFound) + " ;; ")
+	b.WriteString("*) command -v " + quoteArg(cmd.Path) + " >/dev/null 2>&1")
+	b.WriteString(" || exit " + strconv.Itoa(preCheckNotFound) + " ;; ")
+	b.WriteString("esac")
 
 	return b.String()
 }

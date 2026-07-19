@@ -21,6 +21,25 @@ func remotePath(t *testing.T) string {
 	return "/tmp/invoke-test-" + strings.ReplaceAll(t.Name(), "/", "-")
 }
 
+// TestUnexecutableFileIsNotFound checks a file that exists but cannot be
+// executed is reported as unresolvable rather than as a runtime failure.
+//
+// Resolving a path with "command -v" answers whether the file exists on
+// some shells and whether it can be executed on others; a container's
+// shell gives the first answer, so the check cannot rely on it.
+func TestUnexecutableFileIsNotFound(t *testing.T) {
+	t.Parallel()
+
+	env := dialContainer(t)
+
+	path := remotePath(t)
+	_, err := runInContainer(t, env, "sh", "-c", "printf '#!/bin/sh\necho hi\n' > "+path+" && chmod 0644 "+path)
+	require.NoError(t, err)
+
+	_, err = env.Start(t.Context(), invoke.New(path), invoke.IO{})
+	assert.ErrorIs(t, err, invoke.ErrNotFound, "a non-executable file must be reported as not found")
+}
+
 // TestTrailingSeparatorIsRejected checks an ambiguous destination is
 // refused rather than guessed at. "Into this directory" and "as this
 // name" are different transfers, and picking one silently puts the

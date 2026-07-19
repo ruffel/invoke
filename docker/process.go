@@ -116,8 +116,16 @@ func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 		return nil
 	}
 
+	// A name is resolved through PATH, which only ever yields something
+	// executable. A path is checked directly, because "command -v" given
+	// a path answers whether the file exists on some shells and whether
+	// it can be executed on others — and the first answer would let a
+	// file that cannot run reach the caller as a runtime failure instead.
 	script := `if [ -n "$1" ] && ! cd "$1"; then exit 91; fi
-command -v "$2" >/dev/null 2>&1 || exit 92`
+case "$2" in
+*/*) [ -f "$2" ] && [ -x "$2" ] || exit 92 ;;
+*) command -v "$2" >/dev/null 2>&1 || exit 92 ;;
+esac`
 
 	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", cmd.Dir, cmd.Path})
 	if err != nil {
