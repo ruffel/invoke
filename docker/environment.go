@@ -91,13 +91,17 @@ func (e *Environment) OS() invoke.TargetOS {
 	return e.os
 }
 
-// Capabilities reports the container's optional features. Signal delivery
-// requires a shell to record the in-container process id; without one the
-// capability is not declared, so signal requests fail rather than being
-// silently dropped.
+// Capabilities reports the container's optional features.
+//
+// Signal delivery requires a shell to record the in-container process id;
+// without one the capability is not declared, so signal requests fail
+// rather than being silently dropped.
+//
+// Terminal allocation is available: the daemon's exec API takes a
+// terminal flag and an initial size.
 func (e *Environment) Capabilities() invoke.Capabilities {
 	return invoke.Capabilities{
-		TTY:             false,
+		TTY:             true,
 		Signals:         e.hasShell,
 		SymlinkPreserve: true,
 	}

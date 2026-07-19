@@ -28,6 +28,10 @@ type process struct {
 	copied  chan struct{}
 	copyErr error
 
+	// tty records that a terminal was allocated, which changes both the
+	// framing of the daemon's stream and where stderr goes.
+	tty bool
+
 	closedByUser atomic.Bool
 	ctxErr       func() error
 
@@ -58,22 +62,18 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, fmt.Errorf("docker: start: %w", err)
 	}
 
-	if stdio.TTY != nil {
-		return nil, fmt.Errorf("docker: start: tty allocation: %w", invoke.ErrNotSupported)
-	}
-
 	if err := e.preCheck(ctx, cmd); err != nil {
 		return nil, err
 	}
 
 	argv, pidFile := e.wrapCommand(cmd)
 
-	execID, err := e.createExec(ctx, cmd, argv)
+	execID, err := e.createExec(ctx, cmd, argv, stdio.TTY)
 	if err != nil {
 		return nil, err
 	}
 
-	attach, err := e.client.ContainerExecAttach(ctx, execID, container.ExecAttachOptions{})
+	attach, err := e.client.ContainerExecAttach(ctx, execID, container.ExecAttachOptions{Tty: stdio.TTY != nil})
 	if err != nil {
 		return nil, classifyStart(err)
 	}
@@ -84,6 +84,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		pidFile: pidFile,
 		started: time.Now(),
 		attach:  attach,
+		tty:     stdio.TTY != nil,
 		copied:  make(chan struct{}),
 		ctxErr:  ctx.Err,
 		done:    make(chan struct{}),
@@ -108,8 +109,8 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 // reach the caller as though the command had written it. Checking first
 // keeps both out of the caller's way and names the problem at Start.
 //
-// The check needs a shell; without one the same conditions are recognized
-// from the daemon's diagnostic instead (see ociSniffer).
+// The check needs a shell; without one the daemon's own behaviour stands,
+// and the condition surfaces as exit status 127.
 func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 	if !e.hasShell {
 		return nil
@@ -141,17 +142,29 @@ const (
 )
 
 // createExec registers the command with the daemon.
-func (e *Environment) createExec(ctx context.Context, cmd invoke.Command, argv []string) (string, error) {
-	resp, err := e.client.ContainerExecCreate(ctx, e.id, container.ExecOptions{
+//
+// A terminal merges the command's two output streams into one, so stderr
+// is not attached separately when one is requested; there is nothing left
+// on it to carry.
+func (e *Environment) createExec(ctx context.Context, cmd invoke.Command, argv []string, tty *invoke.TTY) (string, error) {
+	opts := container.ExecOptions{
 		User:         e.cfg.User,
 		Privileged:   e.cfg.Privileged,
 		AttachStdin:  true,
 		AttachStdout: true,
-		AttachStderr: true,
+		AttachStderr: tty == nil,
 		Env:          cmd.Env,
 		WorkingDir:   cmd.Dir,
 		Cmd:          argv,
-	})
+	}
+
+	if tty != nil {
+		cols, rows := tty.Size()
+		opts.Tty = true
+		opts.ConsoleSize = &[2]uint{uint(rows), uint(cols)} //nolint:gosec // Terminal dimensions are small positives.
+	}
+
+	resp, err := e.client.ContainerExecCreate(ctx, e.id, opts)
 	if err != nil {
 		return "", classifyStart(err)
 	}
@@ -287,6 +300,17 @@ func (p *process) pumpOutput(stdio invoke.IO) {
 	stdout := stdio.Stdout
 	if stdout == nil {
 		stdout = io.Discard
+	}
+
+	// Under a terminal the daemon sends the command's bytes as they are,
+	// with stderr already merged into them; without one it frames the two
+	// streams together and stdcopy separates them again.
+	if p.tty {
+		if _, err := io.Copy(stdout, p.attach.Reader); err != nil && !errors.Is(err, io.EOF) {
+			p.copyErr = err
+		}
+
+		return
 	}
 
 	stderr := stdio.Stderr
