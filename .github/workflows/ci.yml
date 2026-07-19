@@ -141,18 +141,11 @@ jobs:
           EOF
           go mod tidy
           go build ./...
-      - name: Build a scratch module that imports the docker module
-        run: |
-          mkdir consumer-docker && cd consumer-docker
-          go mod init example.com/consumer-docker
-          go mod edit -replace github.com/ruffel/invoke="$GITHUB_WORKSPACE/invoke"
-          go mod edit -replace github.com/ruffel/invoke/docker="$GITHUB_WORKSPACE/invoke/docker"
-          cat > main.go <<'EOF'
-          package main
-
-          import _ "github.com/ruffel/invoke/docker"
-
-          func main() {}
-          EOF
-          go mod tidy
-          go build ./...
+      # The docker module is deliberately not simulated here. It names the
+      # core module by version, and before a release that version does not
+      # exist — so the only way to make this step pass would be to replace
+      # the core module too, which satisfies the import from the
+      # consumer's own graph and never exercises what the submodule
+      # actually names. That is a job that cannot fail, which is worse than
+      # no job. release-verify.yml asks the question once the tags exist
+      # and it can be answered honestly.

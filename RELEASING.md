@@ -40,8 +40,15 @@ just test-integration
 git tag v0.2.0
 git push ruffel v0.2.0
 
-# 2. Repoint the submodule and commit.
-cd docker && go mod edit -require=github.com/ruffel/invoke@v0.2.0 && cd ..
+# 2. Repoint the submodule, tidy it, and commit.
+#
+# Tidying only becomes possible here: until the core module is published
+# there is no version for the submodule to resolve, which is why its
+# go.mod has been maintained by hand until now.
+cd docker
+go mod edit -require=github.com/ruffel/invoke@v0.2.0
+GOWORK=off go mod tidy
+cd ..
 just release-check v0.2.0          # refuses if the pin is wrong
 git commit -am "build(docker): Require the core module at v0.2.0"
 git push ruffel main
@@ -50,6 +57,11 @@ git push ruffel main
 git tag docker/v0.2.0
 git push ruffel docker/v0.2.0
 ```
+
+After this, re-enable the submodule's arm of `just tidy` and
+`just tidy-check`, and add `cd docker && go mod tidy -diff` to the CI lint
+job: the reason they were skipped stops being true once a version exists
+to resolve.
 
 ## Verifying the release
 
@@ -76,7 +88,10 @@ EOF
 go build ./...
 ```
 
-If this fails, the tag cannot be withdrawn — the proxy keeps serving it.
+The `release-verify` workflow does exactly this on every tag push, so it
+runs whether or not anyone remembers to.
+
+If it fails, the tag cannot be withdrawn — the proxy keeps serving it.
 Publish a corrected patch version instead.
 
 ## History on the proxy

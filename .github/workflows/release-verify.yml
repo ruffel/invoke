@@ -1,0 +1,82 @@
+# Verifies a tagged release the way a consumer meets it: by asking the
+# module proxy for the published versions, with no replace directives and
+# no workspace.
+#
+# This cannot run before a tag exists. The submodule names the core module
+# by version, so until that version is published there is nothing for a
+# consumer to resolve — which is why the ordinary consumer simulation in
+# ci.yml covers the core module only. Tags are permanent once the proxy
+# has served them, so this is the last chance to find out.
+name: Verify release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'docker/v*'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Resolve the published modules
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Work out which version was tagged
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#docker/}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve the core module from the proxy
+        run: |
+          mkdir -p /tmp/verify-core && cd /tmp/verify-core
+          go mod init example.com/verify-core
+          go get "github.com/ruffel/invoke@${{ steps.version.outputs.value }}"
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+            _ "github.com/ruffel/invoke"
+            _ "github.com/ruffel/invoke/fake"
+            _ "github.com/ruffel/invoke/invoketest"
+            _ "github.com/ruffel/invoke/local"
+            _ "github.com/ruffel/invoke/ssh"
+          )
+
+          func main() {}
+          EOF
+          go build ./...
+
+      # Only meaningful once the submodule's own tag exists: it is the tag
+      # that carries the go.mod naming the core version.
+      - name: Resolve the docker module from the proxy
+        if: startsWith(github.ref_name, 'docker/')
+        run: |
+          mkdir -p /tmp/verify-docker && cd /tmp/verify-docker
+          go mod init example.com/verify-docker
+          go get "github.com/ruffel/invoke/docker@${{ steps.version.outputs.value }}"
+          cat > main.go <<'EOF'
+          package main
+
+          import _ "github.com/ruffel/invoke/docker"
+
+          func main() {}
+          EOF
+          go build ./...
+
+      - name: Confirm the submodule resolved the core module it names
+        if: startsWith(github.ref_name, 'docker/')
+        run: |
+          cd /tmp/verify-docker
+          resolved=$(go list -m github.com/ruffel/invoke)
+          echo "$resolved"
+          case "$resolved" in
+            *"${{ steps.version.outputs.value }}") ;;
+            *) echo "submodule resolved $resolved, expected ${{ steps.version.outputs.value }}" >&2; exit 1 ;;
+          esac
