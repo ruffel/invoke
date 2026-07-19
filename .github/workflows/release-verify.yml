@@ -14,6 +14,12 @@ on:
     tags:
       - 'v*'
       - 'docker/v*'
+  # So a released version can be re-checked without cutting another tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The version to verify, e.g. v0.2.0
+        required: true
 
 permissions:
   contents: read
@@ -29,15 +35,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Work out which version was tagged
+      - name: Work out which version to verify
         id: version
-        run: echo "value=${GITHUB_REF_NAME#docker/}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${GITHUB_REF_NAME#docker/}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve the core module from the proxy
         run: |
           mkdir -p /tmp/verify-core && cd /tmp/verify-core
           go mod init example.com/verify-core
-          go get "github.com/ruffel/invoke@${{ steps.version.outputs.value }}"
+          # The file comes first: resolving the graph before the imports
+          # exist leaves go.sum without entries for what they pull in,
+          # which is a failure of this job rather than of the release.
           cat > main.go <<'EOF'
           package main
 
@@ -51,16 +64,17 @@ jobs:
 
           func main() {}
           EOF
+          go get "github.com/ruffel/invoke@${{ steps.version.outputs.value }}"
+          go mod tidy
           go build ./...
 
       # Only meaningful once the submodule's own tag exists: it is the tag
       # that carries the go.mod naming the core version.
       - name: Resolve the docker module from the proxy
-        if: startsWith(github.ref_name, 'docker/')
+        if: startsWith(github.ref_name, 'docker/') || inputs.version != ''
         run: |
           mkdir -p /tmp/verify-docker && cd /tmp/verify-docker
           go mod init example.com/verify-docker
-          go get "github.com/ruffel/invoke/docker@${{ steps.version.outputs.value }}"
           cat > main.go <<'EOF'
           package main
 
@@ -68,10 +82,12 @@ jobs:
 
           func main() {}
           EOF
+          go get "github.com/ruffel/invoke/docker@${{ steps.version.outputs.value }}"
+          go mod tidy
           go build ./...
 
       - name: Confirm the submodule resolved the core module it names
-        if: startsWith(github.ref_name, 'docker/')
+        if: startsWith(github.ref_name, 'docker/') || inputs.version != ''
         run: |
           cd /tmp/verify-docker
           resolved=$(go list -m github.com/ruffel/invoke)
