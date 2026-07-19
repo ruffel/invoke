@@ -4,8 +4,8 @@ Run commands and transfer files on the local machine, remote SSH hosts, and
 containers through one provider-agnostic Go interface.
 
 ```sh
-go get github.com/ruffel/invoke@v0.2.0
-go get github.com/ruffel/invoke/docker@v0.2.0   # only if you need containers
+go get github.com/ruffel/invoke@v0.3.0
+go get github.com/ruffel/invoke/docker@v0.3.0   # only if you need containers
 ```
 
 ```go
