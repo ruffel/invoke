@@ -17,7 +17,7 @@ import (
 func dialContainer(t *testing.T) *docker.Environment {
 	t.Helper()
 
-	id, _ := startContainer(t)
+	id := startContainer(t)
 
 	env, err := docker.New(id, docker.WithHost(daemonHost(t)))
 	require.NoError(t, err, "docker.New")

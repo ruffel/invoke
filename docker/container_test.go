@@ -35,7 +35,7 @@ func daemonHost(t *testing.T) string {
 		return host
 	}
 
-	out, err := exec.Command("docker", "context", "inspect",
+	out, err := exec.CommandContext(t.Context(), "docker", "context", "inspect",
 		"--format", "{{.Endpoints.docker.Host}}").Output()
 	if err != nil {
 		return "" // Fall back to the SDK's own defaults.
@@ -61,7 +61,7 @@ func newClient(t *testing.T) *client.Client {
 
 // startContainer launches a container that idles until the test finishes,
 // and returns its ID.
-func startContainer(t *testing.T) (string, *client.Client) {
+func startContainer(t *testing.T) string {
 	t.Helper()
 
 	cli := newClient(t)
@@ -88,7 +88,7 @@ func startContainer(t *testing.T) (string, *client.Client) {
 		_ = cli.Close()
 	})
 
-	return created.ID, cli
+	return created.ID
 }
 
 // pullImage fetches the test image unless the daemon already has it.

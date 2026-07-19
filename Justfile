@@ -45,8 +45,15 @@ test-docker:
 test-openssh:
     go test -tags openssh -race -timeout 15m ./ssh/
 
-# Every integration lane: both need a container runtime, so neither is
-# part of `check`.
+# Compare the providers against each other. The contract suite asks
+# whether each obeys a stated rule; this asks whether they agree on
+# everything else. Needs a container runtime for the ssh and docker
+# targets, so it is part of the integration lanes rather than `check`.
+test-parity:
+    cd docker && go test -tags docker -race -timeout 15m -run TestProviderParity ./...
+
+# Every integration lane: all need a container runtime, so none is part
+# of `check`.
 test-integration: test-docker test-openssh
 
 # Run linters across every module.

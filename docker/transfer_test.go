@@ -52,7 +52,7 @@ func TestUploadDoesNotCarryHostOwnership(t *testing.T) {
 	dst := remotePath(t)
 	require.NoError(t, env.Upload(t.Context(), src, dst))
 
-	out, _, err := runInContainer(t, env, "stat", "-c", "%u:%g", dst)
+	out, err := runInContainer(t, env, "stat", "-c", "%u:%g", dst)
 	require.NoError(t, err)
 
 	assert.Equal(t, "0:0", strings.TrimSpace(out),
@@ -68,7 +68,7 @@ func TestDownloadPreservesSymlinks(t *testing.T) {
 	env := dialContainer(t)
 
 	dst := remotePath(t)
-	_, _, err := runInContainer(t, env, "sh", "-c",
+	_, err := runInContainer(t, env, "sh", "-c",
 		"mkdir -p "+dst+" && printf real > "+dst+"/real.txt && "+
 			"ln -s real.txt "+dst+"/link.txt && ln -s gone "+dst+"/dangling.txt")
 	require.NoError(t, err)
@@ -93,7 +93,7 @@ func TestDownloadAppliesDirectoryModes(t *testing.T) {
 	env := dialContainer(t)
 
 	dst := remotePath(t)
-	_, _, err := runInContainer(t, env, "sh", "-c",
+	_, err := runInContainer(t, env, "sh", "-c",
 		"mkdir -p "+dst+"/inner && printf x > "+dst+"/inner/f.txt && chmod 0700 "+dst+"/inner")
 	require.NoError(t, err)
 
@@ -145,17 +145,17 @@ func TestUploadRefusesRelativeRemotePath(t *testing.T) {
 }
 
 // runInContainer runs a command in the container and returns its stdout.
-func runInContainer(t *testing.T, env *docker.Environment, name string, args ...string) (string, invoke.Result, error) {
+func runInContainer(t *testing.T, env *docker.Environment, name string, args ...string) (string, error) {
 	t.Helper()
 
 	var out strings.Builder
 
 	proc, err := env.Start(t.Context(), invoke.New(name, args...), invoke.IO{Stdout: &out})
 	if err != nil {
-		return "", invoke.Result{}, err
+		return "", err
 	}
 
-	result, waitErr := proc.Wait()
+	_, waitErr := proc.Wait()
 
-	return out.String(), result, waitErr
+	return out.String(), waitErr
 }
