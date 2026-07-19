@@ -46,10 +46,6 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, fmt.Errorf("ssh: start: %w", err)
 	}
 
-	if stdio.TTY != nil {
-		return nil, fmt.Errorf("ssh: start: tty allocation: %w", invoke.ErrNotSupported)
-	}
-
 	if err := e.preCheck(ctx, cmd); err != nil {
 		return nil, err
 	}
@@ -59,10 +55,21 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, &invoke.TransportError{Op: "start", Err: err}
 	}
 
+	if err := requestPTY(session, stdio.TTY); err != nil {
+		_ = session.Close()
+
+		return nil, err
+	}
+
 	applyEnv(session, cmd.Env)
 	session.Stdin = stdio.Stdin
 	session.Stdout = stdio.Stdout
-	session.Stderr = stdio.Stderr
+
+	// A terminal merges the command's two output streams into one, so
+	// there is nothing left for stderr to carry.
+	if stdio.TTY == nil {
+		session.Stderr = stdio.Stderr
+	}
 
 	p := &process{
 		env:     e,
@@ -103,6 +110,42 @@ func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 		return nil
 	}
 }
+
+// requestPTY asks the server for a pseudo-terminal of the requested size.
+//
+// Echo is disabled: a terminal would otherwise reflect whatever the
+// caller writes to stdin back into the output they collect, which is
+// invisible until someone diffs the two.
+func requestPTY(session *ssh.Session, tty *invoke.TTY) error {
+	if tty == nil {
+		return nil
+	}
+
+	cols, rows := tty.Size()
+
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          0,
+		ssh.TTY_OP_ISPEED: ttyBaudRate,
+		ssh.TTY_OP_OSPEED: ttyBaudRate,
+	}
+
+	if err := session.RequestPty(defaultTerm, rows, cols, modes); err != nil {
+		return &invoke.TransportError{Op: "pty", Err: err}
+	}
+
+	return nil
+}
+
+// Terminal defaults for a requested pseudo-terminal.
+const (
+	// defaultTerm is the terminal type reported to the remote host. A
+	// command that consults it finds something it will recognize.
+	defaultTerm = "xterm"
+
+	// ttyBaudRate is the nominal line speed; it does not throttle
+	// anything, but the request carries it.
+	ttyBaudRate = 14400
+)
 
 // applyEnv sends environment variables to the session out of band, so they
 // are not visible in the remote process table. Servers that reject an

@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/creack/pty"
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -270,6 +271,11 @@ func (s *testServer) handleConn(conn net.Conn) {
 type sessionState struct {
 	env []string
 
+	// pty records a terminal request, which the command is then given a
+	// real one for: without it "is this a terminal" answers no and the
+	// contract would pass against a server that ignored the request.
+	pty bool
+
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	pending os.Signal
@@ -299,6 +305,10 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 			s.recordExec(line)
 
 			go runExec(channel, state, line)
+
+			reply(req, true)
+		case "pty-req":
+			state.pty = true
 
 			reply(req, true)
 		case "signal":
@@ -364,6 +374,13 @@ func runExec(channel ssh.Channel, state *sessionState, command string) {
 	cmd := exec.Command("/bin/sh", "-c", command) //nolint:noctx // Test server runs the requested command; lifetime is the session.
 
 	cmd.Env = append(os.Environ(), state.env...)
+
+	if state.pty {
+		runExecWithPTY(channel, state, cmd)
+
+		return
+	}
+
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
 
@@ -386,6 +403,26 @@ func runExec(channel ssh.Channel, state *sessionState, command string) {
 		_, _ = io.Copy(stdin, channel)
 		_ = stdin.Close()
 	}()
+
+	reportExit(channel, cmd.Wait())
+}
+
+// runExecWithPTY runs the command attached to a real pseudo-terminal, so
+// a command asking whether it has one gets a truthful answer.
+func runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
+	master, err := pty.Start(cmd)
+	if err != nil {
+		exitWith(channel, 1)
+
+		return
+	}
+
+	defer func() { _ = master.Close() }()
+
+	state.setCmd(cmd)
+
+	go func() { _, _ = io.Copy(master, channel) }()
+	go func() { _, _ = io.Copy(channel, master) }()
 
 	reportExit(channel, cmd.Wait())
 }

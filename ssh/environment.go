@@ -151,12 +151,14 @@ func (e *Environment) OS() invoke.TargetOS {
 	return e.os
 }
 
-// Capabilities reports the SSH target's optional features. Signal delivery
-// and symlink-preserving transfers are supported; PTY allocation is not
-// implemented yet.
+// Capabilities reports the SSH target's optional features. Signal
+// delivery and symlink-preserving transfers are supported.
+//
+// Terminal allocation is available: the protocol carries a pseudo-
+// terminal request natively.
 func (e *Environment) Capabilities() invoke.Capabilities {
 	return invoke.Capabilities{
-		TTY:             false,
+		TTY:             true,
 		Signals:         true,
 		SymlinkPreserve: true,
 	}
