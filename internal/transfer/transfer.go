@@ -309,16 +309,16 @@ func (e endpoints) makeDir(target string) error {
 // copyEntry copies one non-directory entry according to the shared
 // classification of its type and the transfer's options.
 func (e endpoints) copyEntry(ctx context.Context, src, dst, rel string, info fs.FileInfo, tctx treeContext) error {
-	action, err := Classify(src, info.Mode(), tctx.cfg)
+	action, err := invoke.ClassifyEntry(src, info.Mode(), tctx.cfg)
 	if err != nil {
 		return err
 	}
 
 	switch action {
-	case ActionCopyContent:
+	case invoke.CopyContent:
 		return e.copyFile(ctx, src, dst, rel, info.Mode().Perm(), tctx.cfg)
 
-	case ActionPreserveLink:
+	case invoke.PreserveLink:
 		linkTarget, err := e.src.Readlink(src)
 		if err != nil {
 			return err
@@ -326,10 +326,10 @@ func (e endpoints) copyEntry(ctx context.Context, src, dst, rel string, info fs.
 
 		return e.replaceWithSymlink(linkTarget, dst)
 
-	case ActionFollowLink:
+	case invoke.FollowLink:
 		return e.followSymlink(ctx, src, dst, rel, tctx)
 
-	case ActionSkip:
+	case invoke.SkipEntry:
 		return nil
 
 	default:
@@ -345,7 +345,7 @@ func (e endpoints) followSymlink(ctx context.Context, src, dst, rel string, tctx
 		return fmt.Errorf("following symlink %q: %w", src, err)
 	}
 
-	if err := CheckFollowTarget(src, resolved, tctx.realRoot, e.src.Contains); err != nil {
+	if err := invoke.CheckFollowTarget(src, resolved, tctx.realRoot, e.src.Contains); err != nil {
 		return err
 	}
 
@@ -473,7 +473,7 @@ func writeFile(ctx context.Context, tmp WriteFile, src io.Reader, rel string, to
 		return err
 	}
 
-	mode := EffectiveMode(srcMode, cfg)
+	mode := invoke.EffectiveMode(srcMode, cfg)
 
 	// Chmod on the handle after creation: umask cannot mask it, and it
 	// applies to overwrites via the rename that follows.

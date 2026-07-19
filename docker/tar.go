@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/ruffel/invoke"
-	"github.com/ruffel/invoke/internal/transfer"
 )
 
 // writeTree writes the tree rooted at src into an archive, naming its top
@@ -95,22 +94,22 @@ func writeEntry(
 	cfg invoke.TransferConfig,
 	root string,
 ) error {
-	action, err := transfer.Classify(srcPath, info.Mode(), cfg)
+	action, err := invoke.ClassifyEntry(srcPath, info.Mode(), cfg)
 	if err != nil {
 		return err
 	}
 
 	switch action {
-	case transfer.ActionCopyContent:
+	case invoke.CopyContent:
 		return writeFile(ctx, tw, srcPath, name, rel, info, cfg)
 
-	case transfer.ActionPreserveLink:
+	case invoke.PreserveLink:
 		return writeSymlink(tw, srcPath, name, info, cfg)
 
-	case transfer.ActionFollowLink:
+	case invoke.FollowLink:
 		return writeFollowedLink(ctx, tw, srcPath, name, rel, cfg, root)
 
-	case transfer.ActionSkip:
+	case invoke.SkipEntry:
 		return nil
 
 	default:
@@ -124,7 +123,7 @@ func writeDirHeader(tw *tar.Writer, name string, info fs.FileInfo, cfg invoke.Tr
 	return tw.WriteHeader(&tar.Header{
 		Typeflag: tar.TypeDir,
 		Name:     name + "/",
-		Mode:     int64(transfer.EffectiveMode(info.Mode(), cfg).Perm()),
+		Mode:     int64(invoke.EffectiveMode(info.Mode(), cfg).Perm()),
 		ModTime:  info.ModTime(),
 	})
 }
@@ -160,7 +159,7 @@ func writeFile(
 		Typeflag: tar.TypeReg,
 		Name:     name,
 		Size:     opened.Size(),
-		Mode:     int64(transfer.EffectiveMode(info.Mode(), cfg).Perm()),
+		Mode:     int64(invoke.EffectiveMode(info.Mode(), cfg).Perm()),
 		ModTime:  info.ModTime(),
 	}); err != nil {
 		return err
@@ -197,7 +196,7 @@ func writeSymlink(tw *tar.Writer, srcPath, name string, info fs.FileInfo, cfg in
 		Typeflag: tar.TypeSymlink,
 		Name:     name,
 		Linkname: target,
-		Mode:     int64(transfer.EffectiveMode(info.Mode(), cfg).Perm()),
+		Mode:     int64(invoke.EffectiveMode(info.Mode(), cfg).Perm()),
 		ModTime:  info.ModTime(),
 	})
 }
@@ -221,7 +220,7 @@ func writeFollowedLink(
 		return err
 	}
 
-	if err := transfer.CheckFollowTarget(srcPath, resolved, realRoot, containsPath); err != nil {
+	if err := invoke.CheckFollowTarget(srcPath, resolved, realRoot, containsPath); err != nil {
 		return err
 	}
 
