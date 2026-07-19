@@ -21,7 +21,11 @@ func quoteArg(s string) string {
 // and exit status pass straight through. A working directory is applied as a
 // preceding cd. Environment variables are delivered out of band (via the
 // session), not here, so they never appear in the remote process table.
-func commandLine(cmd invoke.Command) string {
+//
+// inlineEnv is the exception: variables the server refused to accept out
+// of band, which the caller has explicitly opted into carrying here
+// instead, where every account on the remote host can read them.
+func commandLine(cmd invoke.Command, inlineEnv []string) string {
 	parts := make([]string, 0, 1+len(cmd.Args))
 	parts = append(parts, quoteArg(cmd.Path))
 
@@ -32,6 +36,21 @@ func commandLine(cmd invoke.Command) string {
 	line := "exec " + strings.Join(parts, " ")
 	if cmd.Dir != "" {
 		line = "cd " + quoteArg(cmd.Dir) + " && " + line
+	}
+
+	if len(inlineEnv) > 0 {
+		var exports strings.Builder
+
+		for _, pair := range inlineEnv {
+			key, value, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+
+			exports.WriteString("export " + key + "=" + quoteArg(value) + "; ")
+		}
+
+		line = exports.String() + line
 	}
 
 	return line

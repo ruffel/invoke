@@ -38,6 +38,17 @@ test-race:
 test-docker:
     cd docker && go test -tags docker -race -timeout 15m ./...
 
+# Run the SSH provider's contract suite against a real OpenSSH server in a
+# container. The in-process server used by the unit lane implements what
+# this repository believes the protocol does; only a real one can show
+# where that belief is wrong. Requires a container runtime.
+test-openssh:
+    go test -tags openssh -race -timeout 15m ./ssh/
+
+# Every integration lane: both need a container runtime, so neither is
+# part of `check`.
+test-integration: test-docker test-openssh
+
 # Run linters across every module.
 lint:
     golangci-lint run ./...

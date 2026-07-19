@@ -61,7 +61,13 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
-	applyEnv(session, cmd.Env)
+	inlineEnv, err := e.applyEnv(session, cmd.Env)
+	if err != nil {
+		_ = session.Close()
+
+		return nil, err
+	}
+
 	session.Stdin = stdio.Stdin
 	session.Stdout = stdio.Stdout
 
@@ -79,7 +85,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		done:    make(chan struct{}),
 	}
 
-	if err := session.Start(commandLine(cmd)); err != nil {
+	if err := session.Start(commandLine(cmd, inlineEnv)); err != nil {
 		_ = session.Close()
 
 		return nil, &invoke.TransportError{Op: "start", Err: err}
@@ -147,15 +153,57 @@ const (
 	ttyBaudRate = 14400
 )
 
-// applyEnv sends environment variables to the session out of band, so they
-// are not visible in the remote process table. Servers that reject an
-// AcceptEnv variable simply drop it; the request never fails the command.
-func applyEnv(session *ssh.Session, env []string) {
+// applyEnv sends environment variables to the session out of band, where
+// they do not appear in the remote process table, and reports any the
+// server refused.
+//
+// A server accepts only the variables its AcceptEnv setting names, and
+// the stock setting names none. Sending them anyway and running the
+// command regardless is the worst outcome available: the command runs
+// without its environment and nothing says so. So a refusal fails the
+// command by default, naming the variables, and the caller may instead
+// opt into carrying them on the command line — where they are visible to
+// every account on the remote host, which is why it is not the default.
+func (e *Environment) applyEnv(session *ssh.Session, env []string) ([]string, error) {
+	var refused []string
+
 	for _, pair := range env {
-		if key, value, ok := strings.Cut(pair, "="); ok {
-			_ = session.Setenv(key, value)
+		key, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			continue
+		}
+
+		if err := session.Setenv(key, value); err != nil {
+			refused = append(refused, pair)
 		}
 	}
+
+	if len(refused) == 0 {
+		return nil, nil
+	}
+
+	if e.cfg.CommandLineEnv {
+		return refused, nil
+	}
+
+	return nil, fmt.Errorf(
+		"ssh: start: the server refused to accept %s; either allow them with the server's AcceptEnv "+
+			"setting, or pass WithCommandLineEnv to send them on the command line, "+
+			"where every account on the host can read them: %w",
+		strings.Join(refusedNames(refused), ", "), invoke.ErrNotSupported)
+}
+
+// refusedNames lists the variable names from KEY=VALUE pairs, so an error
+// can name them without quoting their values.
+func refusedNames(pairs []string) []string {
+	names := make([]string, 0, len(pairs))
+
+	for _, pair := range pairs {
+		key, _, _ := strings.Cut(pair, "=")
+		names = append(names, key)
+	}
+
+	return names
 }
 
 // Wait blocks until the remote command completes and returns its outcome.

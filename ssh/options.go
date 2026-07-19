@@ -61,6 +61,11 @@ type Config struct {
 	// KeepAlive is how often to probe the server so a silently dropped
 	// connection is discovered. Zero means 30s; negative disables it.
 	KeepAlive time.Duration
+
+	// CommandLineEnv allows environment variables the server refuses to
+	// accept out of band to be carried on the command line instead. See
+	// [WithCommandLineEnv] for what that exposes.
+	CommandLineEnv bool
 }
 
 // Option configures a [Config].
@@ -118,6 +123,19 @@ func WithInsecureIgnoreHostKey() Option {
 // WithTimeout sets the connection establishment timeout.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Config) { c.Timeout = d }
+}
+
+// WithCommandLineEnv allows environment variables to be carried on the
+// remote command line when the server refuses to accept them out of band.
+//
+// A server accepts only the variables its AcceptEnv setting names, and
+// the stock setting names none. Without this option a refusal fails the
+// command rather than running it without its environment. With it, the
+// refused variables are exported on the command line — where they appear
+// in the remote process table and every account on the host can read
+// them. Do not use it to pass secrets.
+func WithCommandLineEnv() Option {
+	return func(c *Config) { c.CommandLineEnv = true }
 }
 
 // WithKeepAlive sets how often the connection is probed so a silently
