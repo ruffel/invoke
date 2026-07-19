@@ -22,10 +22,9 @@ func quoteArg(s string) string {
 // preceding cd. Environment variables are delivered out of band (via the
 // session), not here, so they never appear in the remote process table.
 //
-// inlineEnv is the exception: variables the server refused to accept out
-// of band, which the caller has explicitly opted into carrying here
-// instead, where every account on the remote host can read them.
-func commandLine(cmd invoke.Command, inlineEnv []string) string {
+// prologue, when non-empty, carries whatever is needed to bring the
+// environment into scope first; see deliverEnv.
+func commandLine(cmd invoke.Command, prologue string) string {
 	parts := make([]string, 0, 1+len(cmd.Args))
 	parts = append(parts, quoteArg(cmd.Path))
 
@@ -38,22 +37,46 @@ func commandLine(cmd invoke.Command, inlineEnv []string) string {
 		line = "cd " + quoteArg(cmd.Dir) + " && " + line
 	}
 
-	if len(inlineEnv) > 0 {
-		var exports strings.Builder
+	return prologue + line
+}
 
-		for _, pair := range inlineEnv {
-			key, value, ok := strings.Cut(pair, "=")
-			if !ok {
-				continue
-			}
+// exportScript renders KEY=VALUE pairs as a shell script that exports
+// them, for a file the command line sources.
+func exportScript(pairs []string) string {
+	var script strings.Builder
 
-			exports.WriteString("export " + key + "=" + quoteArg(value) + "; ")
+	for _, pair := range pairs {
+		if key, value, ok := strings.Cut(pair, "="); ok {
+			script.WriteString("export " + key + "=" + quoteArg(value) + "\n")
 		}
-
-		line = exports.String() + line
 	}
 
-	return line
+	return script.String()
+}
+
+// exportPrologue renders the pairs directly onto the command line, where
+// they are visible to every account on the remote host.
+func exportPrologue(pairs []string) string {
+	var prologue strings.Builder
+
+	for _, pair := range pairs {
+		if key, value, ok := strings.Cut(pair, "="); ok {
+			prologue.WriteString("export " + key + "=" + quoteArg(value) + "; ")
+		}
+	}
+
+	return prologue.String()
+}
+
+// sourcePrologue reads the environment from a file and removes it before
+// the command runs, so it exists only for the moment in between.
+//
+// Failing to read it exits rather than running the command without its
+// environment, which is the outcome this whole route exists to avoid.
+func sourcePrologue(path string) string {
+	quoted := quoteArg(path)
+
+	return ". " + quoted + " || exit " + strconv.Itoa(envDeliveryFailed) + "; rm -f " + quoted + "; "
 }
 
 // Exit codes used by the pre-flight check to distinguish a missing working
@@ -62,6 +85,10 @@ func commandLine(cmd invoke.Command, inlineEnv []string) string {
 const (
 	preCheckBadDir   = 91
 	preCheckNotFound = 92
+
+	// envDeliveryFailed reports that the environment file could not be
+	// read, so the command was not run.
+	envDeliveryFailed = 93
 )
 
 // preCheckLine builds a command that validates a command's working

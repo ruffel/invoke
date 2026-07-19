@@ -2,6 +2,8 @@ package ssh
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -465,6 +467,17 @@ func (f sftpFS) Resolve(p string) (string, error) {
 	}
 
 	return resolved, nil
+}
+
+// randomSuffix returns hex material for a name no concurrent command
+// will collide with.
+func randomSuffix() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "fallback"
+	}
+
+	return hex.EncodeToString(buf[:])
 }
 
 // splitPath breaks a POSIX path into its components.

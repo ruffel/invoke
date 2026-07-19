@@ -61,7 +61,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
-	inlineEnv, err := e.applyEnv(session, cmd.Env)
+	prologue, err := e.deliverEnv(ctx, session, cmd.Env)
 	if err != nil {
 		_ = session.Close()
 
@@ -85,7 +85,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		done:    make(chan struct{}),
 	}
 
-	if err := session.Start(commandLine(cmd, inlineEnv)); err != nil {
+	if err := session.Start(commandLine(cmd, prologue)); err != nil {
 		_ = session.Close()
 
 		return nil, &invoke.TransportError{Op: "start", Err: err}
@@ -153,18 +153,21 @@ const (
 	ttyBaudRate = 14400
 )
 
-// applyEnv sends environment variables to the session out of band, where
-// they do not appear in the remote process table, and reports any the
-// server refused.
+// deliverEnv arranges for env to reach the command, returning any
+// prologue the command line needs to carry.
 //
-// A server accepts only the variables its AcceptEnv setting names, and
-// the stock setting names none. Sending them anyway and running the
-// command regardless is the worst outcome available: the command runs
-// without its environment and nothing says so. So a refusal fails the
-// command by default, naming the variables, and the caller may instead
-// opt into carrying them on the command line — where they are visible to
-// every account on the remote host, which is why it is not the default.
-func (e *Environment) applyEnv(session *ssh.Session, env []string) ([]string, error) {
+// Variables go out of band first, where they never appear in the remote
+// process table. A server accepts only those its AcceptEnv setting names,
+// though, and the stock setting names none — so refusal is the ordinary
+// case rather than the exception, and running the command without its
+// environment is not an option.
+//
+// Refused variables are therefore written to a file only the login user
+// can read, which the command line sources and deletes before running the
+// command. The values never reach an argument vector. A caller who cannot
+// use a file — a read-only target, say — can opt into carrying them on the
+// command line instead, where every account on the host can read them.
+func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env []string) (string, error) {
 	var refused []string
 
 	for _, pair := range env {
@@ -179,18 +182,24 @@ func (e *Environment) applyEnv(session *ssh.Session, env []string) ([]string, er
 	}
 
 	if len(refused) == 0 {
-		return nil, nil
+		return "", nil
 	}
 
 	if e.cfg.CommandLineEnv {
-		return refused, nil
+		return exportPrologue(refused), nil
 	}
 
-	return nil, fmt.Errorf(
-		"ssh: start: the server refused to accept %s; either allow them with the server's AcceptEnv "+
-			"setting, or pass WithCommandLineEnv to send them on the command line, "+
-			"where every account on the host can read them: %w",
-		strings.Join(refusedNames(refused), ", "), invoke.ErrNotSupported)
+	path := "/tmp/.invoke-env-" + randomSuffix()
+
+	if err := e.writeRemoteFile(ctx, path, exportScript(refused)); err != nil {
+		return "", fmt.Errorf(
+			"ssh: start: the server refused %s and they could not be delivered by file either; "+
+				"pass WithCommandLineEnv to send them on the command line, where every account "+
+				"on the host can read them: %w",
+			strings.Join(refusedNames(refused), ", "), err)
+	}
+
+	return sourcePrologue(path), nil
 }
 
 // refusedNames lists the variable names from KEY=VALUE pairs, so an error
@@ -204,6 +213,41 @@ func refusedNames(pairs []string) []string {
 	}
 
 	return names
+}
+
+// writeRemoteFile creates a file readable only by the login user, with
+// its content carried on the command's input rather than its arguments.
+func (e *Environment) writeRemoteFile(ctx context.Context, path, content string) error {
+	session, err := e.client.NewSession()
+	if err != nil {
+		return &invoke.TransportError{Op: "session", Err: err}
+	}
+
+	defer func() { _ = session.Close() }()
+
+	session.Stdin = strings.NewReader(content)
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- session.Run("umask 077; cat > " + quoteArg(path))
+	}()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Close()
+
+		<-done
+
+		return ctx.Err()
+
+	case runErr := <-done:
+		if runErr != nil {
+			return &invoke.TransportError{Op: "write", Err: runErr}
+		}
+
+		return nil
+	}
 }
 
 // Wait blocks until the remote command completes and returns its outcome.

@@ -160,11 +160,9 @@ func dialOpenSSH(t *testing.T, port int, opts ...ssh.Option) *ssh.Environment {
 // real server, which is the only way to find where the in-process one
 // differs from the thing it stands in for.
 //
-// The command-line env fallback is enabled because a stock server accepts
-// no environment variables out of band, so it is the only route by which
-// the environment contracts can be satisfied against one. That the safe
-// default instead refuses loudly is pinned by
-// TestOpenSSHRefusedEnvIsReported.
+// Nothing is opted into: a stock server accepts no environment variables
+// out of band, so the environment contracts passing here is the proof
+// that the default delivery route works against a real server.
 func TestOpenSSHContractSuite(t *testing.T) {
 	t.Parallel()
 
@@ -174,37 +172,8 @@ func TestOpenSSHContractSuite(t *testing.T) {
 		tt, ok := it.(*testing.T)
 		require.True(tt, ok, "contract tests require the standard *testing.T")
 
-		return dialOpenSSH(tt, port, ssh.WithCommandLineEnv())
+		return dialOpenSSH(tt, port)
 	})
-}
-
-// TestOpenSSHRefusedEnvIsReported checks the provider does not quietly
-// drop environment variables a server declines to accept.
-//
-// A stock sshd accepts none, so a variable sent this way never reaches
-// the command. Reporting success while the command runs without its
-// environment is the failure this suite exists to catch.
-func TestOpenSSHRefusedEnvIsReported(t *testing.T) {
-	t.Parallel()
-
-	port := startOpenSSH(t)
-	env := dialOpenSSH(t, port)
-
-	cmd := invoke.New("printenv", "TOKEN")
-	cmd.Env = []string{"TOKEN=secret-value"}
-
-	var out strings.Builder
-
-	proc, err := env.Start(t.Context(), cmd, invoke.IO{Stdout: &out})
-	if err == nil {
-		result, waitErr := proc.Wait()
-
-		require.Failf(t, "environment silently dropped",
-			"the server refused the variable and the command ran without it: out=%q exit=%d err=%v",
-			out.String(), result.ExitCode, waitErr)
-	}
-
-	require.ErrorContains(t, err, "TOKEN", "the error must name the variable that could not be delivered")
 }
 
 // TestOpenSSHEnvFallbackDelivers checks the opt-in fallback does deliver
