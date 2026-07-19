@@ -1,9 +1,11 @@
 package local_test
 
 import (
+	"io"
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
@@ -74,4 +76,52 @@ func TestLookPath(t *testing.T) {
 
 	_, err = env.LookPath(t.Context(), "definitely-not-a-real-binary-abc123")
 	assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath(missing)")
+}
+
+// TestTerminationGraceBoundsTheWait checks the configured grace period is
+// what Wait actually observes.
+//
+// A command can exit while something it left behind still holds its
+// output open. Waiting for that forever would hang the caller, so Wait
+// gives up after the grace period — and the point of configuring it is
+// that the caller chooses when, which is only true if the value reaches
+// os/exec.
+func TestTerminationGraceBoundsTheWait(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		grace   time.Duration
+		atLeast time.Duration
+		atMost  time.Duration
+	}{
+		"short grace gives up sooner": {grace: 250 * time.Millisecond, atMost: time.Second},
+		"longer grace waits longer":   {grace: 2 * time.Second, atLeast: time.Second, atMost: 5 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			env, err := local.New(local.WithTerminationGrace(tc.grace))
+			require.NoError(t, err)
+
+			t.Cleanup(func() { _ = env.Close() })
+
+			// The background sleep inherits the output pipe and outlives
+			// the shell, so what bounds Wait is the grace period alone.
+			proc, err := env.Start(t.Context(),
+				invoke.Shell("sleep 30 & echo started"), invoke.IO{Stdout: io.Discard})
+			require.NoError(t, err)
+
+			begun := time.Now()
+
+			_, _ = proc.Wait()
+
+			elapsed := time.Since(begun)
+
+			assert.Less(t, elapsed, tc.atMost, "Wait outlasted the configured grace period")
+
+			if tc.atLeast > 0 {
+				assert.Greater(t, elapsed, tc.atLeast, "Wait gave up before the configured grace period")
+			}
+		})
+	}
 }

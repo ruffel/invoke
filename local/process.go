@@ -15,13 +15,14 @@ import (
 	"github.com/ruffel/invoke"
 )
 
-// waitDelay bounds how long Wait can remain blocked after the process has
-// exited (or its context was canceled) while its output pipes are still
-// held open — for example by an orphaned descendant. os/exec cannot bound
-// a blocking caller-supplied Stdin the same way (closing pipes does not
-// unblock an arbitrary Reader.Read), which is why stdin is wired through
-// our own pipe below rather than handed to os/exec.
-const waitDelay = 2 * time.Second
+// How long Wait may remain blocked after the process has exited (or its
+// context was canceled) while its output pipes are still held open — for
+// example by an orphaned descendant — is set by [WithTerminationGrace].
+//
+// os/exec cannot bound a blocking caller-supplied Stdin the same way
+// (closing pipes does not unblock an arbitrary Reader.Read), which is why
+// stdin is wired through our own pipe below rather than handed to
+// os/exec.
 
 // process implements invoke.Process for a locally started command.
 type process struct {
@@ -76,7 +77,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	execCmd.Dir = cmd.Dir
 	execCmd.Stdout = stdio.Stdout
 	execCmd.Stderr = stdio.Stderr
-	execCmd.WaitDelay = waitDelay
+	execCmd.WaitDelay = e.cfg.grace()
 
 	if len(cmd.Env) > 0 {
 		execCmd.Env = append(os.Environ(), cmd.Env...)

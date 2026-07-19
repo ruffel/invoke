@@ -94,6 +94,12 @@ may need to pass the endpoint explicitly.
 
 **Local does not allocate terminals.** SSH and Docker do.
 
+**A command can outlive its own exit.** Something it left running may still
+hold its output open, so `Wait` gives up after a grace period rather than
+blocking forever. `local.WithTerminationGrace` sets how long that is; the
+default is two seconds, which is short enough to lose the last output of a
+command that flushes something substantial on the way out.
+
 ## Testing your own code
 
 `fake` is a working target that keeps its filesystem in memory. It is not a

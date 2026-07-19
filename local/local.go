@@ -21,6 +21,8 @@ import (
 
 // Environment runs commands on the local machine.
 type Environment struct {
+	cfg config
+
 	mu     sync.Mutex
 	closed bool
 	active map[*process]struct{}
@@ -29,12 +31,17 @@ type Environment struct {
 var _ invoke.Environment = (*Environment)(nil)
 
 // New returns an Environment for the local machine.
-func New() (*Environment, error) {
+func New(opts ...Option) (*Environment, error) {
 	if runtime.GOOS == "windows" {
 		return nil, fmt.Errorf("local: windows execution targets: %w", invoke.ErrNotSupported)
 	}
 
-	return &Environment{active: make(map[*process]struct{})}, nil
+	var cfg config
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	return &Environment{cfg: cfg, active: make(map[*process]struct{})}, nil
 }
 
 // OS reports the local operating system.
