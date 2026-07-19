@@ -32,6 +32,8 @@ jobs:
           go-version-file: go.mod
       - name: Run tests with race detector
         run: go test -race ./...
+      - name: Build the docker module
+        run: cd docker && go build ./...
 
   lint:
     name: Lint
@@ -48,8 +50,14 @@ jobs:
         run: golangci-lint config verify
       - name: Lint
         run: golangci-lint run ./...
+      - name: Lint the docker module, including its tagged tests
+        run: cd docker && golangci-lint run --build-tags docker ./...
+      - name: Lint the tagged ssh integration tests
+        run: golangci-lint run --build-tags openssh ./ssh/
       - name: Check formatting
         run: golangci-lint fmt --diff ./...
+      - name: Check formatting of the docker module
+        run: cd docker && golangci-lint fmt --diff ./...
       - name: Check go.mod is tidy
         run: go mod tidy -diff
 
@@ -64,14 +72,46 @@ jobs:
           go-version-file: go.mod
       - name: Cross-build for Windows
         run: GOOS=windows go build ./...
+      - name: Cross-build the docker module for Windows
+        run: cd docker && GOOS=windows go build ./...
 
-  # Simulates a downstream consumer resolving this module, so module-graph
+  # The unit lane runs the SSH provider against a server written for these
+  # tests, which can only confirm what this repository already believes.
+  # These lanes run the same contracts against a real OpenSSH server and a
+  # real container, and compare the providers against each other. They need
+  # a container runtime, which the Linux runners provide.
+  integration:
+    name: Integration (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: openssh
+            run: go test -tags openssh -race -timeout 15m ./ssh/
+          - lane: docker
+            run: cd docker && go test -tags docker -race -timeout 15m ./...
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Confirm a container runtime is available
+        run: docker version
+      - name: Run the ${{ matrix.lane }} lane
+        run: ${{ matrix.run }}
+
+  # Simulates a downstream consumer resolving each module, so module-graph
   # breakage (requires that cannot resolve) surfaces on every commit instead
   # of after a release is tagged.
+  #
+  # The workspace is removed first: it is what makes the two modules resolve
+  # each other during development, and a consumer will not have it.
   consumer-simulation:
     name: Consumer simulation
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,7 +119,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: invoke/go.mod
-      - name: Build a scratch module that imports invoke
+      - name: Remove the workspace, which a consumer does not have
+        run: rm -f invoke/go.work invoke/go.work.sum
+      - name: Build a scratch module that imports the core module
         run: |
           mkdir consumer && cd consumer
           go mod init example.com/consumer
@@ -87,7 +129,28 @@ jobs:
           cat > main.go <<'EOF'
           package main
 
-          import _ "github.com/ruffel/invoke"
+          import (
+            _ "github.com/ruffel/invoke"
+            _ "github.com/ruffel/invoke/fake"
+            _ "github.com/ruffel/invoke/invoketest"
+            _ "github.com/ruffel/invoke/local"
+            _ "github.com/ruffel/invoke/ssh"
+          )
+
+          func main() {}
+          EOF
+          go mod tidy
+          go build ./...
+      - name: Build a scratch module that imports the docker module
+        run: |
+          mkdir consumer-docker && cd consumer-docker
+          go mod init example.com/consumer-docker
+          go mod edit -replace github.com/ruffel/invoke="$GITHUB_WORKSPACE/invoke"
+          go mod edit -replace github.com/ruffel/invoke/docker="$GITHUB_WORKSPACE/invoke/docker"
+          cat > main.go <<'EOF'
+          package main
+
+          import _ "github.com/ruffel/invoke/docker"
 
           func main() {}
           EOF
