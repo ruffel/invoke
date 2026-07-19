@@ -161,6 +161,29 @@ linters:
       text: "G301|G304"
       linters:
         - gosec
+    # Building an archive from caller-specified paths is this file's
+    # entire purpose (G304); the paths come from the API caller, not from
+    # the archive.
+    - path: 'docker/tar\.go'
+      text: "G304"
+      linters:
+        - gosec
+    # Transfers create the destination's missing parents at the same 0755
+    # default cp and install use; each transferred entry then receives its
+    # own recorded mode.
+    - path: 'docker/files\.go'
+      text: "G301"
+      linters:
+        - gosec
+    # Unpacking an archive writes caller-specified paths (G304) and
+    # recreates directories at the conventional 0755 before applying each
+    # entry's recorded mode (G301). Entry names are checked against the
+    # destination root first, in entryPath, so a hostile archive cannot
+    # place a file outside it.
+    - path: 'docker/untar\.go'
+      text: "G301|G304"
+      linters:
+        - gosec
     # NOTE: gosec has no blanket exclusions, by policy. When provider code
     # needs an exemption, scope it to the file and justify it inline so real
     # findings are never masked wholesale.

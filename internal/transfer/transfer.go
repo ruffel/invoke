@@ -306,32 +306,19 @@ func (e endpoints) makeDir(target string) error {
 	return nil
 }
 
-// copyEntry copies one non-directory entry according to its type and the
-// transfer's symlink and special-file policy.
+// copyEntry copies one non-directory entry according to the shared
+// classification of its type and the transfer's options.
 func (e endpoints) copyEntry(ctx context.Context, src, dst, rel string, info fs.FileInfo, tctx treeContext) error {
-	switch {
-	case info.Mode().IsRegular():
+	action, err := Classify(src, info.Mode(), tctx.cfg)
+	if err != nil {
+		return err
+	}
+
+	switch action {
+	case ActionCopyContent:
 		return e.copyFile(ctx, src, dst, rel, info.Mode().Perm(), tctx.cfg)
 
-	case info.Mode()&fs.ModeSymlink != 0:
-		return e.copySymlink(ctx, src, dst, rel, tctx)
-
-	default:
-		if tctx.cfg.SkipSpecial {
-			return nil
-		}
-
-		return fmt.Errorf("unsupported special file %q (%s); use WithSkipSpecial to omit it", src, info.Mode().Type())
-	}
-}
-
-// copySymlink applies the transfer's symlink policy to one link.
-func (e endpoints) copySymlink(ctx context.Context, src, dst, rel string, tctx treeContext) error {
-	switch tctx.cfg.Symlinks {
-	case invoke.SymlinkSkip:
-		return nil
-
-	case invoke.SymlinkPreserve:
+	case ActionPreserveLink:
 		linkTarget, err := e.src.Readlink(src)
 		if err != nil {
 			return err
@@ -339,11 +326,14 @@ func (e endpoints) copySymlink(ctx context.Context, src, dst, rel string, tctx t
 
 		return e.replaceWithSymlink(linkTarget, dst)
 
-	case invoke.SymlinkFollow:
+	case ActionFollowLink:
 		return e.followSymlink(ctx, src, dst, rel, tctx)
 
+	case ActionSkip:
+		return nil
+
 	default:
-		return fmt.Errorf("unknown symlink policy %d", tctx.cfg.Symlinks)
+		return fmt.Errorf("unknown transfer action %d", action)
 	}
 }
 
@@ -355,8 +345,8 @@ func (e endpoints) followSymlink(ctx context.Context, src, dst, rel string, tctx
 		return fmt.Errorf("following symlink %q: %w", src, err)
 	}
 
-	if tctx.realRoot != "" && !e.src.Contains(tctx.realRoot, resolved) {
-		return fmt.Errorf("symlink %q resolves outside the transfer root: %q", src, resolved)
+	if err := CheckFollowTarget(src, resolved, tctx.realRoot, e.src.Contains); err != nil {
+		return err
 	}
 
 	info, err := e.src.Stat(resolved)
@@ -483,10 +473,7 @@ func writeFile(ctx context.Context, tmp WriteFile, src io.Reader, rel string, to
 		return err
 	}
 
-	mode := srcMode
-	if cfg.Mode != nil {
-		mode = *cfg.Mode
-	}
+	mode := EffectiveMode(srcMode, cfg)
 
 	// Chmod on the handle after creation: umask cannot mask it, and it
 	// applies to overwrites via the rename that follows.
