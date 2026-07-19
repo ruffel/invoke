@@ -2,7 +2,6 @@ package ssh_test
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +9,8 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/ssh"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // runOutput starts a command and returns its stdout and result.
@@ -65,17 +66,10 @@ func TestArgumentsSurviveVerbatim(t *testing.T) {
 			// printf %s writes the argument with no interpretation of
 			// its own, so any difference is the transport's doing.
 			out, result, err := runOutput(t, env, invoke.New("printf", "%s", arg))
-			if err != nil {
-				t.Fatalf("Start/Wait = %v", err)
-			}
+			require.NoError(t, err)
+			require.Equal(t, 0, result.ExitCode)
 
-			if result.ExitCode != 0 {
-				t.Fatalf("exit code = %d, want 0", result.ExitCode)
-			}
-
-			if out != arg {
-				t.Errorf("argument round-tripped as %q, want %q", out, arg)
-			}
+			assert.Equal(t, arg, out)
 		})
 	}
 }
@@ -88,9 +82,7 @@ func TestWorkdirSurvivesMetacharacters(t *testing.T) {
 	base := t.TempDir()
 	dir := filepath.Join(base, "od'd $(id) dir")
 
-	if err := os.Mkdir(dir, 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(dir, 0o750), "mkdir")
 
 	env := dialServer(t, startTestServer(t))
 
@@ -98,17 +90,10 @@ func TestWorkdirSurvivesMetacharacters(t *testing.T) {
 	cmd.Dir = dir
 
 	out, result, err := runOutput(t, env, cmd)
-	if err != nil {
-		t.Fatalf("Start/Wait = %v", err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
 
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", result.ExitCode)
-	}
-
-	if strings.TrimSpace(out) != dir {
-		t.Errorf("working directory = %q, want %q", strings.TrimSpace(out), dir)
-	}
+	assert.Equal(t, dir, strings.TrimSpace(out))
 }
 
 // TestEnvIsNotVisibleInTheCommandLine checks environment variables are
@@ -127,18 +112,12 @@ func TestEnvIsNotVisibleInTheCommandLine(t *testing.T) {
 	cmd.Env = []string{"TOKEN=" + secret}
 
 	out, result, err := runOutput(t, env, cmd)
-	if err != nil {
-		t.Fatalf("Start/Wait = %v", err)
-	}
-
-	if result.ExitCode != 0 || strings.TrimSpace(out) != secret {
-		t.Fatalf("the variable did not reach the command: out=%q exit=%d", out, result.ExitCode)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode, "the variable did not reach the command")
+	require.Equal(t, secret, strings.TrimSpace(out), "the variable did not reach the command")
 
 	for _, line := range srv.recordedExecs() {
-		if strings.Contains(line, secret) {
-			t.Errorf("the secret appeared in the remote command line %q", line)
-		}
+		assert.NotContains(t, line, secret, "the secret appeared in the remote command line")
 	}
 }
 
@@ -153,17 +132,10 @@ func TestMalformedEnvEntryIsIgnored(t *testing.T) {
 	cmd.Env = []string{"NO_EQUALS_SIGN", "KEEP=kept"}
 
 	out, result, err := runOutput(t, env, cmd)
-	if err != nil {
-		t.Fatalf("Start/Wait = %v", err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode, "a malformed entry must not break the command")
 
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code = %d, want 0; a malformed entry must not break the command", result.ExitCode)
-	}
-
-	if strings.TrimSpace(out) != "kept" {
-		t.Errorf("KEEP = %q, want %q", strings.TrimSpace(out), "kept")
-	}
+	assert.Equal(t, "kept", strings.TrimSpace(out))
 }
 
 // TestUnexecutableFileIsNotFound checks a file that exists but cannot be
@@ -173,16 +145,12 @@ func TestUnexecutableFileIsNotFound(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "not-executable")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\necho hi\n"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\necho hi\n"), 0o600), "writing fixture")
 
 	env := dialServer(t, startTestServer(t))
 
 	_, err := env.Start(t.Context(), invoke.New(path), invoke.IO{})
-	if !errors.Is(err, invoke.ErrNotFound) {
-		t.Errorf("Start of a non-executable file = %v, want ErrNotFound", err)
-	}
+	assert.ErrorIs(t, err, invoke.ErrNotFound, "Start of a non-executable file")
 }
 
 // TestRelativePathResolvesAgainstWorkdir checks a relative executable is
@@ -194,9 +162,7 @@ func TestRelativePathResolvesAgainstWorkdir(t *testing.T) {
 	dir := t.TempDir()
 
 	script := filepath.Join(dir, "script.sh")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho ran\n"), 0o700); err != nil {
-		t.Fatalf("writing script: %v", err)
-	}
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\necho ran\n"), 0o700), "writing script")
 
 	env := dialServer(t, startTestServer(t))
 
@@ -204,15 +170,8 @@ func TestRelativePathResolvesAgainstWorkdir(t *testing.T) {
 	cmd.Dir = dir
 
 	out, result, err := runOutput(t, env, cmd)
-	if err != nil {
-		t.Fatalf("Start/Wait = %v", err)
-	}
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode)
 
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code = %d, want 0", result.ExitCode)
-	}
-
-	if strings.TrimSpace(out) != "ran" {
-		t.Errorf("output = %q, want %q", strings.TrimSpace(out), "ran")
-	}
+	assert.Equal(t, "ran", strings.TrimSpace(out))
 }

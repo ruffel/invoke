@@ -1,9 +1,9 @@
 package invoketest
 
 import (
-	"errors"
-
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func ttyContracts() []TestCase {
@@ -29,9 +29,8 @@ func ttyAllocatesTerminal() TestCase {
 				invoke.IO{TTY: &invoke.TTY{}})
 
 			result := waitOrTimeout(t, proc)
-			if result.err != nil {
-				t.Errorf("test -t 0 under a requested TTY = %v; the process did not get a terminal", result.err)
-			}
+			assert.NoError(t, result.err,
+				"test -t 0 failed under a requested TTY; the process did not get a terminal")
 		},
 	}
 }
@@ -51,12 +50,10 @@ func ttyUnsupportedErrors() TestCase {
 					_, _ = proc.Wait()
 				}
 
-				failf(t, "requesting a TTY on a target without the capability succeeded silently")
+				require.Fail(t, "requesting a TTY on a target without the capability succeeded silently")
 			}
 
-			if !errors.Is(err, invoke.ErrNotSupported) {
-				t.Errorf("TTY request = %v, want an error wrapping ErrNotSupported", err)
-			}
+			assert.ErrorIs(t, err, invoke.ErrNotSupported)
 		},
 	}
 }

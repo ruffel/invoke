@@ -2,7 +2,6 @@ package ssh_test
 
 import (
 	"context"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/ssh"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	xssh "golang.org/x/crypto/ssh"
 )
 
@@ -26,9 +27,7 @@ func dialServer(t *testing.T, srv *testServer) *ssh.Environment {
 		ssh.WithPassword(testPassword),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 	)
-	if err != nil {
-		t.Fatalf("ssh.New = %v", err)
-	}
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -45,9 +44,7 @@ func TestUploadTempFileIsPrivateWhileWriting(t *testing.T) {
 	env := dialServer(t, startTestServer(t))
 
 	src := filepath.Join(t.TempDir(), "secret.txt")
-	if err := os.WriteFile(src, []byte(strings.Repeat("s", 1<<20)), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(src, []byte(strings.Repeat("s", 1<<20)), 0o600), "writing fixture")
 
 	dstDir := t.TempDir()
 	dst := filepath.Join(dstDir, "secret.txt")
@@ -85,17 +82,13 @@ func TestUploadTempFileIsPrivateWhileWriting(t *testing.T) {
 			checkOnce = true
 		}
 	}))
-	if err != nil {
-		t.Fatalf("Upload = %v", err)
-	}
+	require.NoError(t, err)
 
 	if !sawTemp {
 		t.Skip("transfer completed before the temporary file could be observed")
 	}
 
-	if observed&0o077 != 0 {
-		t.Errorf("in-flight temporary file mode = %v, want no group or world access", observed)
-	}
+	assert.Zero(t, observed&0o077, "in-flight temporary file mode = %v, want no group or world access", observed)
 }
 
 // TestDownloadFollowRejectsEscapes checks the symlink containment
@@ -108,34 +101,24 @@ func TestDownloadFollowRejectsEscapes(t *testing.T) {
 	env := dialServer(t, startTestServer(t))
 
 	outsideDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("outside data"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("outside data"), 0o600),
+		"writing fixture")
 
 	remoteDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("inside"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("inside"), 0o600), "writing fixture")
 
 	escape := filepath.Join(remoteDir, "escape.txt")
-	if err := os.Symlink(filepath.Join(outsideDir, "secret.txt"), escape); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	require.NoError(t, os.Symlink(filepath.Join(outsideDir, "secret.txt"), escape), "symlink")
 
 	local := filepath.Join(t.TempDir(), "downloaded")
 
 	err := env.Download(t.Context(), remoteDir, local, invoke.WithSymlinks(invoke.SymlinkFollow))
-	if err == nil {
-		t.Fatal("Download followed a link out of the transfer root; it must be rejected")
-	}
+	require.Error(t, err, "Download followed a link out of the transfer root; it must be rejected")
 
-	if !strings.Contains(err.Error(), "escape.txt") {
-		t.Errorf("error %q does not name the offending link", err)
-	}
+	assert.ErrorContains(t, err, "escape.txt", "the error does not name the offending link")
 
-	if got, readErr := os.ReadFile(filepath.Join(local, "escape.txt")); readErr == nil {
-		t.Errorf("outside content leaked into the destination: %q", got)
-	}
+	got, readErr := os.ReadFile(filepath.Join(local, "escape.txt"))
+	assert.Error(t, readErr, "outside content leaked into the destination: %q", got)
 }
 
 // TestDownloadFollowsInRootSymlinks checks that resolving links by hand
@@ -147,28 +130,19 @@ func TestDownloadFollowsInRootSymlinks(t *testing.T) {
 	env := dialServer(t, startTestServer(t))
 
 	remoteDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("followed content"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(remoteDir, "real.txt"), []byte("followed content"), 0o600),
+		"writing fixture")
 
-	if err := os.Symlink("real.txt", filepath.Join(remoteDir, "link.txt")); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
+	require.NoError(t, os.Symlink("real.txt", filepath.Join(remoteDir, "link.txt")), "symlink")
 
 	local := filepath.Join(t.TempDir(), "downloaded")
 
-	if err := env.Download(t.Context(), remoteDir, local, invoke.WithSymlinks(invoke.SymlinkFollow)); err != nil {
-		t.Fatalf("Download = %v", err)
-	}
+	require.NoError(t, env.Download(t.Context(), remoteDir, local, invoke.WithSymlinks(invoke.SymlinkFollow)))
 
 	got, err := os.ReadFile(filepath.Join(local, "link.txt"))
-	if err != nil {
-		t.Fatalf("reading followed link: %v", err)
-	}
+	require.NoError(t, err, "reading followed link")
 
-	if string(got) != "followed content" {
-		t.Errorf("followed link content = %q, want the target's content", got)
-	}
+	assert.Equal(t, "followed content", string(got))
 }
 
 // TestTransferWithoutSFTPSubsystemIsTerminal checks a host that does not
@@ -183,9 +157,7 @@ func TestTransferWithoutSFTPSubsystemIsTerminal(t *testing.T) {
 	env := dialServer(t, srv)
 
 	src := filepath.Join(t.TempDir(), "file.txt")
-	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(src, []byte("payload"), 0o600), "writing fixture")
 
 	dst := filepath.Join(t.TempDir(), "file.txt")
 
@@ -193,22 +165,18 @@ func TestTransferWithoutSFTPSubsystemIsTerminal(t *testing.T) {
 
 	for range attempts {
 		err := env.Upload(t.Context(), src, dst)
-		if !errors.Is(err, invoke.ErrNotSupported) {
-			t.Fatalf("Upload against a host without SFTP = %v, want ErrNotSupported", err)
-		}
+		require.ErrorIs(t, err, invoke.ErrNotSupported, "Upload against a host without SFTP")
 
 		var transportErr *invoke.TransportError
-		if errors.As(err, &transportErr) {
-			t.Fatalf("Upload = %v, want a terminal error, not a retryable TransportError", err)
-		}
+
+		require.NotErrorAs(t, err, &transportErr, "Upload must be a terminal error, not a retryable TransportError")
 	}
 
 	waitForSessions(t, srv, 0)
 
 	// The connection must still be usable for commands.
-	if _, err := env.LookPath(t.Context(), "sh"); err != nil {
-		t.Errorf("LookPath after %d refused transfers = %v; the connection was exhausted", attempts, err)
-	}
+	_, err := env.LookPath(t.Context(), "sh")
+	assert.NoError(t, err, "LookPath after %d refused transfers; the connection was exhausted", attempts)
 }
 
 // TestTransferCancelsWhileServerStalls checks cancellation is honored
@@ -221,9 +189,7 @@ func TestTransferCancelsWhileServerStalls(t *testing.T) {
 	env := dialServer(t, srv)
 
 	src := filepath.Join(t.TempDir(), "file.txt")
-	if err := os.WriteFile(src, []byte("payload"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(src, []byte("payload"), 0o600), "writing fixture")
 
 	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
 	defer cancel()
@@ -234,11 +200,10 @@ func TestTransferCancelsWhileServerStalls(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Errorf("stalled Upload = %v, want an error matching context.DeadlineExceeded", err)
-		}
+		assert.ErrorIs(t, err, context.DeadlineExceeded, "stalled Upload")
 	case <-time.After(10 * time.Second):
-		t.Fatal("Upload did not return after its context expired; cancellation is not honored while a round trip blocks")
+		require.Fail(t,
+			"Upload did not return after its context expired; cancellation is not honored while a round trip blocks")
 	}
 
 	waitForSessions(t, srv, 0)
@@ -258,5 +223,5 @@ func waitForSessions(t *testing.T, srv *testServer, want int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	t.Errorf("open sessions = %d, want %d; sessions leaked", srv.openSessions(), want)
+	assert.Failf(t, "sessions leaked", "open sessions = %d, want %d", srv.openSessions(), want)
 }

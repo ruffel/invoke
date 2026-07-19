@@ -19,6 +19,7 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
+	"github.com/stretchr/testify/require"
 )
 
 // defects enumerates the injectable misbehaviors. Each field breaks
@@ -672,9 +673,7 @@ func newReferenceFactory(d defects) (Factory, func()) {
 
 	factory := func(t T) invoke.Environment {
 		env, err := local.New()
-		if err != nil {
-			t.Fatalf("constructing local reference environment: %v", err)
-		}
+		require.NoError(t, err, "constructing local reference environment")
 
 		bases = append(bases, env)
 

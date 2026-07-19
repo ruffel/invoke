@@ -3,7 +3,6 @@ package fake_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -15,6 +14,8 @@ import (
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/fake"
 	"github.com/ruffel/invoke/invoketest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestFakePassesContractSuite is the fake's flagship property: it passes
@@ -51,27 +52,19 @@ func TestHandlersOverrideBuiltinsAndRecordCalls(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 	})
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
+	require.NoError(t, err)
 
 	res, err := proc.Wait()
-	if err != nil || res.ExitCode != 0 {
-		t.Fatalf("Wait = (%+v, %v), want success", res, err)
-	}
+	require.NoError(t, err, "want success")
+	require.Equal(t, 0, res.ExitCode, "want success")
 
-	if got := stdout.String(); got != "deployed api with config" {
-		t.Errorf("stdout = %q", got)
-	}
-
-	if got := stderr.String(); got != "warning: simulated\n" {
-		t.Errorf("stderr = %q", got)
-	}
+	assert.Equal(t, "deployed api with config", stdout.String(), "stdout")
+	assert.Equal(t, "warning: simulated\n", stderr.String(), "stderr")
 
 	calls := env.Calls()
-	if len(calls) != 1 || calls[0].Path != "deploy" || calls[0].Args[1] != "--fast" {
-		t.Errorf("Calls() = %+v, want the deploy invocation recorded", calls)
-	}
+	require.Len(t, calls, 1, "want the deploy invocation recorded")
+	assert.Equal(t, "deploy", calls[0].Path, "want the deploy invocation recorded")
+	assert.Equal(t, "--fast", calls[0].Args[1], "want the deploy invocation recorded")
 }
 
 func TestHandlerNonZeroExitIsExitError(t *testing.T) {
@@ -86,16 +79,15 @@ func TestHandlerNonZeroExitIsExitError(t *testing.T) {
 	})
 
 	proc, err := env.Start(t.Context(), invoke.New("flaky"), invoke.IO{})
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
+	require.NoError(t, err)
 
 	res, waitErr := proc.Wait()
 
 	var exitErr *invoke.ExitError
-	if !errors.As(waitErr, &exitErr) || exitErr.Code != 3 || res.ExitCode != 3 {
-		t.Errorf("Wait = (%+v, %v), want ExitError code 3", res, waitErr)
-	}
+
+	require.ErrorAs(t, waitErr, &exitErr, "want ExitError code 3")
+	assert.Equal(t, 3, exitErr.Code, "want ExitError code 3")
+	assert.Equal(t, 3, res.ExitCode, "want ExitError code 3")
 }
 
 func TestHandlerHonoringCancellationClassifiesAsCancel(t *testing.T) {
@@ -114,16 +106,12 @@ func TestHandlerHonoringCancellationClassifiesAsCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 
 	proc, err := env.Start(ctx, invoke.New("server"), invoke.IO{})
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
+	require.NoError(t, err)
 
 	cancel()
 
 	_, waitErr := proc.Wait()
-	if !errors.Is(waitErr, context.Canceled) {
-		t.Errorf("Wait = %v, want context.Canceled", waitErr)
-	}
+	assert.ErrorIs(t, waitErr, context.Canceled)
 }
 
 func TestWithEnvSeedsBaseEnvironment(t *testing.T) {
@@ -136,17 +124,12 @@ func TestWithEnvSeedsBaseEnvironment(t *testing.T) {
 	var stdout bytes.Buffer
 
 	proc, err := env.Start(t.Context(), invoke.Shell(`printf '%s' "$REGION"`), invoke.IO{Stdout: &stdout})
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
+	require.NoError(t, err)
 
-	if _, err := proc.Wait(); err != nil {
-		t.Fatalf("Wait = %v", err)
-	}
+	_, err = proc.Wait()
+	require.NoError(t, err)
 
-	if got := stdout.String(); got != "eu-west-1" {
-		t.Errorf("$REGION = %q, want %q", got, "eu-west-1")
-	}
+	assert.Equal(t, "eu-west-1", stdout.String(), "$REGION")
 }
 
 func TestFSViewExposesTargetState(t *testing.T) {
@@ -158,39 +141,26 @@ func TestFSViewExposesTargetState(t *testing.T) {
 
 	srcDir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"ok":true}`), 0o644); err != nil {
-		t.Fatalf("fixture: %v", err)
-	}
-
-	if err := os.Symlink("config.json", filepath.Join(srcDir, "current.json")); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	if err := env.Upload(t.Context(), srcDir, "/etc/app"); err != nil {
-		t.Fatalf("Upload = %v", err)
-	}
+	require.NoError(t,
+		os.WriteFile(filepath.Join(srcDir, "config.json"), []byte(`{"ok":true}`), 0o644), "fixture")
+	require.NoError(t, os.Symlink("config.json", filepath.Join(srcDir, "current.json")), "symlink")
+	require.NoError(t, env.Upload(t.Context(), srcDir, "/etc/app"))
 
 	view := env.FS()
 
 	// The adapter must satisfy the stdlib's own conformance test.
-	if err := fstest.TestFS(view, "etc/app/config.json", "etc/app/current.json"); err != nil {
-		t.Fatalf("fstest.TestFS: %v", err)
-	}
+	require.NoError(t, fstest.TestFS(view, "etc/app/config.json", "etc/app/current.json"))
 
 	content, err := fs.ReadFile(view, "etc/app/config.json")
-	if err != nil || string(content) != `{"ok":true}` {
-		t.Errorf("ReadFile = (%q, %v)", content, err)
-	}
+	assert.NoError(t, err, "reading through the FS view")
+	assert.JSONEq(t, `{"ok":true}`, string(content), "the FS view must expose the target's file content")
 
 	linkFS, ok := view.(fs.ReadLinkFS)
-	if !ok {
-		t.Fatal("FS view does not implement fs.ReadLinkFS")
-	}
+	require.True(t, ok, "FS view does not implement fs.ReadLinkFS")
 
 	target, err := linkFS.ReadLink("etc/app/current.json")
-	if err != nil || target != "config.json" {
-		t.Errorf("ReadLink = (%q, %v), want config.json", target, err)
-	}
+	assert.NoError(t, err, "reading a link through the FS view")
+	assert.Equal(t, "config.json", target, "the FS view must expose the link's target")
 }
 
 func TestUnknownCommandIsNotFound(t *testing.T) {
@@ -201,7 +171,5 @@ func TestUnknownCommandIsNotFound(t *testing.T) {
 	t.Cleanup(func() { _ = env.Close() })
 
 	_, err := env.Start(t.Context(), invoke.New("unscripted-command"), invoke.IO{})
-	if !errors.Is(err, invoke.ErrNotFound) {
-		t.Errorf("Start(unscripted) = %v, want ErrNotFound", err)
-	}
+	assert.ErrorIs(t, err, invoke.ErrNotFound)
 }

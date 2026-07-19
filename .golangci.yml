@@ -166,6 +166,14 @@ linters:
     # findings are never masked wholesale.
 
   settings:
+    testifylint:
+      # require-error insists every error assertion halt the test. That
+      # fights a deliberate property of this suite: a contract checks
+      # several things about one behavior and reports all of them, so one
+      # failure does not hide the next. assert is the correct choice at
+      # those sites, and the rest of testifylint's checks still apply.
+      disable:
+        - require-error
     exhaustive:
       # A default case is a deliberate catch-all; switches without one
       # remain fully checked.

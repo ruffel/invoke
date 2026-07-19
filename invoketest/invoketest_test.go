@@ -2,10 +2,11 @@ package invoketest
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stubEnv is a minimal Environment for exercising the suite mechanics; it
@@ -60,18 +61,11 @@ func TestVerifyGivesEachContractAFreshEnvironment(t *testing.T) {
 		return env
 	})
 
-	if len(ran) != 3 {
-		t.Fatalf("ran %d contracts, want 3: %v", len(ran), ran)
-	}
-
-	if len(created) != 3 {
-		t.Fatalf("factory called %d times, want 3 (one fresh environment per contract)", len(created))
-	}
+	require.Len(t, ran, 3, "every contract must run")
+	require.Len(t, created, 3, "the factory must be called once per contract: one fresh environment each")
 
 	for i, env := range created {
-		if !env.closed {
-			t.Errorf("environment %d was not closed after its contract", i)
-		}
+		assert.Truef(t, env.closed, "environment %d was not closed after its contract", i)
 	}
 }
 
@@ -91,9 +85,7 @@ func TestVerifySkipsKnownGaps(t *testing.T) {
 		WithKnownGap("core/gapped", "tracked: not implemented yet"),
 	)
 
-	if len(ran) != 1 || ran[0] != "kept" {
-		t.Errorf("ran = %v, want only the non-gapped contract", ran)
-	}
+	assert.Equal(t, []string{"kept"}, ran, "only the non-gapped contract may run")
 }
 
 func TestValidateGaps(t *testing.T) {
@@ -103,18 +95,12 @@ func TestValidateGaps(t *testing.T) {
 		{Category: "core", Name: "exists", Run: func(_ T, _ invoke.Environment) {}},
 	}
 
-	if err := validateGaps(contracts, map[string]string{"core/exists": "ok"}); err != nil {
-		t.Errorf("valid gap rejected: %v", err)
-	}
+	assert.NoError(t, validateGaps(contracts, map[string]string{"core/exists": "ok"}), "valid gap rejected")
 
 	err := validateGaps(contracts, map[string]string{"core/renamed-away": "stale"})
-	if err == nil {
-		t.Fatal("unknown gap ID accepted; stale opt-outs must fail the run")
-	}
+	require.Error(t, err, "unknown gap ID accepted; stale opt-outs must fail the run")
 
-	if !strings.Contains(err.Error(), "core/renamed-away") {
-		t.Errorf("error %q does not name the unknown contract", err)
-	}
+	assert.ErrorContains(t, err, "core/renamed-away", "the error must name the unknown contract")
 }
 
 func TestVerifyGatesOnCapabilities(t *testing.T) {
@@ -140,9 +126,7 @@ func TestVerifyGatesOnCapabilities(t *testing.T) {
 			return &stubEnv{caps: invoke.Capabilities{TTY: true}}
 		})
 
-		if !ran {
-			t.Error("contract gated on a declared capability did not run")
-		}
+		assert.True(t, ran, "contract gated on a declared capability did not run")
 	})
 
 	t.Run("capability not declared", func(t *testing.T) {
@@ -156,37 +140,27 @@ func TestVerifyGatesOnCapabilities(t *testing.T) {
 			return &stubEnv{caps: invoke.Capabilities{TTY: false}}
 		})
 
-		if ran {
-			t.Error("contract gated on an undeclared capability ran anyway")
-		}
+		assert.False(t, ran, "contract gated on an undeclared capability ran anyway")
 	})
 }
 
 func TestValidateContractsRejectsDuplicates(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		if recover() == nil {
-			t.Error("duplicate contract IDs did not panic")
-		}
-	}()
-
-	validateContracts([]TestCase{
-		{Category: "core", Name: "same", Run: func(_ T, _ invoke.Environment) {}},
-		{Category: "core", Name: "same", Run: func(_ T, _ invoke.Environment) {}},
-	})
+	assert.Panics(t, func() {
+		validateContracts([]TestCase{
+			{Category: "core", Name: "same", Run: func(_ T, _ invoke.Environment) {}},
+			{Category: "core", Name: "same", Run: func(_ T, _ invoke.Environment) {}},
+		})
+	}, "duplicate contract IDs did not panic")
 }
 
 func TestValidateContractsRejectsMissingRun(t *testing.T) {
 	t.Parallel()
 
-	defer func() {
-		if recover() == nil {
-			t.Error("contract without Run did not panic")
-		}
-	}()
-
-	validateContracts([]TestCase{{Category: "core", Name: "hollow"}})
+	assert.Panics(t, func() {
+		validateContracts([]TestCase{{Category: "core", Name: "hollow"}})
+	}, "contract without Run did not panic")
 }
 
 func TestAllContractsIsStructurallyValid(t *testing.T) {
@@ -203,12 +177,7 @@ func TestAllContractsIsStructurallyValid(t *testing.T) {
 	}
 
 	for _, tc := range AllContracts() {
-		if !known[tc.Category] {
-			t.Errorf("contract %q uses unknown category %q", tc.ID(), tc.Category)
-		}
-
-		if tc.Description == "" {
-			t.Errorf("contract %q has no description", tc.ID())
-		}
+		assert.Truef(t, known[tc.Category], "contract %q uses unknown category %q", tc.ID(), tc.Category)
+		assert.NotEmptyf(t, tc.Description, "contract %q has no description", tc.ID())
 	}
 }

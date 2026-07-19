@@ -5,14 +5,13 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLocalOS(t *testing.T) {
 	t.Parallel()
 
-	if got := invoke.LocalOS(); string(got) != runtime.GOOS {
-		t.Errorf("LocalOS() = %q, want %q", got, runtime.GOOS)
-	}
+	assert.Equal(t, runtime.GOOS, string(invoke.LocalOS()))
 }
 
 func TestTargetOSValues(t *testing.T) {
@@ -20,8 +19,7 @@ func TestTargetOSValues(t *testing.T) {
 
 	// The constants mirror runtime.GOOS strings; pin them so provider
 	// comparisons and logs stay stable.
-	if invoke.OSLinux != "linux" || invoke.OSDarwin != "darwin" || invoke.OSUnknown != "" {
-		t.Errorf("TargetOS constants drifted: linux=%q darwin=%q unknown=%q",
-			invoke.OSLinux, invoke.OSDarwin, invoke.OSUnknown)
-	}
+	assert.Equal(t, "linux", string(invoke.OSLinux), "TargetOS constants must not drift")
+	assert.Equal(t, "darwin", string(invoke.OSDarwin), "TargetOS constants must not drift")
+	assert.Empty(t, string(invoke.OSUnknown), "TargetOS constants must not drift")
 }

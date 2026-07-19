@@ -2,10 +2,11 @@ package invoketest
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // terminationGrace is how long the termination contract waits after
@@ -64,11 +65,11 @@ func lifecycleConcurrentWaitIsSafe() TestCase {
 						continue
 					}
 
-					if got.result != first.result {
-						t.Errorf("concurrent Wait results differ: %+v vs %+v", got.result, first.result)
-					}
+					assert.Equal(t, first.result, got.result,
+						"concurrent Wait callers must all observe the same outcome")
 				case <-time.After(contractTimeout):
-					failf(t, "concurrent Wait callers did not all return within %v", contractTimeout)
+					require.Failf(t, "concurrent Wait callers blocked past the contract deadline",
+						"not all callers returned within %v", contractTimeout)
 				}
 			}
 		},
@@ -89,13 +90,10 @@ func lifecycleDeadlineUnblocksWait() TestCase {
 			defer func() { _ = proc.Close() }()
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err == nil {
-				failf(t, "Wait after deadline returned nil error")
-			}
+			require.Error(t, outcome.err, "Wait after deadline returned nil error")
 
-			if !errors.Is(outcome.err, context.DeadlineExceeded) {
-				t.Errorf("Wait after deadline = %v, want an error matching context.DeadlineExceeded", outcome.err)
-			}
+			assert.ErrorIs(t, outcome.err, context.DeadlineExceeded,
+				"a deadline must stay distinguishable from a plain cancel")
 
 			requireNotExitError(t, outcome.err, "deadline expiry")
 		},
@@ -123,14 +121,12 @@ func lifecycleCancelAfterExitKeepsOutcome() TestCase {
 			// time would corrupt the cached success here.
 			second := waitOrTimeout(t, proc)
 
-			if outcome.err != nil || second.err != nil {
-				t.Errorf("Wait = (%v, then %v), want success: the process exited 0 before cancellation",
-					outcome.err, second.err)
-			}
+			assert.NoError(t, outcome.err,
+				"the process exited 0 before cancellation; the real outcome must win")
+			assert.NoError(t, second.err,
+				"the process exited 0 before cancellation; a late cancel must not rewrite it")
 
-			if second.result.ExitCode != 0 {
-				t.Errorf("ExitCode = %d after late cancel, want 0", second.result.ExitCode)
-			}
+			assert.Equal(t, 0, second.result.ExitCode, "a late cancel must not rewrite the exit code")
 		},
 	}
 }
@@ -151,13 +147,10 @@ func lifecycleConcurrentProcessesRun() TestCase {
 			outcomeA := waitOrTimeout(t, procA)
 			outcomeB := waitOrTimeout(t, procB)
 
-			if code := requireExitError(t, outcomeA.err).Code; code != codeA {
-				t.Errorf("process A exit = %d, want %d", code, codeA)
-			}
-
-			if code := requireExitError(t, outcomeB.err).Code; code != codeB {
-				t.Errorf("process B exit = %d, want %d", code, codeB)
-			}
+			assert.Equal(t, codeA, requireExitError(t, outcomeA.err).Code,
+				"process A's outcome must be independent")
+			assert.Equal(t, codeB, requireExitError(t, outcomeB.err).Code,
+				"process B's outcome must be independent")
 		},
 	}
 }
@@ -173,16 +166,12 @@ func lifecycleWaitIsIdempotent() TestCase {
 			first := waitOrTimeout(t, proc)
 			second := waitOrTimeout(t, proc)
 
-			if first.result != second.result {
-				t.Errorf("repeated Wait results differ: %+v vs %+v", first.result, second.result)
-			}
+			assert.Equal(t, first.result, second.result, "repeated Wait must return the same outcome")
 
 			firstExit := requireExitError(t, first.err)
 			secondExit := requireExitError(t, second.err)
 
-			if firstExit.Code != secondExit.Code {
-				t.Errorf("repeated Wait exit codes differ: %d vs %d", firstExit.Code, secondExit.Code)
-			}
+			assert.Equal(t, firstExit.Code, secondExit.Code, "repeated Wait must report the same exit code")
 		},
 	}
 }
@@ -203,13 +192,9 @@ func lifecycleCancelUnblocksWait() TestCase {
 			cancel()
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err == nil {
-				failf(t, "Wait after cancel returned nil error")
-			}
+			require.Error(t, outcome.err, "Wait after cancel returned nil error")
 
-			if !errors.Is(outcome.err, context.Canceled) {
-				t.Errorf("Wait after cancel = %v, want an error matching context.Canceled", outcome.err)
-			}
+			assert.ErrorIs(t, outcome.err, context.Canceled)
 
 			requireNotExitError(t, outcome.err, "cancellation")
 		},
@@ -238,17 +223,14 @@ func lifecycleCancelTerminatesProcess() TestCase {
 			cancel()
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err == nil {
-				failf(t, "Wait after cancel returned nil error")
-			}
+			require.Error(t, outcome.err, "Wait after cancel returned nil error")
 
 			// Give a surviving process ample time to prove itself,
 			// then check through the environment's own shell.
 			time.Sleep(terminationGrace)
 
-			if !targetProbe(t, env, "test ! -e "+shellQuote(marker)) {
-				t.Errorf("marker %q exists on the target; cancellation did not terminate the process", marker)
-			}
+			assert.Truef(t, targetProbe(t, env, "test ! -e "+shellQuote(marker)),
+				"marker %q exists on the target; cancellation did not terminate the process", marker)
 		},
 	}
 }
@@ -268,12 +250,10 @@ func lifecycleStartOnCanceledContext() TestCase {
 					_ = proc.Close()
 				}
 
-				failf(t, "Start on a canceled context succeeded")
+				require.Fail(t, "Start on a canceled context succeeded")
 			}
 
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("Start on canceled context = %v, want an error matching context.Canceled", err)
-			}
+			assert.ErrorIs(t, err, context.Canceled)
 		},
 	}
 }
@@ -286,18 +266,12 @@ func lifecycleCloseUnblocksWait() TestCase {
 		Run: func(t T, env invoke.Environment) {
 			proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
 
-			if err := closeOrTimeout(t, proc); err != nil {
-				t.Errorf("Close = %v, want nil", err)
-			}
+			assert.NoError(t, closeOrTimeout(t, proc), "Close of a running process")
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err == nil {
-				failf(t, "Wait after Close returned nil error")
-			}
+			require.Error(t, outcome.err, "Wait after Close returned nil error")
 
-			if !errors.Is(outcome.err, invoke.ErrClosed) {
-				t.Errorf("Wait after Close = %v, want an error wrapping ErrClosed", outcome.err)
-			}
+			assert.ErrorIs(t, outcome.err, invoke.ErrClosed, "Wait after Close")
 
 			requireNotExitError(t, outcome.err, "Close")
 		},
@@ -312,13 +286,8 @@ func lifecycleCloseIsIdempotent() TestCase {
 		Run: func(t T, env invoke.Environment) {
 			proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
 
-			if err := closeOrTimeout(t, proc); err != nil {
-				t.Errorf("first Close = %v, want nil", err)
-			}
-
-			if err := closeOrTimeout(t, proc); err != nil {
-				t.Errorf("second Close = %v, want nil", err)
-			}
+			assert.NoError(t, closeOrTimeout(t, proc), "first Close")
+			assert.NoError(t, closeOrTimeout(t, proc), "second Close")
 		},
 	}
 }
@@ -332,19 +301,13 @@ func lifecycleCloseAfterWaitKeepsOutcome() TestCase {
 			proc := startCommand(t.Context(), t, env, invoke.New("true"), invoke.IO{})
 
 			first := waitOrTimeout(t, proc)
-			if first.err != nil {
-				failf(t, "Wait = %v, want success", first.err)
-			}
+			require.NoError(t, first.err, "Wait must succeed")
 
-			if err := closeOrTimeout(t, proc); err != nil {
-				t.Errorf("Close after Wait = %v, want nil", err)
-			}
+			assert.NoError(t, closeOrTimeout(t, proc), "Close after Wait")
 
 			second := waitOrTimeout(t, proc)
-			if second.err != nil || second.result != first.result {
-				t.Errorf("Wait after Close changed the outcome: (%+v, %v) vs (%+v, %v)",
-					second.result, second.err, first.result, first.err)
-			}
+			assert.NoError(t, second.err, "Close must not invalidate the cached outcome")
+			assert.Equal(t, first.result, second.result, "Close must not invalidate the cached outcome")
 		},
 	}
 }
@@ -357,18 +320,12 @@ func lifecycleEnvCloseTerminatesProcesses() TestCase {
 		Run: func(t T, env invoke.Environment) {
 			proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
 
-			if err := env.Close(); err != nil {
-				failf(t, "Environment.Close = %v", err)
-			}
+			require.NoError(t, env.Close(), "Environment.Close")
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err == nil {
-				failf(t, "Wait after environment Close returned nil error")
-			}
+			require.Error(t, outcome.err, "Wait after environment Close returned nil error")
 
-			if !errors.Is(outcome.err, invoke.ErrClosed) {
-				t.Errorf("Wait after environment Close = %v, want an error wrapping ErrClosed", outcome.err)
-			}
+			assert.ErrorIs(t, outcome.err, invoke.ErrClosed, "Wait after environment Close")
 
 			requireNotExitError(t, outcome.err, "environment Close")
 		},
@@ -388,20 +345,14 @@ func lifecycleSignalTerminatesProcess() TestCase {
 
 			defer func() { _ = proc.Close() }()
 
-			if err := proc.Signal(invoke.SIGTERM); err != nil {
-				failf(t, "Signal(TERM) = %v, want nil on a target declaring signal delivery", err)
-			}
+			require.NoError(t, proc.Signal(invoke.SIGTERM),
+				"Signal(TERM) must succeed on a target declaring signal delivery")
 
 			outcome := waitOrTimeout(t, proc)
 
 			exitErr := requireExitError(t, outcome.err)
-			if exitErr.Signal != invoke.SIGTERM {
-				t.Errorf("ExitError.Signal = %q, want TERM", exitErr.Signal)
-			}
-
-			if exitErr.Code != -1 {
-				t.Errorf("ExitError.Code = %d for a signal death, want -1", exitErr.Code)
-			}
+			assert.Equal(t, invoke.SIGTERM, exitErr.Signal)
+			assert.Equal(t, -1, exitErr.Code, "a signal death reports Code -1")
 		},
 	}
 }
@@ -426,19 +377,15 @@ func lifecycleSignalAttributionRoundTrips() TestCase {
 				if err := proc.Signal(sig); err != nil {
 					_ = proc.Close()
 
-					failf(t, "Signal(%s) = %v, want nil on a target declaring signal delivery", sig, err)
+					require.NoErrorf(t, err, "Signal(%s) must succeed on a target declaring signal delivery", sig)
 				}
 
 				outcome := waitOrTimeout(t, proc)
 
 				exitErr := requireExitError(t, outcome.err)
-				if exitErr.Signal != sig {
-					t.Errorf("sent %s but Wait reports Signal=%q; the name mapping is not faithful", sig, exitErr.Signal)
-				}
-
-				if exitErr.Code != -1 {
-					t.Errorf("ExitError.Code = %d for a %s death, want -1", exitErr.Code, sig)
-				}
+				assert.Equalf(t, sig, exitErr.Signal,
+					"sent %s but Wait reports a different signal; the name mapping is not faithful", sig)
+				assert.Equalf(t, -1, exitErr.Code, "a %s death reports Code -1", sig)
 			}
 		},
 	}
@@ -455,13 +402,10 @@ func lifecycleSignalAfterExitErrors() TestCase {
 		Run: func(t T, env invoke.Environment) {
 			proc := startCommand(t.Context(), t, env, invoke.New("true"), invoke.IO{})
 
-			if outcome := waitOrTimeout(t, proc); outcome.err != nil {
-				failf(t, "Wait = %v, want success", outcome.err)
-			}
+			require.NoError(t, waitOrTimeout(t, proc).err, "Wait must succeed")
 
-			if err := proc.Signal(invoke.SIGTERM); err == nil {
-				t.Errorf("Signal after exit = nil; signaling a gone process must report an error, not silently succeed")
-			}
+			assert.Error(t, proc.Signal(invoke.SIGTERM),
+				"signaling a gone process must report an error, not silently succeed")
 		},
 	}
 }
@@ -485,13 +429,10 @@ func lifecycleUnsupportedSignalNormalized() TestCase {
 			}
 
 			err := proc.Signal(sig)
-			if err == nil {
-				failf(t, "Signal(%s) = nil on a target that cannot deliver it; silent no-ops are forbidden", sig)
-			}
+			require.Errorf(t, err,
+				"Signal(%s) on a target that cannot deliver it; silent no-ops are forbidden", sig)
 
-			if !errors.Is(err, invoke.ErrNotSupported) {
-				t.Errorf("Signal(%s) = %v, want an error wrapping ErrNotSupported", sig, err)
-			}
+			assert.ErrorIs(t, err, invoke.ErrNotSupported)
 		},
 	}
 }

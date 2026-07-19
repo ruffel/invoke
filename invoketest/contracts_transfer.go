@@ -1,9 +1,7 @@
 package invoketest
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -64,13 +64,11 @@ func transferCanceledBeforeStartDoesNothing() TestCase {
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(ctx, srcDir, remote); !errors.Is(err, context.Canceled) {
-				t.Errorf("Upload with a canceled context = %v, want an error matching context.Canceled", err)
-			}
+			assert.ErrorIs(t, env.Upload(ctx, srcDir, remote), context.Canceled,
+				"an already-canceled transfer must fail with the context's own error")
 
-			if targetProbe(t, env, "test -e "+shellQuote(remote)) {
-				t.Errorf("a canceled transfer created %q; it must not touch the destination", remote)
-			}
+			assert.Falsef(t, targetProbe(t, env, "test -e "+shellQuote(remote)),
+				"a canceled transfer created %q; it must not touch the destination", remote)
 		},
 	}
 }
@@ -93,30 +91,20 @@ func transferBinaryContentSurvives() TestCase {
 			payload = append(payload, binaryTail()...)
 
 			src := filepath.Join(t.TempDir(), "blob.bin")
-			if err := os.WriteFile(src, payload, 0o600); err != nil {
-				failf(t, "writing binary fixture: %v", err)
-			}
+			require.NoError(t, os.WriteFile(src, payload, 0o600), "writing binary fixture")
 
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), src, remote); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), src, remote), "Upload")
 
 			back := filepath.Join(t.TempDir(), "back.bin")
-			if err := env.Download(t.Context(), remote, back); err != nil {
-				failf(t, "Download = %v", err)
-			}
+			require.NoError(t, env.Download(t.Context(), remote, back), "Download")
 
 			got, err := os.ReadFile(back)
-			if err != nil {
-				failf(t, "reading round-tripped blob: %v", err)
-			}
+			require.NoError(t, err, "reading round-tripped blob")
 
-			if !bytes.Equal(got, payload) {
-				t.Errorf("binary content changed in transit: got %d bytes, want %d", len(got), len(payload))
-			}
+			assert.Equal(t, payload, got, "binary content changed in transit")
 		},
 	}
 }
@@ -135,9 +123,7 @@ func transferDownloadCancelPreservesDestination() TestCase {
 
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), big, remote); err != nil {
-				failf(t, "seeding Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), big, remote), "seeding Upload")
 
 			dstDir := t.TempDir()
 			dst := writeHostFixture(t, dstDir, "dst.bin", "precious local destination")
@@ -148,17 +134,12 @@ func transferDownloadCancelPreservesDestination() TestCase {
 			err := env.Download(ctx, remote, dst, invoke.WithProgress(func(_ invoke.TransferProgress) {
 				cancel()
 			}))
-			if err == nil {
-				failf(t, "canceled Download reported success")
-			}
+			require.Error(t, err, "canceled Download reported success")
 
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("canceled Download = %v, want an error matching context.Canceled", err)
-			}
+			assert.ErrorIs(t, err, context.Canceled)
 
-			if got := readHostFile(t, dst); got != "precious local destination" {
-				t.Errorf("local destination = %q after a canceled download; atomicity was violated", got)
-			}
+			assert.Equal(t, "precious local destination", readHostFile(t, dst),
+				"the local destination changed after a canceled download; atomicity was violated")
 		},
 	}
 }
@@ -173,25 +154,19 @@ func transferEmptyFilesAndDirs() TestCase {
 			writeHostFixture(t, srcDir, "empty.txt", "")
 
 			emptyDir := filepath.Join(srcDir, "hollow")
-			if err := os.Mkdir(emptyDir, 0o750); err != nil {
-				failf(t, "mkdir: %v", err)
-			}
+			require.NoError(t, os.Mkdir(emptyDir, 0o750), "mkdir")
 
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), srcDir, remote); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "Upload")
 
-			if !targetProbe(t, env, "test -d "+shellQuote(remote+"/hollow")) {
-				t.Errorf("empty directory did not survive the transfer")
-			}
+			assert.True(t, targetProbe(t, env, "test -d "+shellQuote(remote+"/hollow")),
+				"empty directory did not survive the transfer")
 
 			local := downloadBack(t, env, remote)
-			if got := readHostFile(t, filepath.Join(local, "empty.txt")); got != "" {
-				t.Errorf("empty.txt round-tripped as %q, want empty", got)
-			}
+			assert.Empty(t, readHostFile(t, filepath.Join(local, "empty.txt")),
+				"a zero-byte file must round-trip as empty")
 		},
 	}
 }
@@ -208,28 +183,23 @@ func transferSymlinkFollowCopiesContent() TestCase {
 			srcDir := t.TempDir()
 			writeHostFixture(t, srcDir, "real.txt", "followed content")
 
-			if err := os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")); err != nil {
-				failf(t, "symlink: %v", err)
-			}
+			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
 
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), srcDir, remote, invoke.WithSymlinks(invoke.SymlinkFollow)); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t,
+				env.Upload(t.Context(), srcDir, remote, invoke.WithSymlinks(invoke.SymlinkFollow)), "Upload")
 
 			// On the target, the link path must be a regular file whose
 			// content matches the target — not a symlink, not missing.
 			linkPath := shellQuote(remote + "/link.txt")
-			if !targetProbe(t, env, "test -f "+linkPath+" && test ! -L "+linkPath) {
-				t.Errorf("followed link is not a regular file on the target")
-			}
+			assert.True(t, targetProbe(t, env, "test -f "+linkPath+" && test ! -L "+linkPath),
+				"followed link is not a regular file on the target")
 
 			local := downloadBack(t, env, remote)
-			if got := readHostFile(t, filepath.Join(local, "link.txt")); got != "followed content" {
-				t.Errorf("followed link content = %q, want the target's content", got)
-			}
+			assert.Equal(t, "followed content", readHostFile(t, filepath.Join(local, "link.txt")),
+				"a followed link must carry the target's content")
 		},
 	}
 }
@@ -240,13 +210,8 @@ func writeHostFixture(t T, dir, name, content string) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), fixtureMode); err != nil {
-		failf(t, "writing fixture %q: %v", path, err)
-	}
-
-	if err := os.Chmod(path, fixtureMode); err != nil {
-		failf(t, "chmod fixture %q: %v", path, err)
-	}
+	require.NoErrorf(t, os.WriteFile(path, []byte(content), fixtureMode), "writing fixture %q", path)
+	require.NoErrorf(t, os.Chmod(path, fixtureMode), "chmod fixture %q", path)
 
 	return path
 }
@@ -257,9 +222,7 @@ func downloadBack(t T, env invoke.Environment, remote string) string {
 	t.Helper()
 
 	local := filepath.Join(t.TempDir(), "downloaded")
-	if err := env.Download(t.Context(), remote, local); err != nil {
-		failf(t, "Download(%q) = %v", remote, err)
-	}
+	require.NoErrorf(t, env.Download(t.Context(), remote, local), "Download(%q)", remote)
 
 	return local
 }
@@ -269,9 +232,7 @@ func readHostFile(t T, path string) string {
 	t.Helper()
 
 	content, err := os.ReadFile(path)
-	if err != nil {
-		failf(t, "reading %q: %v", path, err)
-	}
+	require.NoErrorf(t, err, "reading %q", path)
 
 	return string(content)
 }
@@ -307,18 +268,13 @@ func transferRoundTrip() TestCase {
 
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), src, remote); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), src, remote), "Upload")
 
-			if !probeTargetMode(t, env, remote, fixtureMode) {
-				t.Errorf("target mode is not %v; upload must preserve the source mode umask-proof", fixtureMode)
-			}
+			assert.Truef(t, probeTargetMode(t, env, remote, fixtureMode),
+				"target mode is not %v; upload must preserve the source mode umask-proof", fixtureMode)
 
 			local := downloadBack(t, env, remote)
-			if got := readHostFile(t, local); got != "payload" {
-				t.Errorf("round-tripped content = %q, want %q", got, "payload")
-			}
+			assert.Equal(t, "payload", readHostFile(t, local))
 		},
 	}
 }
@@ -336,21 +292,15 @@ func transferModeOverride() TestCase {
 
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), first, remote); err != nil {
-				failf(t, "first Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), first, remote), "first Upload")
+			require.NoError(t,
+				env.Upload(t.Context(), second, remote, invoke.WithMode(overrideMode)), "second Upload")
 
-			if err := env.Upload(t.Context(), second, remote, invoke.WithMode(overrideMode)); err != nil {
-				failf(t, "second Upload = %v", err)
-			}
+			assert.Truef(t, probeTargetMode(t, env, remote, overrideMode),
+				"target mode is not %v; WithMode must apply on overwrite", overrideMode)
 
-			if !probeTargetMode(t, env, remote, overrideMode) {
-				t.Errorf("target mode is not %v; WithMode must apply on overwrite", overrideMode)
-			}
-
-			if got := readHostFile(t, downloadBack(t, env, remote)); got != "new content" {
-				t.Errorf("content = %q, want the overwriting upload's content", got)
-			}
+			assert.Equal(t, "new content", readHostFile(t, downloadBack(t, env, remote)),
+				"the overwriting upload's content must win")
 		},
 	}
 }
@@ -368,21 +318,14 @@ func transferFailurePreservesDestination() TestCase {
 
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), good, remote); err != nil {
-				failf(t, "seeding Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), good, remote), "seeding Upload")
+			require.NoError(t, os.Chmod(unreadable, 0), "chmod")
 
-			if err := os.Chmod(unreadable, 0); err != nil {
-				failf(t, "chmod: %v", err)
-			}
+			require.Error(t, env.Upload(t.Context(), unreadable, remote),
+				"uploading an unreadable source succeeded, want an error")
 
-			if err := env.Upload(t.Context(), unreadable, remote); err == nil {
-				failf(t, "uploading an unreadable source succeeded, want an error")
-			}
-
-			if got := readHostFile(t, downloadBack(t, env, remote)); got != "precious destination" {
-				t.Errorf("destination = %q after a failed transfer; atomicity was violated", got)
-			}
+			assert.Equal(t, "precious destination", readHostFile(t, downloadBack(t, env, remote)),
+				"the destination changed after a failed transfer; atomicity was violated")
 		},
 	}
 }
@@ -400,9 +343,7 @@ func transferCancelPreservesDestination() TestCase {
 
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), good, remote); err != nil {
-				failf(t, "seeding Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), good, remote), "seeding Upload")
 
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -410,17 +351,12 @@ func transferCancelPreservesDestination() TestCase {
 			err := env.Upload(ctx, big, remote, invoke.WithProgress(func(_ invoke.TransferProgress) {
 				cancel()
 			}))
-			if err == nil {
-				failf(t, "canceled Upload reported success")
-			}
+			require.Error(t, err, "canceled Upload reported success")
 
-			if !errors.Is(err, context.Canceled) {
-				t.Errorf("canceled Upload = %v, want an error matching context.Canceled", err)
-			}
+			assert.ErrorIs(t, err, context.Canceled)
 
-			if got := readHostFile(t, downloadBack(t, env, remote)); got != "precious destination" {
-				t.Errorf("destination = %q after a canceled transfer; atomicity was violated", got)
-			}
+			assert.Equal(t, "precious destination", readHostFile(t, downloadBack(t, env, remote)),
+				"the destination changed after a canceled transfer; atomicity was violated")
 		},
 	}
 }
@@ -435,14 +371,10 @@ func transferTreeCreatesParents() TestCase {
 			writeHostFixture(t, srcDir, "top.txt", "top")
 
 			nested := filepath.Join(srcDir, "nested")
-			if err := os.Mkdir(nested, 0o700); err != nil {
-				failf(t, "mkdir: %v", err)
-			}
+			require.NoError(t, os.Mkdir(nested, 0o700), "mkdir")
 
 			// os.Mkdir is umask-subject; pin the intended dir mode.
-			if err := os.Chmod(nested, 0o700); err != nil {
-				failf(t, "chmod: %v", err)
-			}
+			require.NoError(t, os.Chmod(nested, 0o700), "chmod")
 
 			writeHostFixture(t, nested, "deep.txt", "deep")
 
@@ -451,25 +383,18 @@ func transferTreeCreatesParents() TestCase {
 
 			defer cleanupTargetPath(t, env, base)
 
-			if err := env.Upload(t.Context(), srcDir, remote); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "Upload")
 
 			// The nested directory's own mode must survive the upload,
 			// verified on the target rather than through a download.
-			if !probeTargetMode(t, env, remote+"/nested", 0o700) {
-				t.Errorf("nested directory mode was not preserved on the target")
-			}
+			assert.True(t, probeTargetMode(t, env, remote+"/nested", 0o700),
+				"nested directory mode was not preserved on the target")
 
 			local := downloadBack(t, env, remote)
 
-			if got := readHostFile(t, filepath.Join(local, "top.txt")); got != "top" {
-				t.Errorf("top.txt = %q", got)
-			}
-
-			if got := readHostFile(t, filepath.Join(local, "nested", "deep.txt")); got != "deep" {
-				t.Errorf("nested/deep.txt = %q; nested content must survive the round trip", got)
-			}
+			assert.Equal(t, "top", readHostFile(t, filepath.Join(local, "top.txt")))
+			assert.Equal(t, "deep", readHostFile(t, filepath.Join(local, "nested", "deep.txt")),
+				"nested content must survive the round trip")
 		},
 	}
 }
@@ -486,30 +411,23 @@ func transferSymlinksPreserve() TestCase {
 			srcDir := t.TempDir()
 			writeHostFixture(t, srcDir, "real.txt", "real")
 
-			if err := os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")); err != nil {
-				failf(t, "symlink: %v", err)
-			}
-
-			if err := os.Symlink("gone", filepath.Join(srcDir, "dangling.txt")); err != nil {
-				failf(t, "symlink: %v", err)
-			}
+			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
+			require.NoError(t, os.Symlink("gone", filepath.Join(srcDir, "dangling.txt")), "symlink")
 
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
-			if err := env.Upload(t.Context(), srcDir, remote); err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "Upload")
 
 			local := downloadBack(t, env, remote)
 
-			if target, err := os.Readlink(filepath.Join(local, "link.txt")); err != nil || target != "real.txt" {
-				t.Errorf("link.txt = (%q, %v), want a preserved link to real.txt", target, err)
-			}
+			linkTarget, linkErr := os.Readlink(filepath.Join(local, "link.txt"))
+			assert.NoError(t, linkErr, "link.txt must survive as a link")
+			assert.Equal(t, "real.txt", linkTarget, "link.txt must be preserved as a link to real.txt")
 
-			if target, err := os.Readlink(filepath.Join(local, "dangling.txt")); err != nil || target != "gone" {
-				t.Errorf("dangling.txt = (%q, %v), want the dangling link preserved as-is", target, err)
-			}
+			danglingTarget, danglingErr := os.Readlink(filepath.Join(local, "dangling.txt"))
+			assert.NoError(t, danglingErr, "dangling.txt must survive as a link")
+			assert.Equal(t, "gone", danglingTarget, "the dangling link must be preserved as-is")
 		},
 	}
 }
@@ -523,21 +441,16 @@ func transferFollowRejectsEscapes() TestCase {
 			outside := writeHostFixture(t, t.TempDir(), "secret.txt", "outside data")
 
 			srcDir := t.TempDir()
-			if err := os.Symlink(outside, filepath.Join(srcDir, "escape.txt")); err != nil {
-				failf(t, "symlink: %v", err)
-			}
+			require.NoError(t, os.Symlink(outside, filepath.Join(srcDir, "escape.txt")), "symlink")
 
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
 			err := env.Upload(t.Context(), srcDir, remote, invoke.WithSymlinks(invoke.SymlinkFollow))
-			if err == nil {
-				failf(t, "following a link out of the transfer root succeeded; it must be rejected")
-			}
+			require.Error(t, err,
+				"following a link out of the transfer root succeeded; it must be rejected")
 
-			if !strings.Contains(err.Error(), "escape.txt") {
-				t.Errorf("error %q does not name the offending link", err)
-			}
+			assert.ErrorContains(t, err, "escape.txt", "the error must name the offending link")
 		},
 	}
 }
@@ -559,21 +472,16 @@ func transferSpecialFiles() TestCase {
 			defer cleanupTargetPath(t, env, remote)
 
 			err := env.Upload(t.Context(), srcDir, remote)
-			if err == nil {
-				failf(t, "uploading a tree with a FIFO succeeded; special files must error by default")
-			}
+			require.Error(t, err,
+				"uploading a tree with a FIFO succeeded; special files must error by default")
 
-			if !strings.Contains(err.Error(), "pipe.fifo") {
-				t.Errorf("error %q does not name the special file", err)
-			}
+			assert.ErrorContains(t, err, "pipe.fifo", "the error must name the special file")
 
-			if err := env.Upload(t.Context(), srcDir, remote, invoke.WithSkipSpecial()); err != nil {
-				failf(t, "Upload with WithSkipSpecial = %v", err)
-			}
+			require.NoError(t,
+				env.Upload(t.Context(), srcDir, remote, invoke.WithSkipSpecial()), "Upload with WithSkipSpecial")
 
-			if !targetProbe(t, env, "test ! -e "+shellQuote(remote+"/pipe.fifo")) {
-				t.Errorf("FIFO was transferred despite WithSkipSpecial")
-			}
+			assert.True(t, targetProbe(t, env, "test ! -e "+shellQuote(remote+"/pipe.fifo")),
+				"FIFO was transferred despite WithSkipSpecial")
 		},
 	}
 }
@@ -597,24 +505,20 @@ func transferProgressTotals() TestCase {
 				invoke.WithProgress(func(p invoke.TransferProgress) {
 					finals[p.Path] = p
 				}))
-			if err != nil {
-				failf(t, "Upload = %v", err)
-			}
+			require.NoError(t, err, "Upload")
 
 			wantSizes := map[string]int64{"a.txt": 100, "b.txt": 500}
 
 			for path, want := range wantSizes {
 				final, ok := finals[path]
 				if !ok {
-					t.Errorf("no progress reported for %q", path)
+					assert.Failf(t, "missing progress", "no progress reported for %q", path)
 
 					continue
 				}
 
-				if final.Total != want || final.Current != want {
-					t.Errorf("%q final progress = %d/%d, want %d/%d",
-						path, final.Current, final.Total, want, want)
-				}
+				assert.Equalf(t, want, final.Total, "%q: Total must be the file's real size", path)
+				assert.Equalf(t, want, final.Current, "%q: Current must reach the total", path)
 			}
 		},
 	}

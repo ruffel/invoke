@@ -1,7 +1,6 @@
 package ssh_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +8,8 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSeveredConnectionDuringCommandIsTerminal checks a link that dies
@@ -26,30 +27,23 @@ func TestSeveredConnectionDuringCommandIsTerminal(t *testing.T) {
 	env := dialServer(t, srv)
 
 	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
-	if err != nil {
-		t.Fatalf("Start = %v", err)
-	}
+	require.NoError(t, err)
 
 	// Let the command settle, then drop the connection under it.
 	time.Sleep(50 * time.Millisecond)
 	srv.sever()
 
 	_, waitErr := proc.Wait()
-	if waitErr == nil {
-		t.Fatal("Wait after the connection died reported success")
-	}
+	require.Error(t, waitErr, "Wait after the connection died reported success")
 
 	var transportErr *invoke.TransportError
-	if errors.As(waitErr, &transportErr) {
-		t.Errorf("Wait after the connection died = %v, want a terminal error: "+
-			"an interrupted command must not be retried automatically", waitErr)
-	}
+
+	assert.NotErrorAs(t, waitErr, &transportErr, "Wait after the connection died must be a terminal error: "+
+		"an interrupted command must not be retried automatically")
 
 	// The reason must be legible: "no exit status" alone does not tell a
 	// caller their command may have half-run.
-	if !strings.Contains(waitErr.Error(), "may or may not") {
-		t.Errorf("error %q does not report the outcome as unknown", waitErr)
-	}
+	assert.ErrorContains(t, waitErr, "may or may not", "the error does not report the outcome as unknown")
 }
 
 // TestSeveredConnectionDuringTransferIsTransportError checks the same for
@@ -69,9 +63,7 @@ func TestSeveredConnectionDuringTransferIsTransportError(t *testing.T) {
 	)
 
 	src := filepath.Join(t.TempDir(), "big.bin")
-	if err := os.WriteFile(src, []byte(strings.Repeat("x", fileSize)), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(src, []byte(strings.Repeat("x", fileSize)), 0o600), "writing fixture")
 
 	for i := range attempts {
 		srv := startTestServer(t)
@@ -97,16 +89,13 @@ func TestSeveredConnectionDuringTransferIsTransportError(t *testing.T) {
 		select {
 		case <-severed:
 		default:
-			t.Fatalf("attempt %d: the transfer finished before it could be severed", i)
+			require.Failf(t, "the transfer finished before it could be severed", "attempt %d", i)
 		}
 
-		if err == nil {
-			t.Fatalf("attempt %d: Upload over a dead connection reported success", i)
-		}
+		require.Errorf(t, err, "attempt %d: Upload over a dead connection reported success", i)
 
 		var transportErr *invoke.TransportError
-		if !errors.As(err, &transportErr) {
-			t.Errorf("attempt %d: Upload after the connection died = %v, want a TransportError", i, err)
-		}
+
+		assert.ErrorAsf(t, err, &transportErr, "attempt %d: Upload after the connection died, want a TransportError", i)
 	}
 }

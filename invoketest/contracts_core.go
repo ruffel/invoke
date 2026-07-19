@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // largeOutputBytes exceeds the classic 64 KiB pipe buffer several times
@@ -43,17 +45,10 @@ func coreCapturesStdout() TestCase {
 		Description: "Standard output reaches the caller's writer exactly",
 		Run: func(t T, env invoke.Environment) {
 			outcome, stdout, _ := runCapture(t, env, invoke.New("echo", "hello", "world"))
-			if outcome.err != nil {
-				failf(t, "echo failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "echo failed")
 
-			if outcome.result.ExitCode != 0 {
-				t.Errorf("ExitCode = %d, want 0", outcome.result.ExitCode)
-			}
-
-			if stdout != "hello world\n" {
-				t.Errorf("stdout = %q, want %q", stdout, "hello world\n")
-			}
+			assert.Equal(t, 0, outcome.result.ExitCode)
+			assert.Equal(t, "hello world\n", stdout)
 		},
 	}
 }
@@ -65,17 +60,10 @@ func coreStreamsStaySeparate() TestCase {
 		Description: "Stdout and stderr reach their own writers, unmixed, without a TTY",
 		Run: func(t T, env invoke.Environment) {
 			outcome, stdout, stderr := runCapture(t, env, invoke.Shell("echo out; echo err 1>&2"))
-			if outcome.err != nil {
-				failf(t, "shell failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "shell failed")
 
-			if stdout != "out\n" {
-				t.Errorf("stdout = %q, want %q", stdout, "out\n")
-			}
-
-			if stderr != "err\n" {
-				t.Errorf("stderr = %q, want %q", stderr, "err\n")
-			}
+			assert.Equal(t, "out\n", stdout)
+			assert.Equal(t, "err\n", stderr)
 		},
 	}
 }
@@ -87,13 +75,9 @@ func coreNilStdinIsEOF() TestCase {
 		Description: "A nil Stdin reads immediate EOF; the process neither hangs nor inherits input",
 		Run: func(t T, env invoke.Environment) {
 			outcome, stdout, _ := runCapture(t, env, invoke.New("cat"))
-			if outcome.err != nil {
-				failf(t, "cat with nil stdin failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "cat with nil stdin failed")
 
-			if stdout != "" {
-				t.Errorf("cat with nil stdin produced %q; stdin must be empty, not inherited", stdout)
-			}
+			assert.Empty(t, stdout, "cat with nil stdin produced output; stdin must be empty, not inherited")
 		},
 	}
 }
@@ -112,13 +96,9 @@ func coreStdinIsDelivered() TestCase {
 			})
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err != nil {
-				failf(t, "cat failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "cat failed")
 
-			if got := stdout.String(); got != "piped through" {
-				t.Errorf("stdout = %q, want %q", got, "piped through")
-			}
+			assert.Equal(t, "piped through", stdout.String())
 		},
 	}
 }
@@ -141,17 +121,10 @@ func coreLargeStdinIsDelivered() TestCase {
 			})
 
 			outcome := waitOrTimeout(t, proc)
-			if outcome.err != nil {
-				failf(t, "cat failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "cat failed")
 
-			if got := stdout.Len(); got != len(payload) {
-				t.Errorf("cat echoed %d bytes, want %d", got, len(payload))
-			}
-
-			if stdout.String() != payload {
-				t.Errorf("large stdin was corrupted in transit")
-			}
+			assert.Len(t, stdout.String(), len(payload), "cat echoed a different number of bytes")
+			assert.Equal(t, payload, stdout.String(), "large stdin was corrupted in transit")
 		},
 	}
 }
@@ -171,13 +144,8 @@ func coreEnvOverrideWins() TestCase {
 			stdout := runSucceeds(t, env, cmd)
 
 			home, dup, _ := strings.Cut(stdout, "|")
-			if home != "/overridden" {
-				t.Errorf("$HOME = %q, want the overlay value /overridden to win over the base", home)
-			}
-
-			if dup != "second" {
-				t.Errorf("$INVOKE_DUP = %q, want the last duplicate (second) to win", dup)
-			}
+			assert.Equal(t, "/overridden", home, "$HOME: the overlay value must win over the base")
+			assert.Equal(t, "second", dup, "$INVOKE_DUP: the last of duplicate keys must win")
 		},
 	}
 }
@@ -206,18 +174,14 @@ func coreArgsAreLiteral() TestCase {
 			printfArgs := append([]string{"[%s]\n"}, args...)
 
 			outcome, stdout, _ := runCapture(t, env, invoke.New("printf", printfArgs...))
-			if outcome.err != nil {
-				failf(t, "printf failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "printf failed")
 
 			var want strings.Builder
 			for _, arg := range args {
 				want.WriteString("[" + arg + "]\n")
 			}
 
-			if stdout != want.String() {
-				t.Errorf("argv round-trip mismatch:\n got %q\nwant %q", stdout, want.String())
-			}
+			assert.Equal(t, want.String(), stdout, "argv round-trip mismatch")
 		},
 	}
 }
@@ -236,17 +200,9 @@ func coreExitCodePastSignalBoundary() TestCase {
 			outcome, _, _ := runCapture(t, env, invoke.Shell("exit 137"))
 
 			exitErr := requireExitError(t, outcome.err)
-			if exitErr.Code != wantCode {
-				t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, wantCode)
-			}
-
-			if exitErr.Signal != "" {
-				t.Errorf("ExitError.Signal = %q for a plain exit 137, want empty", exitErr.Signal)
-			}
-
-			if outcome.result.ExitCode != wantCode {
-				t.Errorf("Result.ExitCode = %d, want %d", outcome.result.ExitCode, wantCode)
-			}
+			assert.Equal(t, wantCode, exitErr.Code)
+			assert.Empty(t, exitErr.Signal, "a plain exit 137 is not a signal death")
+			assert.Equal(t, wantCode, outcome.result.ExitCode)
 		},
 	}
 }
@@ -257,9 +213,7 @@ func coreOSMatchesTarget() TestCase {
 		Name:        "os-matches-target",
 		Description: "OS() agrees with the target's own uname, and is never OSUnknown for a working target",
 		Run: func(t T, env invoke.Environment) {
-			if env.OS() == invoke.OSUnknown {
-				failf(t, "OS() = OSUnknown for a working target")
-			}
+			require.NotEqual(t, invoke.OSUnknown, env.OS(), "OS() must not be OSUnknown for a working target")
 
 			outcome, stdout, _ := runCapture(t, env, invoke.New("uname", "-s"))
 			if outcome.err != nil {
@@ -271,9 +225,7 @@ func coreOSMatchesTarget() TestCase {
 				t.Skipf("uname reported %q, outside the declared OS set", strings.TrimSpace(stdout))
 			}
 
-			if env.OS() != want {
-				t.Errorf("OS() = %q, but the target's uname says %q", env.OS(), want)
-			}
+			assert.Equal(t, want, env.OS(), "OS() must agree with the target's own uname")
 		},
 	}
 }
@@ -299,17 +251,10 @@ func coreLargeOutputIsComplete() TestCase {
 			script := "dd if=/dev/zero bs=1024 count=256 2>/dev/null; dd if=/dev/zero bs=1024 count=64 1>&2 2>/dev/null"
 
 			outcome, stdout, stderr := runCapture(t, env, invoke.Shell(script))
-			if outcome.err != nil {
-				failf(t, "large-output command failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "large-output command failed")
 
-			if len(stdout) != largeOutputBytes {
-				t.Errorf("stdout carried %d bytes, want %d", len(stdout), largeOutputBytes)
-			}
-
-			if len(stderr) != largeStderrBytes {
-				t.Errorf("stderr carried %d bytes, want %d", len(stderr), largeStderrBytes)
-			}
+			assert.Len(t, stdout, largeOutputBytes, "stdout carried the wrong number of bytes")
+			assert.Len(t, stderr, largeStderrBytes, "stderr carried the wrong number of bytes")
 		},
 	}
 }
@@ -326,13 +271,8 @@ func coreEnvOverlaysBase() TestCase {
 			stdout := runSucceeds(t, env, cmd)
 
 			value, path, _ := strings.Cut(stdout, "|")
-			if value != "overlaid" {
-				t.Errorf("overlay variable = %q, want %q", value, "overlaid")
-			}
-
-			if path == "" {
-				t.Errorf("PATH is empty: the overlay must not replace the base environment")
-			}
+			assert.Equal(t, "overlaid", value)
+			assert.NotEmpty(t, path, "PATH is empty: the overlay must not replace the base environment")
 		},
 	}
 }
@@ -358,9 +298,8 @@ func coreWorkdirIsHonored() TestCase {
 			resolved := strings.TrimSpace(runSucceeds(t, env,
 				invoke.Shell("cd "+shellQuote(dir)+" && pwd -P")))
 
-			if got != dir && got != resolved {
-				t.Errorf("pwd = %q, want %q (or resolved %q)", got, dir, resolved)
-			}
+			assert.Contains(t, []string{dir, resolved}, got,
+				"pwd must report the requested working directory, or its resolved form")
 		},
 	}
 }
@@ -376,20 +315,17 @@ func coreExitCodeIsReported() TestCase {
 			outcome, _, _ := runCapture(t, env, invoke.Shell("exit 19"))
 
 			exitErr := requireExitError(t, outcome.err)
-			if exitErr.Code != wantCode {
-				t.Errorf("ExitError.Code = %d, want %d", exitErr.Code, wantCode)
-			}
-
-			if exitErr.Signal != "" {
-				t.Errorf("ExitError.Signal = %q for a plain exit, want empty", exitErr.Signal)
-			}
-
-			if outcome.result.ExitCode != wantCode {
-				t.Errorf("Result.ExitCode = %d, want %d", outcome.result.ExitCode, wantCode)
-			}
+			assert.Equal(t, wantCode, exitErr.Code)
+			assert.Empty(t, exitErr.Signal, "a plain exit is not a signal death")
+			assert.Equal(t, wantCode, outcome.result.ExitCode)
 		},
 	}
 }
+
+// minMeasuredDuration is the floor for the measured-duration contract:
+// far below the 200ms the command actually sleeps, far above zero, so it
+// is immune to scheduler noise while still catching an unset field.
+const minMeasuredDuration = 50 * time.Millisecond
 
 func coreDurationIsMeasured() TestCase {
 	return TestCase{
@@ -398,15 +334,10 @@ func coreDurationIsMeasured() TestCase {
 		Description: "Result.Duration reflects real elapsed time, not a zero value",
 		Run: func(t T, env invoke.Environment) {
 			outcome, _, _ := runCapture(t, env, invoke.Shell("sleep 0.2"))
-			if outcome.err != nil {
-				failf(t, "sleep failed: %v", outcome.err)
-			}
+			require.NoError(t, outcome.err, "sleep failed")
 
-			// Far below the real 200ms, far above zero: immune to
-			// scheduler noise while catching an unset field.
-			if outcome.result.Duration < 50*time.Millisecond {
-				t.Errorf("Duration = %v for a 200ms sleep; the field is not being measured", outcome.result.Duration)
-			}
+			assert.GreaterOrEqual(t, outcome.result.Duration, minMeasuredDuration,
+				"Duration for a 200ms sleep; the field is not being measured")
 		},
 	}
 }

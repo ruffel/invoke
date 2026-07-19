@@ -2,12 +2,13 @@ package ssh_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/invoketest"
 	"github.com/ruffel/invoke/ssh"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	xssh "golang.org/x/crypto/ssh"
 )
 
@@ -24,9 +25,7 @@ func dialTestServer(t *testing.T) *ssh.Environment {
 		ssh.WithPassword(testPassword),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 	)
-	if err != nil {
-		t.Fatalf("ssh.New = %v", err)
-	}
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -65,9 +64,7 @@ func TestConnectionRejectsWrongPassword(t *testing.T) {
 		ssh.WithPassword("wrong"),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 	)
-	if err == nil {
-		t.Fatal("New with a wrong password succeeded, want an auth failure")
-	}
+	require.Error(t, err, "New with a wrong password succeeded, want an auth failure")
 }
 
 func TestConnectionRequiresHostKeyVerification(t *testing.T) {
@@ -80,9 +77,7 @@ func TestConnectionRequiresHostKeyVerification(t *testing.T) {
 		ssh.WithPort(srv.port()),
 		ssh.WithPassword(testPassword),
 	)
-	if err == nil {
-		t.Fatal("New without host-key verification succeeded; it must fail closed")
-	}
+	require.Error(t, err, "New without host-key verification succeeded; it must fail closed")
 }
 
 func TestWrongHostKeyIsRejected(t *testing.T) {
@@ -97,9 +92,7 @@ func TestWrongHostKeyIsRejected(t *testing.T) {
 		ssh.WithPassword(testPassword),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(other.hostKey)),
 	)
-	if err == nil {
-		t.Fatal("New accepted a mismatched host key")
-	}
+	require.Error(t, err, "New accepted a mismatched host key")
 }
 
 func TestClosedEnvironmentRefusesEverything(t *testing.T) {
@@ -110,11 +103,9 @@ func TestClosedEnvironmentRefusesEverything(t *testing.T) {
 
 	ctx := context.Background()
 
-	if _, err := env.Start(ctx, invoke.New("true"), invoke.IO{}); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("Start after Close = %v, want ErrClosed", err)
-	}
+	_, err := env.Start(ctx, invoke.New("true"), invoke.IO{})
+	assert.ErrorIs(t, err, invoke.ErrClosed, "Start after Close")
 
-	if _, err := env.LookPath(ctx, "sh"); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("LookPath after Close = %v, want ErrClosed", err)
-	}
+	_, err = env.LookPath(ctx, "sh")
+	assert.ErrorIs(t, err, invoke.ErrClosed, "LookPath after Close")
 }

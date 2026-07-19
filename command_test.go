@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNew(t *testing.T) {
@@ -11,17 +12,10 @@ func TestNew(t *testing.T) {
 
 	cmd := invoke.New("echo", "hello", "world")
 
-	if cmd.Path != "echo" {
-		t.Errorf("Path = %q, want %q", cmd.Path, "echo")
-	}
-
-	if len(cmd.Args) != 2 || cmd.Args[0] != "hello" || cmd.Args[1] != "world" {
-		t.Errorf("Args = %q, want [hello world]", cmd.Args)
-	}
-
-	if cmd.Env != nil || cmd.Dir != "" {
-		t.Errorf("Env/Dir not zero: env=%q dir=%q", cmd.Env, cmd.Dir)
-	}
+	assert.Equal(t, "echo", cmd.Path)
+	assert.Equal(t, []string{"hello", "world"}, cmd.Args)
+	assert.Nil(t, cmd.Env)
+	assert.Empty(t, cmd.Dir)
 }
 
 func TestShell(t *testing.T) {
@@ -29,13 +23,8 @@ func TestShell(t *testing.T) {
 
 	cmd := invoke.Shell("ls -la | grep foo")
 
-	if cmd.Path != "sh" {
-		t.Errorf("Path = %q, want sh", cmd.Path)
-	}
-
-	if len(cmd.Args) != 2 || cmd.Args[0] != "-c" || cmd.Args[1] != "ls -la | grep foo" {
-		t.Errorf("Args = %q, want [-c script]", cmd.Args)
-	}
+	assert.Equal(t, "sh", cmd.Path)
+	assert.Equal(t, []string{"-c", "ls -la | grep foo"}, cmd.Args)
 }
 
 func TestCommandValidate(t *testing.T) {
@@ -58,8 +47,10 @@ func TestCommandValidate(t *testing.T) {
 			t.Parallel()
 
 			err := tt.cmd.Validate()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
 			}
 		})
 	}

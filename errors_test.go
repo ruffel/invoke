@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExitErrorMessage(t *testing.T) {
@@ -33,9 +35,7 @@ func TestExitErrorMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := tt.err.Error(); got != tt.want {
-				t.Errorf("Error() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, tt.err.Error())
 		})
 	}
 }
@@ -47,13 +47,10 @@ func TestExitErrorExtractionThroughWrapping(t *testing.T) {
 	wrapped := fmt.Errorf("run %q: %w", "deploy", exitErr)
 
 	var got *invoke.ExitError
-	if !errors.As(wrapped, &got) {
-		t.Fatalf("errors.As failed to extract *ExitError from %v", wrapped)
-	}
 
-	if got.Code != 7 {
-		t.Errorf("extracted Code = %d, want 7", got.Code)
-	}
+	require.ErrorAs(t, wrapped, &got)
+
+	assert.Equal(t, 7, got.Code)
 }
 
 func TestTransportErrorUnwrapsToRootCause(t *testing.T) {
@@ -62,14 +59,11 @@ func TestTransportErrorUnwrapsToRootCause(t *testing.T) {
 	root := errors.New("connection reset by peer")
 	err := &invoke.TransportError{Op: "start", Err: fmt.Errorf("dial: %w", root)}
 
-	if !errors.Is(err, root) {
-		t.Errorf("errors.Is failed to reach the root cause through %v", err)
-	}
+	assert.ErrorIs(t, err, root, "errors.Is must reach the root cause through a TransportError")
 
 	want := "transport failure during start: dial: connection reset by peer"
-	if got := err.Error(); got != want {
-		t.Errorf("Error() = %q, want %q", got, want)
-	}
+
+	assert.Equal(t, want, err.Error())
 }
 
 func TestTaxonomyFamiliesAreDisjoint(t *testing.T) {
@@ -88,21 +82,15 @@ func TestTaxonomyFamiliesAreDisjoint(t *testing.T) {
 
 	var asTransport *invoke.TransportError
 
-	if errors.As(transportErr, &asExit) {
-		t.Error("TransportError must not match *ExitError")
-	}
+	assert.NotErrorAs(t, transportErr, &asExit, "TransportError must not match *ExitError")
 
-	if errors.As(exitErr, &asTransport) {
-		t.Error("ExitError must not match *TransportError")
-	}
+	assert.NotErrorAs(t, exitErr, &asTransport, "ExitError must not match *TransportError")
 
-	if errors.Is(exitErr, invoke.ErrClosed) || errors.Is(exitErr, context.Canceled) {
-		t.Error("ExitError must not match sentinel or context errors")
-	}
+	assert.NotErrorIs(t, exitErr, invoke.ErrClosed, "ExitError must not match a lifecycle sentinel")
+	assert.NotErrorIs(t, exitErr, context.Canceled, "ExitError must not match a context error")
 
-	if errors.As(closedErr, &asExit) || errors.As(canceledErr, &asExit) {
-		t.Error("sentinel/context errors must not match *ExitError")
-	}
+	assert.NotErrorAs(t, closedErr, &asExit, "sentinel/context errors must not match *ExitError")
+	assert.NotErrorAs(t, canceledErr, &asExit, "sentinel/context errors must not match *ExitError")
 }
 
 func TestSentinelsSurviveWrapping(t *testing.T) {
@@ -123,9 +111,8 @@ func TestSentinelsSurviveWrapping(t *testing.T) {
 			t.Parallel()
 
 			wrapped := fmt.Errorf("start %q on host %q: %w", "deploy", "web-1", tt.sentinel)
-			if !errors.Is(wrapped, tt.sentinel) {
-				t.Errorf("errors.Is(%v, sentinel) = false after wrapping", wrapped)
-			}
+
+			assert.ErrorIs(t, wrapped, tt.sentinel, "the sentinel must survive wrapping")
 		})
 	}
 }

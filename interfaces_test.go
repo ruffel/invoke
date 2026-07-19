@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // stubEnv proves the interfaces are implementable without any provider
@@ -46,21 +48,10 @@ func TestNewTransferConfigDefaults(t *testing.T) {
 
 	cfg := invoke.NewTransferConfig()
 
-	if cfg.Mode != nil {
-		t.Errorf("default Mode = %v, want nil (preserve source)", *cfg.Mode)
-	}
-
-	if cfg.Symlinks != invoke.SymlinkPreserve {
-		t.Errorf("default Symlinks = %v, want SymlinkPreserve", cfg.Symlinks)
-	}
-
-	if cfg.SkipSpecial {
-		t.Error("default SkipSpecial = true, want false")
-	}
-
-	if cfg.Progress != nil {
-		t.Error("default Progress != nil")
-	}
+	assert.Nil(t, cfg.Mode, "the default Mode must be nil: preserve the source mode")
+	assert.Equal(t, invoke.SymlinkPreserve, cfg.Symlinks)
+	assert.False(t, cfg.SkipSpecial)
+	assert.Nil(t, cfg.Progress)
 }
 
 func TestTransferOptions(t *testing.T) {
@@ -75,27 +66,20 @@ func TestTransferOptions(t *testing.T) {
 		invoke.WithProgress(func(p invoke.TransferProgress) { seen = append(seen, p) }),
 	)
 
-	if cfg.Mode == nil || *cfg.Mode != fs.FileMode(0o600) {
-		t.Errorf("Mode = %v, want 0600", cfg.Mode)
-	}
+	wantMode := fs.FileMode(0o600)
 
-	if cfg.Symlinks != invoke.SymlinkFollow {
-		t.Errorf("Symlinks = %v, want SymlinkFollow", cfg.Symlinks)
-	}
+	assert.Equal(t, &wantMode, cfg.Mode)
+	assert.Equal(t, invoke.SymlinkFollow, cfg.Symlinks)
+	assert.True(t, cfg.SkipSpecial)
 
-	if !cfg.SkipSpecial {
-		t.Error("SkipSpecial = false, want true")
-	}
-
-	if cfg.Progress == nil {
-		t.Fatal("Progress not set")
-	}
+	require.NotNil(t, cfg.Progress, "Progress not set")
 
 	cfg.Progress(invoke.TransferProgress{Path: "a.txt", Current: 5, Total: invoke.UnknownTotal})
 
-	if len(seen) != 1 || seen[0].Path != "a.txt" || seen[0].Total != invoke.UnknownTotal {
-		t.Errorf("progress callback saw %+v", seen)
-	}
+	require.Len(t, seen, 1)
+
+	assert.Equal(t, "a.txt", seen[0].Path)
+	assert.Equal(t, invoke.UnknownTotal, seen[0].Total)
 }
 
 func TestWithModeZeroIsExplicit(t *testing.T) {
@@ -105,7 +89,7 @@ func TestWithModeZeroIsExplicit(t *testing.T) {
 	// override", which is the nil pointer.
 	cfg := invoke.NewTransferConfig(invoke.WithMode(0))
 
-	if cfg.Mode == nil || *cfg.Mode != 0 {
-		t.Errorf("WithMode(0) must set an explicit zero mode, got %v", cfg.Mode)
-	}
+	wantMode := fs.FileMode(0)
+
+	assert.Equal(t, &wantMode, cfg.Mode, "WithMode(0) must set an explicit zero mode")
 }

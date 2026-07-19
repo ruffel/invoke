@@ -1,10 +1,9 @@
 package invoketest
 
 import (
-	"errors"
-	"strings"
-
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func errorsContracts() []TestCase {
@@ -30,16 +29,13 @@ func errorsShellMissingBinaryIsExit127() TestCase {
 			outcome, _, _ := runCapture(t, env,
 				invoke.Shell("invoke-missing-"+token(t)))
 
-			if errors.Is(outcome.err, invoke.ErrNotFound) {
-				failf(t, "a missing binary inside a shell command surfaced as ErrNotFound; the shell ran and exited")
-			}
+			require.NotErrorIs(t, outcome.err, invoke.ErrNotFound,
+				"a missing binary inside a shell command must not surface as ErrNotFound; the shell ran and exited")
 
 			const wantCode = 127
 
 			exitErr := requireExitError(t, outcome.err)
-			if exitErr.Code != wantCode {
-				t.Errorf("ExitError.Code = %d, want %d (shell command-not-found)", exitErr.Code, wantCode)
-			}
+			assert.Equal(t, wantCode, exitErr.Code, "the shell's own command-not-found status")
 		},
 	}
 }
@@ -57,12 +53,10 @@ func errorsMissingBinaryNotFound() TestCase {
 					_ = proc.Close()
 				}
 
-				failf(t, "starting a nonexistent binary succeeded")
+				require.Fail(t, "starting a nonexistent binary succeeded")
 			}
 
-			if !errors.Is(err, invoke.ErrNotFound) {
-				t.Errorf("error = %v, want an error wrapping ErrNotFound", err)
-			}
+			assert.ErrorIs(t, err, invoke.ErrNotFound)
 		},
 	}
 }
@@ -82,12 +76,10 @@ func errorsBadWorkdirClassified() TestCase {
 					_, _ = proc.Wait()
 				}
 
-				failf(t, "starting in a nonexistent workdir reported no error")
+				require.Fail(t, "starting in a nonexistent workdir reported no error")
 			}
 
-			if !errors.Is(err, invoke.ErrInvalidWorkdir) {
-				t.Errorf("error = %v, want an error wrapping ErrInvalidWorkdir", err)
-			}
+			assert.ErrorIs(t, err, invoke.ErrInvalidWorkdir)
 
 			requireNotExitError(t, err, "a workdir setup failure")
 		},
@@ -101,20 +93,16 @@ func errorsLookPathClassifies() TestCase {
 		Description: "LookPath resolves real names to a path (not a bare name) and wraps ErrNotFound for unresolvable ones",
 		Run: func(t T, env invoke.Environment) {
 			path, err := env.LookPath(t.Context(), "sh")
-			if err != nil || path == "" {
-				failf(t, "LookPath(sh) = (%q, %v), want a resolved path", path, err)
-			}
+			require.NoError(t, err, "LookPath(sh) must resolve a real name")
+			require.NotEmpty(t, path, "LookPath(sh) must return a resolved path")
 
 			// A resolved executable is a path, not a bare command name:
 			// callers use it as something they can exec directly.
-			if !strings.Contains(path, "/") {
-				t.Errorf("LookPath(sh) = %q, want a path containing a separator, not a bare name", path)
-			}
+			assert.Contains(t, path, "/",
+				"LookPath must return a path containing a separator, not a bare name")
 
 			_, err = env.LookPath(t.Context(), "invoke-definitely-missing-"+token(t))
-			if !errors.Is(err, invoke.ErrNotFound) {
-				t.Errorf("LookPath(missing) = %v, want an error wrapping ErrNotFound", err)
-			}
+			assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath of an unresolvable name")
 		},
 	}
 }
@@ -125,27 +113,18 @@ func errorsClosedEnvRefusesAll() TestCase {
 		Name:        "closed-env-refuses-all",
 		Description: "After Close, every method fails wrapping ErrClosed",
 		Run: func(t T, env invoke.Environment) {
-			if err := env.Close(); err != nil {
-				failf(t, "Close = %v", err)
-			}
+			require.NoError(t, env.Close())
 
 			ctx := t.Context()
 
-			if _, err := env.Start(ctx, invoke.New("true"), invoke.IO{}); !errors.Is(err, invoke.ErrClosed) {
-				t.Errorf("Start after Close = %v, want an error wrapping ErrClosed", err)
-			}
+			_, startErr := env.Start(ctx, invoke.New("true"), invoke.IO{})
+			assert.ErrorIs(t, startErr, invoke.ErrClosed, "Start after Close")
 
-			if _, err := env.LookPath(ctx, "sh"); !errors.Is(err, invoke.ErrClosed) {
-				t.Errorf("LookPath after Close = %v, want an error wrapping ErrClosed", err)
-			}
+			_, lookErr := env.LookPath(ctx, "sh")
+			assert.ErrorIs(t, lookErr, invoke.ErrClosed, "LookPath after Close")
 
-			if err := env.Upload(ctx, "src", "dst"); !errors.Is(err, invoke.ErrClosed) {
-				t.Errorf("Upload after Close = %v, want an error wrapping ErrClosed", err)
-			}
-
-			if err := env.Download(ctx, "src", "dst"); !errors.Is(err, invoke.ErrClosed) {
-				t.Errorf("Download after Close = %v, want an error wrapping ErrClosed", err)
-			}
+			assert.ErrorIs(t, env.Upload(ctx, "src", "dst"), invoke.ErrClosed, "Upload after Close")
+			assert.ErrorIs(t, env.Download(ctx, "src", "dst"), invoke.ErrClosed, "Download after Close")
 		},
 	}
 }

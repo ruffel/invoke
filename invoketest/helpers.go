@@ -9,27 +9,21 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/require"
 )
 
 // contractTimeout bounds every blocking step inside a contract, so a
 // provider that hangs produces a failed contract rather than a hung suite.
 const contractTimeout = 5 * time.Second
 
-// failf reports a contract failure and stops the contract.
-func failf(t T, format string, args ...any) {
-	t.Helper()
-	t.Errorf(format, args...)
-	t.FailNow()
-}
-
 // token returns a short random hex string for unique target-side paths.
 func token(t T) string {
 	t.Helper()
 
 	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		failf(t, "generating random token: %v", err)
-	}
+
+	_, err := rand.Read(raw[:])
+	require.NoError(t, err, "generating random token")
 
 	return hex.EncodeToString(raw[:])
 }
@@ -39,13 +33,8 @@ func startCommand(ctx context.Context, t T, env invoke.Environment, cmd invoke.C
 	t.Helper()
 
 	proc, err := env.Start(ctx, cmd, stdio)
-	if err != nil {
-		failf(t, "Start(%v) = %v", cmd, err)
-	}
-
-	if proc == nil {
-		failf(t, "Start(%v) returned a nil Process with nil error", cmd)
-	}
+	require.NoErrorf(t, err, "Start(%v)", cmd)
+	require.NotNilf(t, proc, "Start(%v) returned a nil Process with nil error", cmd)
 
 	return proc
 }
@@ -72,7 +61,8 @@ func waitOrTimeout(t T, proc invoke.Process) waitOutcome {
 	case outcome := <-done:
 		return outcome
 	case <-time.After(contractTimeout):
-		failf(t, "Wait did not return within %v", contractTimeout)
+		require.Failf(t, "Wait blocked past the contract deadline",
+			"Wait did not return within %v", contractTimeout)
 
 		return waitOutcome{}
 	}
@@ -96,9 +86,7 @@ func runSucceeds(t T, env invoke.Environment, cmd invoke.Command) string {
 	t.Helper()
 
 	outcome, stdout, stderr := runCapture(t, env, cmd)
-	if outcome.err != nil {
-		failf(t, "%v failed: %v (stderr %q)", cmd, outcome.err, stderr)
-	}
+	require.NoErrorf(t, outcome.err, "%v failed (stderr %q)", cmd, stderr)
 
 	return stdout
 }
@@ -109,9 +97,9 @@ func requireNotExitError(t T, err error, situation string) {
 	t.Helper()
 
 	var exitErr *invoke.ExitError
-	if errors.As(err, &exitErr) {
-		failf(t, "%s surfaced as *ExitError (%v); lifecycle errors must never be command outcomes", situation, exitErr)
-	}
+
+	require.NotErrorAsf(t, err, &exitErr,
+		"%s surfaced as *ExitError; lifecycle errors must never be command outcomes", situation)
 }
 
 // closeOrTimeout closes proc with the contract deadline, so a Close that
@@ -127,7 +115,8 @@ func closeOrTimeout(t T, proc invoke.Process) error {
 	case err := <-done:
 		return err
 	case <-time.After(contractTimeout):
-		failf(t, "Close did not return within %v", contractTimeout)
+		require.Failf(t, "Close blocked past the contract deadline",
+			"Close did not return within %v", contractTimeout)
 
 		return nil
 	}
@@ -148,7 +137,8 @@ func targetProbe(t T, env invoke.Environment, script string) bool {
 		return false
 	}
 
-	failf(t, "probe %q could not run: %v (stderr %q)", script, outcome.err, stderr)
+	require.Failf(t, "a target probe could not run at all",
+		"probe %q: %v (stderr %q)", script, outcome.err, stderr)
 
 	return false
 }
@@ -158,9 +148,8 @@ func requireExitError(t T, err error) *invoke.ExitError {
 	t.Helper()
 
 	var exitErr *invoke.ExitError
-	if !errors.As(err, &exitErr) {
-		failf(t, "error = %v, want *invoke.ExitError", err)
-	}
+
+	require.ErrorAs(t, err, &exitErr)
 
 	return exitErr
 }

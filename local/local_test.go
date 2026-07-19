@@ -1,13 +1,14 @@
 package local_test
 
 import (
-	"errors"
 	"path/filepath"
 	"runtime"
 	"testing"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/local"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // newEnv constructs an Environment and ties its lifetime to the test.
@@ -15,9 +16,7 @@ func newEnv(t *testing.T) *local.Environment {
 	t.Helper()
 
 	env, err := local.New()
-	if err != nil {
-		t.Fatalf("local.New() = %v", err)
-	}
+	require.NoError(t, err, "local.New()")
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -29,18 +28,12 @@ func TestNew(t *testing.T) {
 
 	env := newEnv(t)
 
-	if got := env.OS(); string(got) != runtime.GOOS {
-		t.Errorf("OS() = %q, want %q", got, runtime.GOOS)
-	}
+	assert.Equal(t, runtime.GOOS, string(env.OS()), "OS()")
 
 	caps := env.Capabilities()
-	if caps.TTY {
-		t.Error("Capabilities().TTY = true; local does not implement PTY allocation this cycle")
-	}
-
-	if !caps.Signals || !caps.SymlinkPreserve {
-		t.Errorf("Capabilities() = %+v, want Signals and SymlinkPreserve declared", caps)
-	}
+	assert.False(t, caps.TTY, "Capabilities().TTY = true; local does not implement PTY allocation this cycle")
+	assert.True(t, caps.Signals && caps.SymlinkPreserve,
+		"Capabilities() = %+v, want Signals and SymlinkPreserve declared", caps)
 }
 
 func TestCloseIsIdempotent(t *testing.T) {
@@ -48,13 +41,8 @@ func TestCloseIsIdempotent(t *testing.T) {
 
 	env := newEnv(t)
 
-	if err := env.Close(); err != nil {
-		t.Fatalf("first Close() = %v", err)
-	}
-
-	if err := env.Close(); err != nil {
-		t.Fatalf("second Close() = %v", err)
-	}
+	require.NoError(t, env.Close(), "first Close()")
+	require.NoError(t, env.Close(), "second Close()")
 }
 
 func TestClosedEnvironmentRefusesEverything(t *testing.T) {
@@ -65,21 +53,14 @@ func TestClosedEnvironmentRefusesEverything(t *testing.T) {
 
 	ctx := t.Context()
 
-	if _, err := env.Start(ctx, invoke.New("true"), invoke.IO{}); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("Start after Close = %v, want ErrClosed", err)
-	}
+	_, err := env.Start(ctx, invoke.New("true"), invoke.IO{})
+	assert.ErrorIs(t, err, invoke.ErrClosed, "Start after Close")
 
-	if _, err := env.LookPath(ctx, "sh"); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("LookPath after Close = %v, want ErrClosed", err)
-	}
+	_, err = env.LookPath(ctx, "sh")
+	assert.ErrorIs(t, err, invoke.ErrClosed, "LookPath after Close")
 
-	if err := env.Upload(ctx, "a", "b"); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("Upload after Close = %v, want ErrClosed", err)
-	}
-
-	if err := env.Download(ctx, "a", "b"); !errors.Is(err, invoke.ErrClosed) {
-		t.Errorf("Download after Close = %v, want ErrClosed", err)
-	}
+	assert.ErrorIs(t, env.Upload(ctx, "a", "b"), invoke.ErrClosed, "Upload after Close")
+	assert.ErrorIs(t, env.Download(ctx, "a", "b"), invoke.ErrClosed, "Download after Close")
 }
 
 func TestLookPath(t *testing.T) {
@@ -88,16 +69,9 @@ func TestLookPath(t *testing.T) {
 	env := newEnv(t)
 
 	path, err := env.LookPath(t.Context(), "sh")
-	if err != nil {
-		t.Fatalf("LookPath(sh) = %v", err)
-	}
-
-	if !filepath.IsAbs(path) {
-		t.Errorf("LookPath(sh) = %q, want an absolute path", path)
-	}
+	require.NoError(t, err, "LookPath(sh)")
+	assert.True(t, filepath.IsAbs(path), "LookPath(sh) = %q, want an absolute path", path)
 
 	_, err = env.LookPath(t.Context(), "definitely-not-a-real-binary-abc123")
-	if !errors.Is(err, invoke.ErrNotFound) {
-		t.Errorf("LookPath(missing) = %v, want ErrNotFound", err)
-	}
+	assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath(missing)")
 }

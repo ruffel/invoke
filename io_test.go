@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestIOZeroValue(t *testing.T) {
@@ -11,9 +12,10 @@ func TestIOZeroValue(t *testing.T) {
 
 	var stdio invoke.IO
 
-	if stdio.Stdin != nil || stdio.Stdout != nil || stdio.Stderr != nil || stdio.TTY != nil {
-		t.Errorf("zero IO must have all-nil fields: %+v", stdio)
-	}
+	assert.Nil(t, stdio.Stdin, "zero IO must have all-nil fields")
+	assert.Nil(t, stdio.Stdout, "zero IO must have all-nil fields")
+	assert.Nil(t, stdio.Stderr, "zero IO must have all-nil fields")
+	assert.Nil(t, stdio.TTY, "zero IO must have all-nil fields")
 }
 
 func TestTTYSize(t *testing.T) {
@@ -37,9 +39,9 @@ func TestTTYSize(t *testing.T) {
 			t.Parallel()
 
 			cols, rows := tt.tty.Size()
-			if cols != tt.wantCols || rows != tt.wantRows {
-				t.Errorf("Size() = (%d, %d), want (%d, %d)", cols, rows, tt.wantCols, tt.wantRows)
-			}
+
+			assert.Equal(t, tt.wantCols, cols)
+			assert.Equal(t, tt.wantRows, rows)
 		})
 	}
 }

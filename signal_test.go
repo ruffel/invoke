@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSignalNames(t *testing.T) {
@@ -22,8 +23,6 @@ func TestSignalNames(t *testing.T) {
 	}
 
 	for sig, name := range want {
-		if string(sig) != name {
-			t.Errorf("signal %q drifted from wire name %q", sig, name)
-		}
+		assert.Equal(t, name, string(sig), "signal must not drift from its wire name")
 	}
 }

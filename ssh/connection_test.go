@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke/ssh"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	xssh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 )
@@ -25,9 +27,7 @@ func writeKnownHosts(t *testing.T, srv *testServer, key xssh.PublicKey) string {
 	line := knownhosts.Line([]string{knownhosts.Normalize(addr)}, key)
 
 	path := filepath.Join(t.TempDir(), "known_hosts")
-	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
-		t.Fatalf("writing known_hosts: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(line+"\n"), 0o600), "writing known_hosts")
 
 	return path
 }
@@ -38,14 +38,10 @@ func newECDSAHostKey(t *testing.T) xssh.Signer {
 	t.Helper()
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("ecdsa key: %v", err)
-	}
+	require.NoError(t, err, "ecdsa key")
 
 	signer, err := xssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("ecdsa signer: %v", err)
-	}
+	require.NoError(t, err, "ecdsa signer")
 
 	return signer
 }
@@ -72,15 +68,12 @@ func TestKnownHostsConstrainsHostKeyAlgorithms(t *testing.T) {
 		ssh.WithPassword(testPassword),
 		ssh.WithKnownHosts(path),
 	)
-	if err != nil {
-		t.Fatalf("New with a host recorded under a non-preferred key type = %v", err)
-	}
+	require.NoError(t, err, "New with a host recorded under a non-preferred key type")
 
 	t.Cleanup(func() { _ = env.Close() })
 
-	if _, err := env.LookPath(t.Context(), "sh"); err != nil {
-		t.Errorf("LookPath = %v", err)
-	}
+	_, err = env.LookPath(t.Context(), "sh")
+	assert.NoError(t, err, "LookPath")
 }
 
 // TestKnownHostsRejectsUnrecordedHost checks the known_hosts path still
@@ -101,9 +94,7 @@ func TestKnownHostsRejectsUnrecordedHost(t *testing.T) {
 		ssh.WithPassword(testPassword),
 		ssh.WithKnownHosts(path),
 	)
-	if err == nil {
-		t.Fatal("New accepted a host whose key does not match known_hosts")
-	}
+	require.Error(t, err, "New accepted a host whose key does not match known_hosts")
 }
 
 // TestKeepAliveProbesTheServer checks the connection is probed, so a link
@@ -121,9 +112,7 @@ func TestKeepAliveProbesTheServer(t *testing.T) {
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 		ssh.WithKeepAlive(20*time.Millisecond),
 	)
-	if err != nil {
-		t.Fatalf("ssh.New = %v", err)
-	}
+	require.NoError(t, err)
 
 	t.Cleanup(func() { _ = env.Close() })
 
@@ -136,7 +125,7 @@ func TestKeepAliveProbesTheServer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	t.Errorf("no keepalive probe reached the server in 5s")
+	assert.Fail(t, "no keepalive probe reached the server in 5s")
 }
 
 // TestKeepAliveStopsOnClose checks the probe loop does not outlive the
@@ -153,24 +142,18 @@ func TestKeepAliveStopsOnClose(t *testing.T) {
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 		ssh.WithKeepAlive(20*time.Millisecond),
 	)
-	if err != nil {
-		t.Fatalf("ssh.New = %v", err)
-	}
+	require.NoError(t, err)
 
 	// Let at least one probe land, then close and confirm it stops.
 	time.Sleep(100 * time.Millisecond)
 
-	if err := env.Close(); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
+	require.NoError(t, env.Close())
 
 	settled := srv.keepAliveCount()
 
 	time.Sleep(200 * time.Millisecond)
 
-	if got := srv.keepAliveCount(); got != settled {
-		t.Errorf("keepalive probes continued after Close: %d then %d", settled, got)
-	}
+	assert.Equal(t, settled, srv.keepAliveCount(), "keepalive probes continued after Close")
 }
 
 // TestAgentSocketIsReleasedOnClose checks the SSH agent connection, held
@@ -181,9 +164,7 @@ func TestAgentSocketIsReleasedOnClose(t *testing.T) {
 	// per-test temp directory can exceed.
 	//nolint:usetesting // t.TempDir can exceed the unix socket path limit.
 	dir, err := os.MkdirTemp("", "iv")
-	if err != nil {
-		t.Fatalf("temp dir: %v", err)
-	}
+	require.NoError(t, err, "temp dir")
 
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
@@ -224,17 +205,13 @@ func TestAgentSocketIsReleasedOnClose(t *testing.T) {
 		ssh.WithAgent(),
 		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
 	)
-	if err != nil {
-		t.Fatalf("ssh.New = %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := env.Close(); err != nil {
-		t.Fatalf("Close = %v", err)
-	}
+	require.NoError(t, env.Close())
 
 	select {
 	case <-closed:
 	case <-time.After(5 * time.Second):
-		t.Error("the agent socket was still open after Close; it leaks for the process lifetime")
+		assert.Fail(t, "the agent socket was still open after Close; it leaks for the process lifetime")
 	}
 }

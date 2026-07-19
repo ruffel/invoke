@@ -1,7 +1,6 @@
 package invoke_test
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +11,8 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/fake"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // scriptEnv is a minimal Environment whose Start returns pre-scripted
@@ -97,13 +98,9 @@ func TestRunNoRetryByDefault(t *testing.T) {
 	exec := invoke.NewExecutor(env)
 
 	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
-	if !errors.As(err, new(*invoke.TransportError)) {
-		t.Fatalf("Run = %v, want TransportError", err)
-	}
+	require.ErrorAs(t, err, new(*invoke.TransportError))
 
-	if got := env.startCount(); got != 1 {
-		t.Errorf("started %d times, want 1 (no retry by default)", got)
-	}
+	assert.Equal(t, 1, env.startCount(), "no retry by default")
 }
 
 func TestRetryOnlyTransportErrors(t *testing.T) {
@@ -135,13 +132,11 @@ func TestRetryOnlyTransportErrors(t *testing.T) {
 			exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
 			_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
-			if !errors.Is(err, tt.err) && !errors.As(err, new(*invoke.TransportError)) {
-				t.Errorf("Run err = %v", err)
-			}
 
-			if got := env.startCount(); got != tt.wantStarts {
-				t.Errorf("started %d times, want %d", got, tt.wantStarts)
-			}
+			matched := errors.Is(err, tt.err) || errors.As(err, new(*invoke.TransportError))
+
+			assert.True(t, matched, "Run err = %v", err)
+			assert.Equal(t, tt.wantStarts, env.startCount())
 		})
 	}
 }
@@ -157,13 +152,10 @@ func TestRetrySucceedsAfterTransientFailure(t *testing.T) {
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
 	res, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
-	if err != nil {
-		t.Fatalf("Run = %v, want success on the second attempt", err)
-	}
+	require.NoError(t, err, "Run must succeed on the second attempt")
 
-	if res.ExitCode != 0 || env.startCount() != 2 {
-		t.Errorf("res=%+v starts=%d, want exit 0 after 2 starts", res, env.startCount())
-	}
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Equal(t, 2, env.startCount(), "want exit 0 after 2 starts")
 }
 
 func TestExhaustedRetryReturnsProviderErrorNotDoubleWrapped(t *testing.T) {
@@ -177,15 +169,13 @@ func TestExhaustedRetryReturnsProviderErrorNotDoubleWrapped(t *testing.T) {
 	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
 
 	var te *invoke.TransportError
-	if !errors.As(err, &te) {
-		t.Fatalf("Run = %v, want TransportError", err)
-	}
+
+	require.ErrorAs(t, err, &te)
 
 	// The provider's error is returned as-is; it is not wrapped in a
 	// second transport layer.
-	if strings.Count(err.Error(), "transport failure") != 1 {
-		t.Errorf("error was double-wrapped: %q", err.Error())
-	}
+	assert.Equal(t, 1, strings.Count(err.Error(), "transport failure"),
+		"the error was double-wrapped: %q", err.Error())
 }
 
 func TestAttemptsBelowOneIsValidationError(t *testing.T) {
@@ -195,13 +185,9 @@ func TestAttemptsBelowOneIsValidationError(t *testing.T) {
 	exec := invoke.NewExecutor(env, invoke.WithRetry(0, nil))
 
 	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
-	if err == nil {
-		t.Fatal("Run with 0 attempts = nil, want a validation error")
-	}
+	require.Error(t, err, "Run with 0 attempts must return a validation error")
 
-	if env.startCount() != 0 {
-		t.Errorf("started %d times, want 0: validation must precede execution", env.startCount())
-	}
+	assert.Equal(t, 0, env.startCount(), "validation must precede execution")
 }
 
 func TestRetryWithStdinRequiresFreshIO(t *testing.T) {
@@ -211,13 +197,9 @@ func TestRetryWithStdinRequiresFreshIO(t *testing.T) {
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
 	_, err := exec.Run(t.Context(), invoke.New("cat"), invoke.IO{Stdin: strings.NewReader("data")})
-	if err == nil || !strings.Contains(err.Error(), "WithFreshIO") {
-		t.Fatalf("Run = %v, want an error demanding WithFreshIO", err)
-	}
+	require.ErrorContains(t, err, "WithFreshIO", "Run must return an error demanding WithFreshIO")
 
-	if env.startCount() != 0 {
-		t.Errorf("started %d times, want 0: the reused-stdin guard must precede execution", env.startCount())
-	}
+	assert.Equal(t, 0, env.startCount(), "the reused-stdin guard must precede execution")
 }
 
 func TestOutputDoesNotAccumulateAcrossRetries(t *testing.T) {
@@ -234,13 +216,9 @@ func TestOutputDoesNotAccumulateAcrossRetries(t *testing.T) {
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
 	_, stdout, _, err := exec.Output(t.Context(), invoke.New("x"))
-	if err != nil {
-		t.Fatalf("Output = %v", err)
-	}
+	require.NoError(t, err)
 
-	if string(stdout) != "clean-attempt-2" {
-		t.Errorf("stdout = %q, want only the successful attempt's output", stdout)
-	}
+	assert.Equal(t, "clean-attempt-2", string(stdout), "Output must return only the successful attempt's output")
 }
 
 func TestBackoffIsCancelable(t *testing.T) {
@@ -259,13 +237,10 @@ func TestBackoffIsCancelable(t *testing.T) {
 	begun := time.Now()
 
 	_, err := exec.Run(ctx, invoke.New("x"), invoke.IO{})
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("Run = %v, want context.Canceled from the interrupted backoff", err)
-	}
 
-	if elapsed := time.Since(begun); elapsed > 5*time.Second {
-		t.Errorf("backoff blocked %v; cancellation must interrupt it", elapsed)
-	}
+	assert.ErrorIs(t, err, context.Canceled, "an interrupted backoff must surface the context's own error")
+
+	assert.LessOrEqual(t, time.Since(begun), 5*time.Second, "cancellation must interrupt the backoff")
 }
 
 func TestSudoArgvConstruction(t *testing.T) {
@@ -311,17 +286,10 @@ func TestSudoArgvConstruction(t *testing.T) {
 			exec := invoke.NewExecutor(env)
 
 			_, err := exec.Run(t.Context(), tt.cmd, invoke.IO{}, invoke.WithSudo(tt.opts...))
-			if err != nil {
-				t.Fatalf("Run = %v", err)
-			}
+			require.NoError(t, err)
 
-			if seen.Path != "sudo" {
-				t.Errorf("Path = %q, want sudo", seen.Path)
-			}
-
-			if !slicesEqual(seen.Args, tt.want) {
-				t.Errorf("args = %v, want %v", seen.Args, tt.want)
-			}
+			assert.Equal(t, "sudo", seen.Path)
+			assert.Equal(t, tt.want, seen.Args)
 		})
 	}
 }
@@ -336,13 +304,11 @@ func TestOutputAgainstFakeProvider(t *testing.T) {
 	exec := invoke.NewExecutor(env)
 
 	res, stdout, stderr, err := exec.Output(t.Context(), invoke.Shell("echo out; echo err 1>&2"))
-	if err != nil {
-		t.Fatalf("Output = %v", err)
-	}
+	require.NoError(t, err)
 
-	if res.ExitCode != 0 || string(stdout) != "out\n" || string(stderr) != "err\n" {
-		t.Errorf("Output = (exit %d, %q, %q)", res.ExitCode, stdout, stderr)
-	}
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Equal(t, "out\n", string(stdout))
+	assert.Equal(t, "err\n", string(stderr))
 }
 
 func TestOutputAttachesStderrToExitError(t *testing.T) {
@@ -357,13 +323,10 @@ func TestOutputAttachesStderrToExitError(t *testing.T) {
 	_, _, _, err := exec.Output(t.Context(), invoke.Shell("echo boom 1>&2; exit 2")) //nolint:dogsled // Output returns four values; only the error matters here.
 
 	var exitErr *invoke.ExitError
-	if !errors.As(err, &exitErr) {
-		t.Fatalf("Output err = %v, want ExitError", err)
-	}
 
-	if !bytes.Contains(exitErr.Stderr, []byte("boom")) {
-		t.Errorf("ExitError.Stderr = %q, want it to carry the captured stderr", exitErr.Stderr)
-	}
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Contains(t, string(exitErr.Stderr), "boom", "ExitError.Stderr must carry the captured stderr")
 }
 
 func TestLinesDeliversEachLine(t *testing.T) {
@@ -380,13 +343,10 @@ func TestLinesDeliversEachLine(t *testing.T) {
 	res, err := exec.Lines(t.Context(), invoke.Shell("printf 'a\\nb\\nc\\n'"), func(line string) {
 		lines = append(lines, line)
 	})
-	if err != nil {
-		t.Fatalf("Lines = %v", err)
-	}
+	require.NoError(t, err)
 
-	if res.ExitCode != 0 || !slicesEqual(lines, []string{"a", "b", "c"}) {
-		t.Errorf("Lines delivered %v (exit %d), want [a b c]", lines, res.ExitCode)
-	}
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Equal(t, []string{"a", "b", "c"}, lines)
 }
 
 func TestExecutorUploadRetriesTransportErrors(t *testing.T) {
@@ -395,13 +355,10 @@ func TestExecutorUploadRetriesTransportErrors(t *testing.T) {
 	env := &transferEnv{failFirst: 2, err: transportErr()}
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
-	if err := exec.Upload(t.Context(), "src", "dst"); err != nil {
-		t.Fatalf("Upload = %v, want success after transient transport failures", err)
-	}
+	err := exec.Upload(t.Context(), "src", "dst")
+	require.NoError(t, err, "Upload must succeed after transient transport failures")
 
-	if env.uploads != 3 {
-		t.Errorf("uploaded %d times, want 3", env.uploads)
-	}
+	assert.Equal(t, 3, env.uploads)
 }
 
 // captureEnv records the Command passed to Start and returns success.
@@ -458,17 +415,3 @@ func (e *transferEnv) Download(context.Context, string, string, ...invoke.Transf
 func (e *transferEnv) OS() invoke.TargetOS               { return invoke.OSLinux }
 func (e *transferEnv) Capabilities() invoke.Capabilities { return invoke.Capabilities{} }
 func (e *transferEnv) Close() error                      { return nil }
-
-func slicesEqual(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
-}

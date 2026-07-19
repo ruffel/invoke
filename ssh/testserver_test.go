@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/pkg/sftp"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -157,14 +158,10 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	t.Helper()
 
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("host key: %v", err)
-	}
+	require.NoError(t, err, "host key")
 
 	signer, err := ssh.NewSignerFromKey(priv)
-	if err != nil {
-		t.Fatalf("host signer: %v", err)
-	}
+	require.NoError(t, err, "host signer")
 
 	config := &ssh.ServerConfig{
 		PasswordCallback: func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
@@ -178,9 +175,7 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	config.AddHostKey(signer)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // Test listener.
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	require.NoError(t, err, "listen")
 
 	srv := &testServer{
 		addr:     listener.Addr().String(),

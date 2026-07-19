@@ -13,6 +13,8 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/internal/transfer"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // hostileFS is a source filesystem that reports one attacker-chosen name
@@ -72,44 +74,34 @@ func TestWalkRejectsTraversingEntryNames(t *testing.T) {
 	base := t.TempDir()
 	secret := filepath.Join(base, "secret.txt")
 
-	if err := os.WriteFile(secret, []byte("outside data"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(secret, []byte("outside data"), 0o600), "writing fixture")
 
 	srcDir := filepath.Join(base, "src")
-	if err := os.Mkdir(srcDir, 0o750); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
+	require.NoError(t, os.Mkdir(srcDir, 0o750), "mkdir")
 
 	dstDir := filepath.Join(base, "dst")
 	name := ".." + string(filepath.Separator) + "secret.txt"
 
 	err := transfer.Copy(t.Context(), hostileFS{root: srcDir, name: name}, srcDir,
 		transfer.HostFS{}, dstDir, invoke.TransferConfig{})
-	if err == nil {
-		t.Fatal("Copy accepted an entry name traversing out of the transfer root")
-	}
+	require.Error(t, err, "Copy accepted an entry name traversing out of the transfer root")
 
 	// The decisive assertion: the outside file must not have been read
 	// and rewritten anywhere.
 	if _, statErr := os.Stat(filepath.Join(base, "secret.txt.copy")); statErr == nil {
-		t.Error("the outside file was copied")
+		assert.Fail(t, "the outside file was copied")
 	}
 
 	entries, readErr := os.ReadDir(base)
-	if readErr != nil {
-		t.Fatalf("reading base: %v", readErr)
-	}
+	require.NoError(t, readErr, "reading base")
 
 	for _, entry := range entries {
-		if entry.Name() != "secret.txt" && entry.Name() != "src" && entry.Name() != "dst" {
-			t.Errorf("transfer wrote %q outside the destination root", entry.Name())
-		}
+		assert.Contains(t, []string{"secret.txt", "src", "dst"}, entry.Name(),
+			"transfer wrote %q outside the destination root", entry.Name())
 	}
 
-	if got, readErr := os.ReadFile(filepath.Join(dstDir, "secret.txt")); readErr == nil {
-		t.Errorf("outside content landed in the destination: %q", got)
-	}
+	got, readErr := os.ReadFile(filepath.Join(dstDir, "secret.txt"))
+	assert.Error(t, readErr, "outside content landed in the destination: %q", got)
 }
 
 // TestWalkRejectsDegenerateEntryNames checks names that address a
@@ -126,13 +118,11 @@ func TestWalkRejectsDegenerateEntryNames(t *testing.T) {
 
 			err := transfer.Copy(t.Context(), hostileFS{root: srcDir, name: name}, srcDir,
 				transfer.HostFS{}, dstDir, invoke.TransferConfig{})
-			if err == nil {
-				t.Fatalf("Copy accepted the entry name %q; it must be refused", name)
-			}
+			require.Error(t, err, "Copy accepted the entry name %q; it must be refused", name)
 
-			if !strings.Contains(err.Error(), "usable name") && !strings.Contains(err.Error(), "escapes") {
-				t.Errorf("error %q does not report the entry name as the problem", err)
-			}
+			assert.True(t,
+				strings.Contains(err.Error(), "usable name") || strings.Contains(err.Error(), "escapes"),
+				"error %q does not report the entry name as the problem", err)
 		})
 	}
 }
@@ -151,24 +141,18 @@ func TestWalkAcceptsNamesLegalOnTheSourceSide(t *testing.T) {
 	srcDir := t.TempDir()
 	name := `we\ird.txt`
 
-	if err := os.WriteFile(filepath.Join(srcDir, name), []byte("payload"), 0o600); err != nil {
-		t.Fatalf("writing fixture: %v", err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, name), []byte("payload"), 0o600), "writing fixture")
 
 	dstDir := filepath.Join(t.TempDir(), "dst")
 
-	if err := transfer.Copy(t.Context(), posixFS{}, srcDir, transfer.HostFS{}, dstDir, invoke.TransferConfig{}); err != nil {
-		t.Fatalf("Copy = %v, want a legitimate backslash filename to transfer", err)
-	}
+	require.NoError(t,
+		transfer.Copy(t.Context(), posixFS{}, srcDir, transfer.HostFS{}, dstDir, invoke.TransferConfig{}),
+		"want a legitimate backslash filename to transfer")
 
 	got, err := os.ReadFile(filepath.Join(dstDir, name))
-	if err != nil {
-		t.Fatalf("reading transferred file: %v", err)
-	}
+	require.NoError(t, err, "reading transferred file")
 
-	if string(got) != "payload" {
-		t.Errorf("content = %q, want %q", got, "payload")
-	}
+	assert.Equal(t, "payload", string(got))
 }
 
 // TestCopyRejectsCanceledContext checks the engine refuses before it
@@ -182,11 +166,10 @@ func TestCopyRejectsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	if err := transfer.Copy(ctx, transfer.HostFS{}, srcDir, transfer.HostFS{}, dstDir, invoke.TransferConfig{}); err == nil {
-		t.Fatal("Copy with a canceled context reported success")
-	}
+	require.Error(t,
+		transfer.Copy(ctx, transfer.HostFS{}, srcDir, transfer.HostFS{}, dstDir, invoke.TransferConfig{}),
+		"Copy with a canceled context reported success")
 
-	if _, err := os.Stat(dstDir); err == nil {
-		t.Error("a canceled Copy created the destination")
-	}
+	_, err := os.Stat(dstDir)
+	assert.Error(t, err, "a canceled Copy created the destination")
 }

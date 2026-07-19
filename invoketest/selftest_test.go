@@ -13,6 +13,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // selfTestTimeout backstops a contract that hangs outright; contracts
@@ -168,7 +171,7 @@ func contractByID(t *testing.T, id string) TestCase {
 		}
 	}
 
-	t.Fatalf("defect catalog references unknown contract %q", id)
+	require.Failf(t, "defect catalog references an unknown contract", "unknown contract %q", id)
 
 	return TestCase{}
 }
@@ -184,19 +187,14 @@ func TestContractsPassAgainstReference(t *testing.T) {
 
 			outcome := runRecorded(t, tc, factory)
 
-			if outcome.panicked != nil {
-				t.Fatalf("contract panicked against the reference: %v", outcome.panicked)
-			}
-
-			if outcome.failed {
-				t.Fatalf("contract failed against the clean reference:\n%s", formatLogs(outcome.logs))
-			}
+			require.Nil(t, outcome.panicked, "contract panicked against the reference")
+			require.Falsef(t, outcome.failed,
+				"contract failed against the clean reference:\n%s", formatLogs(outcome.logs))
 
 			// A gated skip is legitimate (the capability pair covers
 			// it); anything else must have run.
-			if outcome.skipped && tc.Gate == nil {
-				t.Fatalf("ungated contract skipped against the reference:\n%s", formatLogs(outcome.logs))
-			}
+			require.Falsef(t, outcome.skipped && tc.Gate == nil,
+				"ungated contract skipped against the reference:\n%s", formatLogs(outcome.logs))
 		})
 	}
 }
@@ -217,26 +215,22 @@ func TestEveryContractCanFail(t *testing.T) {
 
 			outcome := runRecorded(t, tc, factory)
 
-			if outcome.panicked != nil {
-				t.Fatalf("contract %q panicked under defect %q; contracts must fail via assertions, not crashes: %v",
-					dc.contract, dc.name, outcome.panicked)
-			}
+			require.Nilf(t, outcome.panicked,
+				"contract %q panicked under defect %q; contracts must fail via assertions, not crashes",
+				dc.contract, dc.name)
 
-			if outcome.skipped {
-				t.Fatalf("contract %q skipped under defect %q; the defect must reach it", dc.contract, dc.name)
-			}
+			require.Falsef(t, outcome.skipped,
+				"contract %q skipped under defect %q; the defect must reach it", dc.contract, dc.name)
 
-			if !outcome.failed {
-				t.Fatalf("contract %q PASSED under defect %q; a contract that cannot fail is not a test",
-					dc.contract, dc.name)
-			}
+			require.Truef(t, outcome.failed,
+				"contract %q PASSED under defect %q; a contract that cannot fail is not a test",
+				dc.contract, dc.name)
 		})
 	}
 
 	for _, tc := range AllContracts() {
-		if !covered[tc.ID()] {
-			t.Errorf("contract %q has no defect in the catalog proving it can fail", tc.ID())
-		}
+		assert.Truef(t, covered[tc.ID()],
+			"contract %q has no defect in the catalog proving it can fail", tc.ID())
 	}
 }
 
