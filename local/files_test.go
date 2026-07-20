@@ -270,6 +270,33 @@ func TestSymlinkFollowRejectsEscapes(t *testing.T) {
 	assert.ErrorContains(t, err, "escape.txt", "the error does not name the offending link")
 }
 
+// TestUploadRefusesASymlinkedDestinationDirectory is the end-to-end shape
+// of the containment rule: a link already at the destination, standing
+// where the source tree has a directory, must stop the upload rather than
+// carry it outside the destination the caller named.
+func TestUploadRefusesASymlinkedDestinationDirectory(t *testing.T) {
+	t.Parallel()
+
+	env := newEnv(t)
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	dstDir := filepath.Join(base, "dst")
+	outside := filepath.Join(base, "outside")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755), "source tree")
+	writeFixture(t, filepath.Join(srcDir, "sub"), "payload.txt", "payload", modeDefault)
+	require.NoError(t, os.MkdirAll(outside, 0o755), "outside directory")
+	require.NoError(t, os.MkdirAll(dstDir, 0o755), "destination")
+	require.NoError(t, os.Symlink(outside, filepath.Join(dstDir, "sub")), "symlink")
+
+	err := env.Upload(t.Context(), srcDir, dstDir)
+	require.Error(t, err, "an upload through a symlinked destination directory reported success")
+
+	assert.NoFileExists(t, filepath.Join(outside, "payload.txt"),
+		"the upload wrote through the link, outside the destination the caller named")
+}
+
 func TestSymlinkSkipOmitsLinks(t *testing.T) {
 	t.Parallel()
 

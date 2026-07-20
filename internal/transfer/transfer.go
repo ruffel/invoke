@@ -201,7 +201,7 @@ func (e endpoints) copyTree(ctx context.Context, absSrc, absDst string, cfg invo
 		return err
 	}
 
-	if err := e.makeDir(absDst); err != nil {
+	if err := e.makeRoot(absDst); err != nil {
 		return err
 	}
 
@@ -247,7 +247,7 @@ func (e endpoints) walk(ctx context.Context, srcDir, dstDir, rel string, dirMode
 		}
 
 		if info.IsDir() {
-			if err := e.makeDir(dstPath); err != nil {
+			if err := e.makeChildDir(dstPath); err != nil {
 				return err
 			}
 
@@ -293,8 +293,14 @@ func (e endpoints) checkContained(srcDir, srcPath, dstDir, dstPath, name string)
 	return nil
 }
 
-// makeDir creates target as a directory, merging with an existing one.
-func (e endpoints) makeDir(target string) error {
+// makeRoot creates the transfer's destination root, merging with whatever
+// is already there.
+//
+// A root reached through a symbolic link is followed: the caller named
+// this path, so where it leads is the caller's own choice — pointing a
+// stable name at the current release directory is the ordinary way to
+// deploy, and refusing it would break that.
+func (e endpoints) makeRoot(target string) error {
 	if err := e.dst.Mkdir(target); err != nil {
 		if info, statErr := e.dst.Stat(target); statErr == nil && info.IsDir() {
 			return nil
@@ -304,6 +310,44 @@ func (e endpoints) makeDir(target string) error {
 	}
 
 	return nil
+}
+
+// makeChildDir creates a directory the walk discovered inside the tree,
+// merging with a directory already there but refusing a symbolic link.
+//
+// Nobody named this path. It exists because the source tree has a
+// directory at it, and the destination is only asked whether something is
+// there already. Merging into a link would send the rest of the tree
+// wherever the link points, outside the root the caller chose, while every
+// path this engine forms still reads as contained — the containment check
+// compares names, and the name never leaves the root. So the link is
+// refused here, where it is still a name rather than a destination.
+//
+// This closes the entry already at the destination. It does not defend
+// against one substituted between this check and the write that follows;
+// that needs the resolution and the write to be one operation, which the
+// FS abstraction does not currently express.
+func (e endpoints) makeChildDir(target string) error {
+	mkdirErr := e.dst.Mkdir(target)
+	if mkdirErr == nil {
+		return nil
+	}
+
+	info, err := e.dst.Lstat(target)
+	if err != nil {
+		return mkdirErr
+	}
+
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf(
+			"destination %q is a symbolic link; refusing to write the transferred tree through it", target)
+	}
+
+	if info.IsDir() {
+		return nil
+	}
+
+	return mkdirErr
 }
 
 // copyEntry copies one non-directory entry according to the shared
