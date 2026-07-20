@@ -49,7 +49,7 @@ func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.Tra
 		}
 
 		if header.Typeflag == tar.TypeDir {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := ensureContainedDir(dst, target); err != nil {
 				return err
 			}
 
@@ -82,10 +82,10 @@ func extractEntry(
 ) error {
 	switch header.Typeflag {
 	case tar.TypeReg:
-		return extractFile(ctx, tr, target, header, cfg)
+		return extractFile(ctx, tr, dst, target, header, cfg)
 
 	case tar.TypeSymlink:
-		return extractSymlink(header.Linkname, target)
+		return extractSymlink(dst, header.Linkname, target)
 
 	case tar.TypeLink:
 		return extractHardlink(dst, header.Linkname, target)
@@ -118,6 +118,104 @@ func entryPath(dst, name string) (string, error) {
 	return target, nil
 }
 
+// containedComponents lists the paths from the destination root down to p,
+// one per component, so each can be examined before it is walked through.
+func containedComponents(dst, p string) ([]string, error) {
+	rel, err := filepath.Rel(dst, p)
+	if err != nil {
+		return nil, err
+	}
+
+	if rel == "." {
+		return nil, nil
+	}
+
+	parts := strings.Split(rel, string(filepath.Separator))
+	paths := make([]string, 0, len(parts))
+	current := dst
+
+	for _, name := range parts {
+		current = filepath.Join(current, name)
+		paths = append(paths, current)
+	}
+
+	return paths, nil
+}
+
+// ensureContainedDir creates the directories from the destination root
+// down to dir, refusing any component already present as a symbolic link.
+//
+// An archive names its own entries and need not order them, so an entry's
+// parent is usually created here rather than by a directory entry of its
+// own. Creating it a component at a time is what makes the check possible:
+// MkdirAll resolves the whole path it is given, and a link among those
+// components would be followed before anything could object to it.
+func ensureContainedDir(dst, dir string) error {
+	components, err := containedComponents(dst, dir)
+	if err != nil {
+		return err
+	}
+
+	for _, component := range components {
+		if err := makeContainedDir(component); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// makeContainedDir creates one directory inside the destination, merging
+// with a directory already there and refusing a symbolic link.
+//
+// The archive chose this path. A link standing where it expects a
+// directory would carry the rest of the extraction wherever the link
+// points, while every name the extractor forms still read as contained.
+func makeContainedDir(dir string) error {
+	mkdirErr := os.Mkdir(dir, 0o755)
+	if mkdirErr == nil {
+		return nil
+	}
+
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return mkdirErr
+	}
+
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("archive entry %q is a symbolic link; refusing to extract through it", dir)
+	}
+
+	if info.IsDir() {
+		return nil
+	}
+
+	return mkdirErr
+}
+
+// verifyContained reports whether any component between the destination
+// root and p is a symbolic link, for a path the archive names but the
+// extractor does not create.
+func verifyContained(dst, p string) error {
+	components, err := containedComponents(dst, p)
+	if err != nil {
+		return err
+	}
+
+	for _, component := range components {
+		info, err := os.Lstat(component)
+		if err != nil {
+			return err
+		}
+
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("archive entry %q resolves through the symbolic link %q", p, component)
+		}
+	}
+
+	return nil
+}
+
 // headerMode is the mode an extracted entry should carry.
 func headerMode(header *tar.Header, cfg invoke.TransferConfig) fs.FileMode {
 	if cfg.Mode != nil {
@@ -128,8 +226,21 @@ func headerMode(header *tar.Header, cfg invoke.TransferConfig) fs.FileMode {
 }
 
 // extractFile writes one regular file, reporting progress as bytes land.
-func extractFile(ctx context.Context, tr io.Reader, target string, header *tar.Header, cfg invoke.TransferConfig) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+func extractFile(
+	ctx context.Context,
+	tr io.Reader,
+	dst, target string,
+	header *tar.Header,
+	cfg invoke.TransferConfig,
+) error {
+	if err := ensureContainedDir(dst, filepath.Dir(target)); err != nil {
+		return err
+	}
+
+	// A link already occupying the target would be followed by the create
+	// below, writing through it. Extraction replaces what it finds, so the
+	// link goes rather than the file it points at.
+	if err := removeSymlink(target); err != nil {
 		return err
 	}
 
@@ -177,9 +288,28 @@ func archiveRootPrefix(name string) string {
 	return ""
 }
 
+// removeSymlink clears a symbolic link occupying an extraction target, so
+// creating the entry there cannot follow it out of the tree.
+func removeSymlink(target string) error {
+	info, err := os.Lstat(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return nil
+	}
+
+	return os.Remove(target)
+}
+
 // extractSymlink recreates a link, replacing whatever occupies the path.
-func extractSymlink(linkTarget, target string) error {
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+func extractSymlink(dst, linkTarget, target string) error {
+	if err := ensureContainedDir(dst, filepath.Dir(target)); err != nil {
 		return err
 	}
 
@@ -209,7 +339,14 @@ func extractHardlink(dst, linkName, target string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+	// The source is a path the archive names rather than one the extractor
+	// creates, so a link among its components would reach a file outside
+	// the tree and hard-link it back in.
+	if err := verifyContained(dst, source); err != nil {
+		return err
+	}
+
+	if err := ensureContainedDir(dst, filepath.Dir(target)); err != nil {
 		return err
 	}
 
