@@ -155,6 +155,65 @@ func TestWalkAcceptsNamesLegalOnTheSourceSide(t *testing.T) {
 	assert.Equal(t, "payload", string(got))
 }
 
+// TestWalkRefusesASymlinkedDestinationDirectory pins the containment
+// boundary against a link already at the destination. The containment
+// check compares names, and a name never leaves the root, so a link
+// standing where the tree expects a directory would carry the transfer
+// out of the destination while every check still read as contained.
+func TestWalkRefusesASymlinkedDestinationDirectory(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	dstDir := filepath.Join(base, "dst")
+	outside := filepath.Join(base, "outside")
+
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755), "source tree")
+	require.NoError(t,
+		os.WriteFile(filepath.Join(srcDir, "sub", "payload.txt"), []byte("payload"), 0o600), "writing fixture")
+	require.NoError(t, os.MkdirAll(outside, 0o755), "outside directory")
+	require.NoError(t, os.MkdirAll(dstDir, 0o755), "destination")
+
+	// The destination already holds a link where the source has a
+	// directory: the shape of the source decides this path, not the caller.
+	require.NoError(t, os.Symlink(outside, filepath.Join(dstDir, "sub")), "symlink")
+
+	err := transfer.Copy(t.Context(), transfer.HostFS{}, srcDir, transfer.HostFS{}, dstDir, invoke.TransferConfig{})
+	require.Error(t, err, "a transfer through a symlinked destination directory reported success")
+
+	assert.ErrorContains(t, err, "symbolic link", "the error does not say why the transfer stopped")
+
+	assert.NoFileExists(t, filepath.Join(outside, "payload.txt"),
+		"the transfer wrote through the link, outside the destination the caller named")
+}
+
+// TestCopyFollowsASymlinkedDestinationRoot pins the other half of the
+// rule, so the containment fix is not later widened into a regression: the
+// root is the one path the caller named, and pointing a stable name at the
+// current release directory is the ordinary way to deploy.
+func TestCopyFollowsASymlinkedDestinationRoot(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	release := filepath.Join(base, "release")
+	current := filepath.Join(base, "current")
+
+	require.NoError(t, os.MkdirAll(srcDir, 0o755), "source tree")
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "app.txt"), []byte("payload"), 0o600), "writing fixture")
+	require.NoError(t, os.MkdirAll(release, 0o755), "release directory")
+	require.NoError(t, os.Symlink(release, current), "symlink")
+
+	require.NoError(t,
+		transfer.Copy(t.Context(), transfer.HostFS{}, srcDir, transfer.HostFS{}, current, invoke.TransferConfig{}),
+		"a transfer to a symlinked root the caller named must be delivered")
+
+	got, err := os.ReadFile(filepath.Join(release, "app.txt"))
+	require.NoError(t, err, "reading transferred file")
+
+	assert.Equal(t, "payload", string(got))
+}
+
 // TestCopyRejectsCanceledContext checks the engine refuses before it
 // creates anything, including for a source with no entries to check.
 func TestCopyRejectsCanceledContext(t *testing.T) {
