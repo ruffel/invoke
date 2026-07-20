@@ -288,10 +288,45 @@ func (e *Executor) backoffWait(ctx context.Context, cfg execConfig, n int) error
 // family the executor retries. Everything else (exit errors, cancellation,
 // closed environments, unsupported features, missing binaries) is
 // terminal, so retrying must be earned by explicit classification.
+//
+// Belonging to that family is necessary but not sufficient. A
+// [TransportError] unwraps, so one wrapping a terminal outcome answers to
+// both families at once: every assertion about the inner error still
+// holds, and the classifier still reads the outer one. Retry asks a single
+// question — might the command not have run? — and an outcome saying it
+// did run answers it whatever else the error also says. So the terminal
+// reading wins, and a provider cannot obtain a second execution of an
+// arbitrary command by wrapping the first one's verdict.
 func retryable(err error) bool {
 	var te *TransportError
 
-	return errors.As(err, &te)
+	return errors.As(err, &te) && !terminal(err)
+}
+
+// terminal reports whether err carries an outcome that forecloses running
+// the command again: it ran, or it could not run for a reason that asking
+// again will not change.
+//
+// Cancellation is deliberately absent. A provider's own per-attempt
+// deadline produces a context error inside a genuine transport failure,
+// and treating that as terminal would strand a retry the caller wanted.
+// The caller's own cancellation needs no help from here: the backoff
+// before the next attempt returns the context's error, so the command is
+// never started again regardless of how this reads.
+func terminal(err error) bool {
+	var exitErr *ExitError
+
+	if errors.As(err, &exitErr) {
+		return true
+	}
+
+	for _, sentinel := range []error{ErrClosed, ErrNotFound, ErrNotSupported, ErrInvalidWorkdir} {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // applySudo rewrites cmd to run through sudo, or returns it unchanged when

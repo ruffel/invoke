@@ -141,6 +141,64 @@ func TestRetryOnlyTransportErrors(t *testing.T) {
 	}
 }
 
+// TestTerminalOutcomeWrappedInTransportIsNotRetried pins the rule that
+// decides whether an arbitrary command may be run a second time.
+//
+// A TransportError unwraps, so one wrapping a terminal outcome satisfies
+// every assertion about the outcome it carries while still answering to
+// the retryable family. A provider that reports a command's own verdict in
+// that shape would otherwise have it executed again.
+func TestTerminalOutcomeWrappedInTransportIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		inner error
+	}{
+		{name: "exit error", inner: &invoke.ExitError{Code: 1}},
+		{name: "closed", inner: fmt.Errorf("x: %w", invoke.ErrClosed)},
+		{name: "not found", inner: fmt.Errorf("x: %w", invoke.ErrNotFound)},
+		{name: "unsupported", inner: fmt.Errorf("x: %w", invoke.ErrNotSupported)},
+		{name: "invalid workdir", inner: fmt.Errorf("x: %w", invoke.ErrInvalidWorkdir)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			outcomes := make([]scriptOutcome, 3)
+			for i := range outcomes {
+				outcomes[i] = scriptOutcome{err: &invoke.TransportError{Op: "wait", Err: tt.inner}}
+			}
+
+			env := &scriptEnv{outcome: outcomes}
+			exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
+
+			_, err := exec.Run(t.Context(), invoke.New("deploy", "--production"), invoke.IO{})
+			require.Error(t, err)
+
+			assert.Equal(t, 1, env.startCount(),
+				"a command whose outcome was already decided was run again under retry")
+		})
+	}
+}
+
+// TestTransferCarryingATerminalOutcomeIsNotRetried covers the other path
+// through the same classifier: transfers retry under their own loop.
+func TestTransferCarryingATerminalOutcomeIsNotRetried(t *testing.T) {
+	t.Parallel()
+
+	env := &transferEnv{
+		failFirst: 2,
+		err:       &invoke.TransportError{Op: "upload", Err: fmt.Errorf("x: %w", invoke.ErrNotFound)},
+	}
+	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
+
+	require.Error(t, exec.Upload(t.Context(), "src", "dst"))
+
+	assert.Equal(t, 1, env.uploads, "a transfer whose failure was already decided was attempted again")
+}
+
 func TestRetrySucceedsAfterTransientFailure(t *testing.T) {
 	t.Parallel()
 
