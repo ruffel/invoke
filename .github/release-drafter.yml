@@ -1,0 +1,83 @@
+# Release Drafter keeps a draft release current as pull requests merge, so
+# cutting a release is publishing something already written rather than
+# recalling what changed.
+#
+# The draft is a starting point rather than the finished notes. It groups by
+# the kind of change, and a release worth reading usually groups by theme
+# and says why each change mattered; v0.4.0's notes did, and no generator
+# would have produced them. Edit before publishing.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: 'Breaking changes'
+    labels: ['breaking']
+  - title: 'Security'
+    labels: ['security']
+  - title: 'Features'
+    labels: ['feature']
+  - title: 'Fixes'
+    labels: ['fix']
+  - title: 'Contracts and tests'
+    labels: ['test']
+  - title: 'Documentation'
+    labels: ['documentation']
+  - title: 'Build and CI'
+    labels: ['chore']
+
+change-template: '- $TITLE (#$NUMBER)'
+
+# A title carrying markdown of its own would otherwise render as markdown.
+change-title-escapes: '\<*_&'
+
+# Pre-1.0, a breaking change raises the minor rather than the major. No
+# major bucket is listed on purpose: leaving one would let an ordinary
+# release resolve to v1.0.0, which is a decision to take deliberately and
+# not one to arrive at by labelling.
+version-resolver:
+  minor:
+    labels:
+      - 'breaking'
+      - 'feature'
+  patch:
+    labels:
+      - 'security'
+      - 'fix'
+      - 'test'
+      - 'documentation'
+      - 'chore'
+  default: patch
+
+# Labels are read from the pull request title, which this repository writes
+# as a Conventional Commit. Labelling was the step the previous setup
+# omitted, and without it every release resolved to a patch however much had
+# changed.
+#
+# Note what the breaking rule requires: the Conventional Commits "!" marker,
+# as in "fix(fake)!: ...". This repository has not used it — v0.4.0's
+# breaking change was titled "fix(fake): ..." — so either that convention is
+# adopted or the "breaking" label is applied by hand. Left as it is, a
+# breaking change is drafted as a patch, which is the previous failure in a
+# new form.
+autolabeler:
+  - label: 'breaking'
+    title: '/^\w+(\(.+\))?!:/'
+  - label: 'feature'
+    title: '/^feat(\(.+\))?!?:/'
+  - label: 'fix'
+    title: '/^fix(\(.+\))?!?:/'
+  - label: 'test'
+    title: '/^test(\(.+\))?!?:/'
+  - label: 'documentation'
+    title: '/^docs(\(.+\))?!?:/'
+  - label: 'chore'
+    title: '/^(build|ci|refactor|chore|style|perf)(\(.+\))?!?:/'
+
+exclude-labels:
+  - 'skip-changelog'
+
+template: |
+  $CHANGES
+
+  **Full changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION

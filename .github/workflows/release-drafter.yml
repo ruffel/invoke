@@ -1,0 +1,38 @@
+# Keeps a draft release current as pull requests merge. The configuration
+# lives in .github/release-drafter.yml.
+name: Release drafter
+
+# Drafting runs on main rather than on a tag. This repository tags two
+# modules together — vX.Y.Z and docker/vX.Y.Z — and drafting per tag would
+# raise a second, duplicate draft for the submodule. Keeping the draft
+# current on main means the notes already exist when the tag is pushed.
+on:
+  push:
+    branches: [main]
+  # Labels a pull request as it arrives or is retitled, which is what both
+  # the categories and the version resolution read. A pull request from a
+  # fork carries a read-only token, so its labels have to be applied by
+  # hand; pull_request_target would fix that by running with write access
+  # against code from the fork, which is not a trade worth making.
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  draft:
+    name: Update the draft release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # Write the draft release.
+      pull-requests: write # Apply labels.
+    steps:
+      - uses: release-drafter/release-drafter@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
