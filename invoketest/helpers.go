@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -26,6 +27,48 @@ func token(t T) string {
 	require.NoError(t, err, "generating random token")
 
 	return hex.EncodeToString(raw[:])
+}
+
+// exitSettle is how long a contract waits for a process to finish exiting
+// once its last output has been observed. It is a margin around an event
+// already witnessed rather than a substitute for witnessing one: the
+// output says the command reached its final act, and this covers the
+// short walk from there to the process being gone.
+const exitSettle = 250 * time.Millisecond
+
+// blockingWriter is a destination for a process's output that reports the
+// first write and then holds it, so a contract can keep a provider inside
+// its own drain for as long as it needs to.
+type blockingWriter struct {
+	// started closes once output has arrived, so a contract can wait for
+	// the process to have written rather than guess when it did.
+	started chan struct{}
+
+	// held blocks the write until the contract releases it.
+	held chan struct{}
+
+	once sync.Once
+}
+
+func newBlockingWriter() *blockingWriter {
+	return &blockingWriter{
+		started: make(chan struct{}),
+		held:    make(chan struct{}),
+	}
+}
+
+// Write reports the first write, then blocks until the writer is released.
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+
+	<-w.held
+
+	return len(p), nil
+}
+
+// release unblocks the write, letting the provider finish draining.
+func (w *blockingWriter) release() {
+	close(w.held)
 }
 
 // startCommand starts cmd and fails the contract on error.

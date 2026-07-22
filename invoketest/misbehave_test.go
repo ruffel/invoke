@@ -633,6 +633,7 @@ func defectCatalog() []defectCase {
 		{name: "deadline as cancel", contract: "lifecycle/deadline-unblocks-wait", defects: defects{hardcodeCanceled: true}},
 		{name: "surviving process", contract: "lifecycle/cancel-terminates-process", defects: defects{ignoreCancel: true}},
 		{name: "late cancel overwrites exit", contract: "lifecycle/cancel-after-exit-keeps-outcome", defects: defects{cancelOverwritesExit: true}},
+		{name: "cancel during drain overwrites exit", contract: "lifecycle/cancel-during-drain-keeps-outcome", defects: defects{cancelOverwritesExit: true}},
 		{name: "start despite cancel", contract: "lifecycle/start-on-canceled-context", defects: defects{ignoreCancel: true}},
 		{name: "single process only", contract: "lifecycle/concurrent-processes-run", defects: defects{singleProcess: true}},
 		{name: "close no-op", contract: "lifecycle/close-unblocks-wait", defects: defects{closeNoOp: true}},
