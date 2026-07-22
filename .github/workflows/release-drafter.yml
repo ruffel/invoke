@@ -1,5 +1,12 @@
 # Keeps a draft release current as pull requests merge. The configuration
 # lives in .github/release-drafter.yml.
+#
+# That configuration is read from the default branch, always — never from
+# the branch being built. So this fails with "Configuration file ... is not
+# found" on the pull request that introduces it, and on any later one that
+# only edits it: what runs is whatever main already holds. A change to the
+# configuration is therefore proved by the run after it merges, not by the
+# run on its own pull request.
 name: Release drafter
 
 # Drafting runs on main rather than on a tag. This repository tags two
