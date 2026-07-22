@@ -39,7 +39,16 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		return fmt.Errorf("docker: upload: %w", err)
 	}
 
-	staging := stagingDir()
+	// Stage inside the destination's own directory rather than a fixed
+	// path like /tmp, so the move into place is a rename on one filesystem
+	// — atomic, and never a copy across a boundary that could fail with
+	// the destination already gone.
+	dstDir := path.Dir(dst)
+	if err := e.makeRemoteDir(ctx, dstDir); err != nil {
+		return fmt.Errorf("docker: upload: %w", err)
+	}
+
+	staging := path.Join(dstDir, ".invoke-xfer-"+randomSuffix())
 	if err := e.makeRemoteDir(ctx, staging); err != nil {
 		return fmt.Errorf("docker: upload: %w", err)
 	}
@@ -53,11 +62,9 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		return fmt.Errorf("docker: upload: %w", err)
 	}
 
-	if err := e.makeRemoteDir(ctx, path.Dir(dst)); err != nil {
-		return fmt.Errorf("docker: upload: %w", err)
-	}
+	aside := dst + ".invoke-old-" + randomSuffix()
 
-	if err := e.moveRemote(ctx, path.Join(staging, name), dst); err != nil {
+	if err := e.moveRemote(ctx, path.Join(staging, name), dst, aside); err != nil {
 		return fmt.Errorf("docker: upload: %w", err)
 	}
 
@@ -222,11 +229,6 @@ func normalizeRemote(p string) (string, error) {
 	return path.Clean(p), nil
 }
 
-// stagingDir names a directory no concurrent transfer will collide with.
-func stagingDir() string {
-	return "/tmp/.invoke-xfer-" + randomSuffix()
-}
-
 // makeRemoteDir creates a directory and its parents in the container.
 func (e *Environment) makeRemoteDir(ctx context.Context, dir string) error {
 	_, code, err := e.runRaw(ctx, []string{"mkdir", "-p", dir})
@@ -242,13 +244,24 @@ func (e *Environment) makeRemoteDir(ctx context.Context, dir string) error {
 }
 
 // moveRemote replaces dst with src inside the container.
-func (e *Environment) moveRemote(ctx context.Context, src, dst string) error {
-	// A directory destination has to go first: mv would otherwise place
-	// the source inside it rather than in its place.
-	script := `if [ -d "$2" ] && [ ! -L "$2" ]; then rm -rf -- "$2"; fi
-exec mv -f -- "$1" "$2"`
+func (e *Environment) moveRemote(ctx context.Context, src, dst, aside string) error {
+	// Staging shares the destination's directory, so each mv here is a
+	// rename on one filesystem. An existing destination is set aside rather
+	// than removed, and only cleared once the new one is in its place, so a
+	// move that fails leaves the original recoverable and restored — never
+	// a destination deleted ahead of a replacement that did not arrive.
+	script := `if [ -e "$2" ] || [ -L "$2" ]; then
+	mv -f -- "$2" "$3" || exit 1
+	if ! mv -f -- "$1" "$2"; then
+		mv -f -- "$3" "$2"
+		exit 1
+	fi
+	rm -rf -- "$3"
+else
+	mv -f -- "$1" "$2" || exit 1
+fi`
 
-	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", src, dst})
+	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", src, dst, aside})
 	if err != nil {
 		return err
 	}

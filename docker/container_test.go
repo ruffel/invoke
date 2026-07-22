@@ -64,6 +64,14 @@ func newClient(t *testing.T) *client.Client {
 func startContainer(t *testing.T) string {
 	t.Helper()
 
+	return startContainerWith(t, &container.HostConfig{})
+}
+
+// startContainerWith starts the test image under a caller-supplied host
+// configuration, for the few tests that need one — a read-only mount, say.
+func startContainerWith(t *testing.T, hostCfg *container.HostConfig) string {
+	t.Helper()
+
 	cli := newClient(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -75,7 +83,7 @@ func startContainer(t *testing.T) string {
 		Image: testImage,
 		// Idle forever: the contracts exec into a running container.
 		Cmd: []string{"sleep", "infinity"},
-	}, &container.HostConfig{}, nil, nil, "")
+	}, hostCfg, nil, nil, "")
 	require.NoError(t, err, "creating the container")
 
 	require.NoError(t, cli.ContainerStart(ctx, created.ID, container.StartOptions{}), "starting the container")
