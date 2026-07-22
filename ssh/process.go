@@ -196,7 +196,12 @@ func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env 
 		return exportPrologue(refused), nil
 	}
 
-	path := "/tmp/.invoke-env-" + randomSuffix()
+	suffix, err := randomSuffix()
+	if err != nil {
+		return "", fmt.Errorf("ssh: start: %w", err)
+	}
+
+	path := "/tmp/.invoke-env-" + suffix
 
 	if err := e.writeRemoteFile(ctx, path, exportScript(refused)); err != nil {
 		return "", fmt.Errorf(

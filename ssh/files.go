@@ -469,15 +469,19 @@ func (f sftpFS) Resolve(p string) (string, error) {
 	return resolved, nil
 }
 
-// randomSuffix returns hex material for a name no concurrent command
-// will collide with.
-func randomSuffix() string {
+// randomSuffix returns hex material for a name no concurrent command will
+// collide with.
+//
+// A failure to gather randomness is reported rather than papered over with
+// a fixed string: a predictable name is one an attacker can pre-create, so
+// the caller must fail closed instead of writing to it.
+func randomSuffix() (string, error) {
 	var buf [8]byte
 	if _, err := rand.Read(buf[:]); err != nil {
-		return "fallback"
+		return "", fmt.Errorf("ssh: generating a unique name: %w", err)
 	}
 
-	return hex.EncodeToString(buf[:])
+	return hex.EncodeToString(buf[:]), nil
 }
 
 // splitPath breaks a POSIX path into its components.
