@@ -1,11 +1,16 @@
 package ssh
 
 import (
+	"errors"
+	"io"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 )
 
 // TestDefaultEnvRouteKeepsValuesOffTheCommandLine pins the property the
@@ -69,6 +74,53 @@ func TestEnvValuesAreQuotedOnEitherRoute(t *testing.T) {
 			// literal, so the injected text survives as data.
 			assert.Contains(t, rendered, `'\''`,
 				"an embedded quote must be escaped, not passed through")
+		})
+	}
+}
+
+// TestWaitFailureWithoutAStatusIsTerminal pins the classification of a
+// command interrupted before it reported a status.
+//
+// The end-to-end test cannot reach this: severing the connection in the
+// unit lane reliably produces ExitMissingError, which was terminal
+// already. The shapes below are the ones the same outage produces when a
+// different part of the session notices it first, and which one a caller
+// gets is not something they chose. All of them must classify alike, or
+// the executor retries an arbitrary command on a coin flip.
+func TestWaitFailureWithoutAStatusIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "missing exit status", err: &ssh.ExitMissingError{}},
+		{name: "stream ended", err: io.EOF},
+		{name: "channel closed", err: errors.New("ssh: channel closed")},
+		{name: "connection reset", err: &net.OpError{Op: "read", Err: errors.New("connection reset by peer")}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			proc := &process{ctxErr: func() error { return nil }}
+
+			result, err := proc.mapOutcome(tt.err, time.Second)
+			require.Error(t, err, "a wait that learned no status reported success")
+
+			var transportErr *invoke.TransportError
+
+			assert.NotErrorAs(t, err, &transportErr,
+				"a command interrupted before it reported a status must not be retryable: "+
+					"it may already have taken effect")
+
+			assert.ErrorIs(t, err, tt.err, "the underlying failure must stay reachable")
+
+			assert.ErrorContains(t, err, "may or may not",
+				"the error does not report the outcome as unknown")
+
+			assert.Equal(t, -1, result.ExitCode, "an unknown outcome must not carry a real-looking exit code")
 		})
 	}
 }
