@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruffel/invoke"
 )
@@ -30,10 +31,18 @@ func resolveHost(cfg *Config) (string, error) {
 	// An explicit endpoint is the caller's decision and outranks
 	// everything, as does the environment the docker command reads first.
 	if cfg.Host != "" {
+		if err := checkEndpoint(cfg.Host); err != nil {
+			return "", err
+		}
+
 		return cfg.Host, nil
 	}
 
 	if host := os.Getenv("DOCKER_HOST"); host != "" {
+		if err := checkEndpoint(host); err != nil {
+			return "", err
+		}
+
 		return "", nil
 	}
 
@@ -122,7 +131,25 @@ func contextHost(name string) (string, error) {
 				"pass the endpoint and credentials explicitly: %w", name, invoke.ErrNotSupported)
 	}
 
+	if err := checkEndpoint(meta.Endpoints.Docker.Host); err != nil {
+		return "", fmt.Errorf("docker: context %q: %w", name, err)
+	}
+
 	return meta.Endpoints.Docker.Host, nil
+}
+
+// checkEndpoint refuses a daemon endpoint this provider cannot reach on
+// its own. The docker command reaches an ssh:// daemon through a helper
+// process; without it, connecting fails deep in the client with an error
+// that names the transport rather than the cause, so it is named here.
+func checkEndpoint(host string) error {
+	if strings.HasPrefix(host, "ssh://") {
+		return fmt.Errorf(
+			"docker: endpoint %q uses ssh://, which this provider does not support; "+
+				"expose the daemon over tcp:// or a unix socket instead: %w", host, invoke.ErrNotSupported)
+	}
+
+	return nil
 }
 
 // tlsMaterial reports whether a context stores client certificates.
