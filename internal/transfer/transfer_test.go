@@ -214,6 +214,83 @@ func TestCopyFollowsASymlinkedDestinationRoot(t *testing.T) {
 	assert.Equal(t, "payload", string(got))
 }
 
+// TestOverlapGuardResolvesASymlinkedDestination pins the guard against a
+// destination that reaches back into the source through a symlink.
+//
+// The paths as written do not overlap — "link/sub" is not lexically inside
+// "real" — but "link" resolves to "real", so the copy would write the tree
+// into itself and recurse until the names grow too long. The guard must
+// see the resolved destination and refuse before anything is created.
+func TestOverlapGuardResolvesASymlinkedDestination(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	srcTree := filepath.Join(base, "real")
+
+	require.NoError(t, os.MkdirAll(srcTree, 0o755), "source tree")
+	require.NoError(t, os.WriteFile(filepath.Join(srcTree, "f.txt"), []byte("payload"), 0o600), "writing fixture")
+	require.NoError(t, os.Symlink(srcTree, filepath.Join(base, "link")), "symlink")
+
+	err := transfer.Copy(t.Context(), transfer.HostFS{}, srcTree,
+		transfer.HostFS{}, filepath.Join(base, "link", "sub"), invoke.TransferConfig{})
+	require.Error(t, err, "a copy into a symlink that resolves inside the source reported success")
+
+	assert.ErrorContains(t, err, "inside the source tree",
+		"the guard did not recognize the destination as overlapping; it recursed instead")
+
+	// The guard runs before anything is created, so the source stays as it
+	// was — no tree copied into itself.
+	_, err = os.Stat(filepath.Join(srcTree, "sub"))
+	assert.Error(t, err, "the copy created entries inside the source before refusing")
+}
+
+// TestOverlapGuardResolvesToTheSamePath pins the case where the
+// destination is a different name for the source itself.
+func TestOverlapGuardResolvesToTheSamePath(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	srcTree := filepath.Join(base, "real")
+
+	require.NoError(t, os.MkdirAll(srcTree, 0o755), "source tree")
+	require.NoError(t, os.Symlink(srcTree, filepath.Join(base, "link")), "symlink")
+
+	err := transfer.Copy(t.Context(), transfer.HostFS{}, srcTree,
+		transfer.HostFS{}, filepath.Join(base, "link"), invoke.TransferConfig{})
+	require.Error(t, err, "a copy onto a symlink to the source itself reported success")
+
+	assert.ErrorContains(t, err, "resolve to the same path",
+		"the guard did not recognize the destination as the source under another name")
+}
+
+// TestOverlapGuardAllowsAnUnrelatedSymlinkedDestination guards the other
+// side of the rule: resolving must not reject a destination reached
+// through a symlink that leads somewhere else entirely — the ordinary
+// current-points-at-a-release deploy shape.
+func TestOverlapGuardAllowsAnUnrelatedSymlinkedDestination(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+
+	src := filepath.Join(base, "build")
+	require.NoError(t, os.MkdirAll(src, 0o755), "source tree")
+	require.NoError(t, os.WriteFile(filepath.Join(src, "app"), []byte("payload"), 0o600), "writing fixture")
+
+	release := filepath.Join(base, "release")
+	require.NoError(t, os.MkdirAll(release, 0o755), "release directory")
+	require.NoError(t, os.Symlink(release, filepath.Join(base, "current")), "symlink")
+
+	require.NoError(t,
+		transfer.Copy(t.Context(), transfer.HostFS{}, src,
+			transfer.HostFS{}, filepath.Join(base, "current", "app"), invoke.TransferConfig{}),
+		"a copy through a symlink that leads outside the source must be allowed")
+
+	got, err := os.ReadFile(filepath.Join(release, "app", "app"))
+	require.NoError(t, err, "reading the transferred file")
+
+	assert.Equal(t, "payload", string(got))
+}
+
 // TestCopyRejectsCanceledContext checks the engine refuses before it
 // creates anything, including for a source with no entries to check.
 func TestCopyRejectsCanceledContext(t *testing.T) {

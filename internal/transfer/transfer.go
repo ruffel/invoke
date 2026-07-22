@@ -180,11 +180,58 @@ func (e endpoints) guardOverlap(absSrc, absDst string, srcInfo fs.FileInfo) erro
 		}
 	}
 
-	if srcInfo.IsDir() && e.src.Contains(absSrc, absDst) {
+	// A symlink on the way to the destination can point back into the
+	// source, which a check on the paths as written would miss: the walk
+	// then copies the tree into itself and recurses until the names grow
+	// too long to create. Resolve both sides through the components that
+	// exist, so where the destination truly lands is what the guard sees
+	// rather than how the caller happened to spell it.
+	realSrc := resolveExisting(e.src, absSrc)
+	realDst := resolveExisting(e.dst, absDst)
+
+	if realSrc == realDst {
+		return fmt.Errorf("source %q and destination %q resolve to the same path %q", absSrc, absDst, realSrc)
+	}
+
+	if srcInfo.IsDir() && e.src.Contains(realSrc, realDst) {
 		return fmt.Errorf("destination %q is inside the source tree %q", absDst, absSrc)
 	}
 
 	return nil
+}
+
+// resolveExisting resolves the longest existing prefix of path through any
+// symlinks and re-appends the components that do not exist yet, so a
+// destination that has not been created can still be placed relative to
+// where its existing parents actually lead. A path that cannot be resolved
+// at all is returned unchanged, leaving the caller no worse off than a
+// purely lexical check.
+func resolveExisting(fsys FS, path string) string {
+	remainder := ""
+	current := path
+
+	for {
+		if resolved, err := fsys.Resolve(current); err == nil {
+			if remainder == "" {
+				return resolved
+			}
+
+			return fsys.Join(resolved, remainder)
+		}
+
+		parent := fsys.Dir(current)
+		if parent == current {
+			return path
+		}
+
+		if remainder == "" {
+			remainder = fsys.Base(current)
+		} else {
+			remainder = fsys.Join(fsys.Base(current), remainder)
+		}
+
+		current = parent
+	}
 }
 
 // copyTree copies the directory tree rooted at absSrc to absDst. Directory
