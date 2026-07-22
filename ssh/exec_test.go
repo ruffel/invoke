@@ -2,10 +2,12 @@ package ssh_test
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/ssh"
@@ -199,3 +201,52 @@ func TestRelativePathResolvesAgainstWorkdir(t *testing.T) {
 
 	assert.Equal(t, "ran", strings.TrimSpace(out))
 }
+
+// TestNonZeroExitSurvivesConcurrentCancel covers the half of cancellation
+// attribution the contract cannot reach: the contract pins a clean exit,
+// and a status the server reported is authoritative whatever it says.
+func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
+	t.Parallel()
+
+	env := dialServer(t, startTestServer(t))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	release := make(chan struct{})
+	written := make(chan struct{})
+
+	stdout := writerFunc(func(p []byte) (int, error) {
+		close(written)
+		<-release
+
+		return len(p), nil
+	})
+
+	proc, err := env.Start(ctx, invoke.Shell("echo out; exit 9"), invoke.IO{Stdout: stdout})
+	require.NoError(t, err)
+
+	<-written
+
+	// The command has produced its output and is exiting; cancel while the
+	// provider is still held inside the drain.
+	time.Sleep(250 * time.Millisecond)
+	cancel()
+	time.Sleep(250 * time.Millisecond)
+	close(release)
+
+	result, waitErr := proc.Wait()
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, waitErr, &exitErr,
+		"the server reported exit 9 before the cancellation; that status must survive it")
+
+	assert.Equal(t, 9, exitErr.Code, "the reported exit status was rewritten")
+	assert.Equal(t, 9, result.ExitCode, "the reported exit code was rewritten")
+}
+
+// writerFunc adapts a function to io.Writer.
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

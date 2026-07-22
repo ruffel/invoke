@@ -325,7 +325,33 @@ func (p *process) monitorContext(ctx context.Context) {
 // mapOutcome classifies the raw session-wait error into the package
 // taxonomy, attributing a caller-initiated kill to Close or cancellation
 // rather than reporting it as a command exit.
+//
+// A status the server reported settles the outcome before the attribution
+// flags are read. Cancellation and Close are things this side did, and
+// neither unruns a command the server already accounted for: the status
+// arrived, so the command finished, whatever this side went on to want.
+// Reading the flags first turned a completed command into a cancellation
+// whenever the two raced — and a caller who retries on cancellation would
+// then run it again.
+//
+// What remains after that is a death this side could have caused: a kill
+// signal, or no status at all. Those are the flags' to claim.
 func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, error) {
+	sig, signaled := waitSignal(err)
+
+	if !signaled {
+		if res, outcome, reported := reportedExit(err, duration); reported {
+			return res, outcome
+		}
+	}
+
+	// A signal this side never sends belongs to the command: the session
+	// is killed with SIGKILL and nothing else, so anything else is the
+	// remote end's own doing and outlives any local bookkeeping.
+	if signaled && sig != invoke.SIGKILL {
+		return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
+	}
+
 	if p.closedByUser.Load() {
 		return invoke.Result{ExitCode: -1, Duration: duration},
 			fmt.Errorf("ssh: wait: process terminated by Close: %w", invoke.ErrClosed)
@@ -335,20 +361,9 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 		return invoke.Result{ExitCode: -1, Duration: duration}, fmt.Errorf("ssh: wait: %w", ctxErr)
 	}
 
-	if err == nil {
-		return invoke.Result{ExitCode: 0, Duration: duration}, nil
-	}
-
-	var exitErr *ssh.ExitError
-	if errors.As(err, &exitErr) {
-		if sig := exitErr.Signal(); sig != "" {
-			return invoke.Result{ExitCode: -1, Duration: duration},
-				&invoke.ExitError{Code: -1, Signal: invoke.Signal(sig)}
-		}
-
-		code := exitErr.ExitStatus()
-
-		return invoke.Result{ExitCode: code, Duration: duration}, &invoke.ExitError{Code: code}
+	// A kill nobody here asked for is still the command's own death.
+	if signaled {
+		return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
 	}
 
 	// ExitMissingError: the command ran but no status came back, which is
@@ -368,6 +383,39 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 	}
 
 	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.TransportError{Op: "wait", Err: err}
+}
+
+// waitSignal reports the signal a session-wait error attributes the
+// command's death to, and whether it named one at all.
+func waitSignal(err error) (invoke.Signal, bool) {
+	var exitErr *ssh.ExitError
+	if !errors.As(err, &exitErr) {
+		return "", false
+	}
+
+	sig := exitErr.Signal()
+	if sig == "" {
+		return "", false
+	}
+
+	return invoke.Signal(sig), true
+}
+
+// reportedExit returns the outcome for a session-wait error carrying an
+// exit status the server sent, and whether it carried one.
+func reportedExit(err error, duration time.Duration) (invoke.Result, error, bool) { //nolint:revive // The flag distinguishes "no status" from a zero one.
+	if err == nil {
+		return invoke.Result{ExitCode: 0, Duration: duration}, nil, true
+	}
+
+	var exitErr *ssh.ExitError
+	if !errors.As(err, &exitErr) {
+		return invoke.Result{}, nil, false
+	}
+
+	code := exitErr.ExitStatus()
+
+	return invoke.Result{ExitCode: code, Duration: duration}, &invoke.ExitError{Code: code}, true
 }
 
 // runRaw runs a raw command line on a fresh session and returns its stdout
