@@ -22,6 +22,7 @@ func lifecycleContracts() []TestCase {
 		lifecycleDeadlineUnblocksWait(),
 		lifecycleCancelTerminatesProcess(),
 		lifecycleCancelAfterExitKeepsOutcome(),
+		lifecycleCancelDuringDrainKeepsOutcome(),
 		lifecycleStartOnCanceledContext(),
 		lifecycleConcurrentProcessesRun(),
 		lifecycleCloseUnblocksWait(),
@@ -127,6 +128,67 @@ func lifecycleCancelAfterExitKeepsOutcome() TestCase {
 				"the process exited 0 before cancellation; a late cancel must not rewrite it")
 
 			assert.Equal(t, 0, second.result.ExitCode, "a late cancel must not rewrite the exit code")
+		},
+	}
+}
+
+// lifecycleCancelDuringDrainKeepsOutcome pins the outcome of a process
+// that finished while its output was still being collected.
+//
+// [lifecycleCancelAfterExitKeepsOutcome] reads the outcome before it
+// cancels, so a provider that decides the outcome once and remembers it
+// passes without the question ever being asked. The question is what a
+// provider decides when the cancellation arrives first: the process has
+// already exited, but Wait has not yet worked out what to report. Reading
+// the context at that moment rather than the process's own status turns a
+// success into a cancellation, and a caller who retries on cancellation
+// runs a command that already ran.
+//
+// The contract holds the output open to make that moment last. Stdout is
+// a writer that blocks, so the provider is still draining when the
+// context is canceled, and the process it is draining for is long gone.
+func lifecycleCancelDuringDrainKeepsOutcome() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "cancel-during-drain-keeps-outcome",
+		Description: "Cancellation arriving while output is still draining must not rewrite the exit of a process that already finished",
+		Run: func(t T, env invoke.Environment) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			drain := newBlockingWriter()
+
+			// The script's last act is the write, so once the bytes arrive
+			// the process is on its way out.
+			proc := startCommand(ctx, t, env, invoke.Shell("echo draining"), invoke.IO{Stdout: drain})
+
+			defer func() { _ = proc.Close() }()
+
+			select {
+			case <-drain.started:
+			case <-time.After(contractTimeout):
+				require.FailNow(t, "the command produced no output within the contract deadline")
+			}
+
+			// The write has landed and the drain is held, so the provider
+			// cannot finish Wait while the process finishes exiting.
+			time.Sleep(exitSettle)
+
+			cancel()
+
+			// Still held for a moment after the cancel, so a provider that
+			// consults the context on its way out has every chance to.
+			time.Sleep(exitSettle)
+
+			drain.release()
+
+			outcome := waitOrTimeout(t, proc)
+
+			assert.NoError(t, outcome.err,
+				"the process exited 0 before the cancellation; draining its output must not rewrite that")
+
+			assert.Equal(t, 0, outcome.result.ExitCode,
+				"the process exited 0 before the cancellation; draining its output must not rewrite its exit code")
 		},
 	}
 }
