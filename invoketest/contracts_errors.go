@@ -13,6 +13,7 @@ func errorsContracts() []TestCase {
 		errorsBadWorkdirClassified(),
 		errorsLookPathClassifies(),
 		errorsClosedEnvRefusesAll(),
+		errorsTerminalOutcomesAreNotTransport(),
 	}
 }
 
@@ -103,6 +104,47 @@ func errorsLookPathClassifies() TestCase {
 
 			_, err = env.LookPath(t.Context(), "invoke-definitely-missing-"+token(t))
 			assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath of an unresolvable name")
+		},
+	}
+}
+
+func errorsTerminalOutcomesAreNotTransport() TestCase {
+	return TestCase{
+		Category: CategoryErrors,
+		Name:     "terminal-outcomes-are-not-transport",
+		Description: "An outcome that forecloses retrying — a command that ran, or one that could not " +
+			"be started for a settled reason — must never classify as a retryable TransportError",
+		Run: func(t T, env invoke.Environment) {
+			ctx := t.Context()
+
+			// The command ran and failed. Retrying it could run it again,
+			// so a non-zero exit is terminal however it is reported.
+			exit, _, _ := runCapture(t, env, invoke.Shell("exit 3"))
+			requireNotTransport(t, exit.err, "a non-zero exit")
+
+			// Could not be started, for reasons asking again will not
+			// change: the binary is not there, the directory is not there.
+			_, notFound := env.Start(ctx, invoke.New("invoke-missing-"+token(t)), invoke.IO{})
+			requireNotTransport(t, notFound, "a missing binary")
+
+			badDir := invoke.New("true")
+			badDir.Dir = "/invoke-no-such-dir-" + token(t)
+
+			_, badWorkdir := env.Start(ctx, badDir, invoke.IO{})
+			requireNotTransport(t, badWorkdir, "an invalid working directory")
+
+			// A feature the target declares it cannot provide is settled
+			// too — only targets that lack it can be asked to prove this.
+			if !env.Capabilities().TTY {
+				_, unsupported := env.Start(ctx, invoke.New("true"), invoke.IO{TTY: &invoke.TTY{}})
+				requireNotTransport(t, unsupported, "an unsupported TTY request")
+			}
+
+			// After Close, every call is terminal.
+			require.NoError(t, env.Close(), "closing the environment")
+
+			_, closed := env.Start(ctx, invoke.New("true"), invoke.IO{})
+			requireNotTransport(t, closed, "a closed environment")
 		},
 	}
 }

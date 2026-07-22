@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,6 +144,21 @@ func requireNotExitError(t T, err error, situation string) {
 
 	require.NotErrorAsf(t, err, &exitErr,
 		"%s surfaced as *ExitError; lifecycle errors must never be command outcomes", situation)
+}
+
+// requireNotTransport fails the contract when a terminal outcome — one a
+// caller cannot safely have retried — is classified as a TransportError,
+// the one family the executor does retry. It asserts rather than requires,
+// so a contract can weigh several outcomes and report each violation.
+func requireNotTransport(t T, err error, situation string) {
+	t.Helper()
+
+	assert.Errorf(t, err, "%s must produce an error to classify", situation)
+
+	var te *invoke.TransportError
+
+	assert.NotErrorAsf(t, err, &te,
+		"%s is terminal and must never be retried, yet it classifies as a TransportError", situation)
 }
 
 // closeOrTimeout closes proc with the contract deadline, so a Close that
