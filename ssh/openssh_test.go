@@ -173,9 +173,7 @@ func TestOpenSSHContractSuite(t *testing.T) {
 		require.True(tt, ok, "contract tests require the standard *testing.T")
 
 		return dialOpenSSH(tt, port)
-	}, invoketest.WithKnownGap("lifecycle/cancel-during-drain-keeps-outcome",
-		"the outcome is read from the context before the session's own exit status, so a cancellation "+
-			"arriving while output drains rewrites a completed exit; fixed separately"))
+	})
 }
 
 // TestOpenSSHEnvFallbackDelivers checks the opt-in fallback does deliver
