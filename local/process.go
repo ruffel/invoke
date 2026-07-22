@@ -128,7 +128,14 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		}(stdio.Stdin, p.stdinW)
 	}
 
-	e.track(p)
+	if err := e.track(p); err != nil {
+		// The environment closed while the process was being started. Tear
+		// it down rather than leave it running past the environment that
+		// owns it; the process is fully started, so Close is its teardown.
+		_ = p.Close()
+
+		return nil, err
+	}
 
 	return p, nil
 }

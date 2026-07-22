@@ -91,7 +91,14 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, &invoke.TransportError{Op: "start", Err: err}
 	}
 
-	e.track(p)
+	if err := e.track(p); err != nil {
+		// The connection closed while the command was being started. Tear
+		// it down rather than leave it running past the environment that
+		// owns it; the command is fully started, so Close is its teardown.
+		_ = p.Close()
+
+		return nil, err
+	}
 
 	go p.monitorContext(ctx)
 

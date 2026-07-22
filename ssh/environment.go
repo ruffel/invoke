@@ -315,11 +315,27 @@ func (e *Environment) checkOpen(op string) error {
 	return nil
 }
 
-func (e *Environment) track(p *process) {
+// track registers a running process so Close can terminate it, unless the
+// connection has closed in the meantime.
+//
+// Start checks the closed flag once at entry and then opens a session and
+// starts the command, several round-trips later. A Close landing in that
+// window has already gathered the processes it will terminate, so one
+// added afterwards would run with nothing left to stop it. Re-checking
+// here under the same lock closes that gap: a process is either registered
+// before Close snapshots, and terminated with the rest, or refused, and
+// torn down by its caller.
+func (e *Environment) track(p *process) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.closed {
+		return fmt.Errorf("ssh: start: %w", invoke.ErrClosed)
+	}
+
 	e.active[p] = struct{}{}
+
+	return nil
 }
 
 func (e *Environment) untrack(p *process) {
