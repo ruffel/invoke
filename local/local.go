@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"runtime"
@@ -103,7 +104,14 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 
 	path, err := exec.LookPath(name)
 	if err != nil {
-		if errors.Is(err, exec.ErrNotFound) {
+		// A bare name missing from PATH reports exec.ErrNotFound; a name
+		// with a separator is looked up as a path, so a missing or
+		// non-executable file reports the filesystem's own error instead.
+		// All of them mean the same thing to a caller: the name did not
+		// resolve to something runnable.
+		if errors.Is(err, exec.ErrNotFound) ||
+			errors.Is(err, fs.ErrNotExist) ||
+			errors.Is(err, fs.ErrPermission) {
 			return "", fmt.Errorf("local: lookpath %q: %w", name, invoke.ErrNotFound)
 		}
 
