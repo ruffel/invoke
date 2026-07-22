@@ -75,6 +75,8 @@ type defects struct {
 	shallowTrees             bool // upload only a tree's top-level files
 	dropSymlinks             bool // silently skip symlinks in transfers
 	followLies               bool // treat SymlinkFollow as SymlinkSkip
+	stripSymlinkPreserve     bool // report no symlink preservation, then carry links anyway instead of refusing
+	destroySamePath          bool // truncate the source when a transfer's two paths are identical
 	alwaysSkipSpecial        bool // force WithSkipSpecial regardless of options
 	zeroProgressTotals       bool // report Total as zero in progress callbacks
 	transferIgnoresCancel    bool // detach a transfer from the caller's context
@@ -150,31 +152,19 @@ func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error
 }
 
 func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	if m.d.destroySamePath && localPath == remotePath {
+		// The legacy bug: the destination was opened truncating while the
+		// source was still open, leaving zero bytes and a nil error.
+		_ = os.WriteFile(localPath, nil, fixtureMode)
+
+		return nil
+	}
+
 	if m.d.transferIgnoresCancel {
 		ctx = context.WithoutCancel(ctx)
 	}
 
-	cfg := invoke.NewTransferConfig(opts...)
-
-	if m.d.dropModeOption {
-		cfg.Mode = nil
-	}
-
-	if m.d.dropSymlinks || m.d.followLies {
-		cfg.Symlinks = invoke.SymlinkSkip
-	}
-
-	if m.d.alwaysSkipSpecial {
-		cfg.SkipSpecial = true
-	}
-
-	if m.d.zeroProgressTotals && cfg.Progress != nil {
-		forward := cfg.Progress
-		cfg.Progress = func(p invoke.TransferProgress) {
-			p.Total = 0
-			forward(p)
-		}
-	}
+	cfg := m.mutateTransferConfig(invoke.NewTransferConfig(opts...))
 
 	src := localPath
 
@@ -253,6 +243,12 @@ func (m *misbehaveEnv) Capabilities() invoke.Capabilities {
 	// to present itself as one — whatever the wrapped target can do.
 	if m.d.stripTTY {
 		caps.TTY = false
+	}
+
+	// The mirror of stripTTY for transfers: a target that claims it cannot
+	// preserve links, then carries them anyway rather than refusing.
+	if m.d.stripSymlinkPreserve {
+		caps.SymlinkPreserve = false
 	}
 
 	return caps
@@ -374,6 +370,32 @@ func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
 	}
 
 	return cmd
+}
+
+// mutateTransferConfig applies the option-rewriting transfer defects,
+// separated from Upload so its own branching stays legible.
+func (m *misbehaveEnv) mutateTransferConfig(cfg invoke.TransferConfig) invoke.TransferConfig {
+	if m.d.dropModeOption {
+		cfg.Mode = nil
+	}
+
+	if m.d.dropSymlinks || m.d.followLies {
+		cfg.Symlinks = invoke.SymlinkSkip
+	}
+
+	if m.d.alwaysSkipSpecial {
+		cfg.SkipSpecial = true
+	}
+
+	if m.d.zeroProgressTotals && cfg.Progress != nil {
+		forward := cfg.Progress
+		cfg.Progress = func(p invoke.TransferProgress) {
+			p.Total = 0
+			forward(p)
+		}
+	}
+
+	return cfg
 }
 
 func (m *misbehaveEnv) mutateStdio(stdio invoke.IO) invoke.IO {
@@ -683,6 +705,8 @@ func defectCatalog() []defectCase {
 		{name: "shallow trees", contract: "transfer/tree-roundtrip-creates-parents", defects: defects{shallowTrees: true}},
 		{name: "shallow empty tree", contract: "transfer/empty-files-and-dirs", defects: defects{shallowTrees: true}},
 		{name: "dropped symlinks", contract: "transfer/symlinks-preserve", defects: defects{dropSymlinks: true}},
+		{name: "unpreserved symlink carried silently", contract: "transfer/symlink-unsupported-errors", defects: defects{stripSymlinkPreserve: true}},
+		{name: "same-path truncates source", contract: "transfer/same-path-preserves-source", defects: defects{destroySamePath: true}},
 		{name: "follow lies on escape", contract: "transfer/follow-rejects-escapes", defects: defects{followLies: true}},
 		{name: "follow lies on content", contract: "transfer/symlink-follow-copies-content", defects: defects{followLies: true}},
 		{name: "forced special skip", contract: "transfer/special-files-error-by-default", defects: defects{alwaysSkipSpecial: true}},
@@ -690,6 +714,7 @@ func defectCatalog() []defectCase {
 		{name: "transfer ignores cancel", contract: "transfer/canceled-before-start-does-nothing", defects: defects{transferIgnoresCancel: true}},
 
 		{name: "pretend TTY", contract: "tty/allocates-terminal", defects: defects{claimTTY: true}},
+		{name: "TTY that keeps stderr apart", contract: "tty/stderr-merges-into-stdout", defects: defects{claimTTY: true}},
 		{name: "silently stripped TTY", contract: "tty/unsupported-errors", defects: defects{stripTTY: true}},
 	}
 }

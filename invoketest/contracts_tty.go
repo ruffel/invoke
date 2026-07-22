@@ -1,6 +1,8 @@
 package invoketest
 
 import (
+	"bytes"
+
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -9,7 +11,37 @@ import (
 func ttyContracts() []TestCase {
 	return []TestCase{
 		ttyAllocatesTerminal(),
+		ttyStderrMergesIntoStdout(),
 		ttyUnsupportedErrors(),
+	}
+}
+
+func ttyStderrMergesIntoStdout() TestCase {
+	return TestCase{
+		Category: CategoryTTY,
+		Name:     "stderr-merges-into-stdout",
+		Description: "Under a requested TTY the process's stderr arrives on stdout, and the separate " +
+			"Stderr writer receives nothing",
+		Gate: func(caps invoke.Capabilities) (bool, string) {
+			return caps.TTY, "target does not declare TTY allocation; tty/unsupported-errors covers it"
+		},
+		Run: func(t T, env invoke.Environment) {
+			var stdout, stderr bytes.Buffer
+
+			proc := startCommand(t.Context(), t, env, invoke.Shell("echo out; echo err 1>&2"),
+				invoke.IO{Stdout: &stdout, Stderr: &stderr, TTY: &invoke.TTY{}})
+
+			result := waitOrTimeout(t, proc)
+			require.NoError(t, result.err, "the command failed under a requested TTY")
+
+			// A pseudo-terminal has one output stream, so both writes land
+			// on stdout and the caller's Stderr writer is left untouched.
+			assert.Contains(t, stdout.String(), "out", "stdout must carry the command's standard output")
+			assert.Contains(t, stdout.String(), "err",
+				"under a TTY the command's standard error must merge into stdout")
+			assert.Empty(t, stderr.String(),
+				"under a TTY there is no separate standard error; the Stderr writer must stay empty")
+		},
 	}
 }
 

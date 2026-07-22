@@ -40,11 +40,69 @@ func transferContracts() []TestCase {
 		transferTreeCreatesParents(),
 		transferEmptyFilesAndDirs(),
 		transferSymlinksPreserve(),
+		transferSymlinkUnsupportedErrors(),
 		transferSymlinkFollowCopiesContent(),
 		transferFollowRejectsEscapes(),
 		transferSpecialFiles(),
 		transferProgressTotals(),
+		transferSamePathPreservesSource(),
 		transferCanceledBeforeStartDoesNothing(),
+	}
+}
+
+// transferSamePathPreservesSource pins the closing half of the atomicity
+// promise: a transfer whose source and destination are one file must not
+// destroy the source it is reading.
+//
+// Where the two sides share a filesystem — the local target, the fake —
+// the overlap guard refuses it. Where they cannot alias, the atomic
+// temp-and-rename delivery keeps the source intact regardless. Either way
+// the file must survive, which is the legacy failure this forbids: the
+// destination was opened truncating while the source was still open,
+// leaving zero bytes and no error.
+func transferSamePathPreservesSource() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "same-path-preserves-source",
+		Description: "A transfer whose source and destination are the same file preserves the source rather than truncating it",
+		Run: func(t T, env invoke.Environment) {
+			src := writeHostFixture(t, t.TempDir(), "precious.txt", "PRECIOUS DATA")
+
+			// Rejected or delivered, it must not destroy what it reads.
+			_ = env.Upload(t.Context(), src, src)
+
+			assert.Equal(t, "PRECIOUS DATA", readHostFile(t, src),
+				"a same-path transfer destroyed the source it was reading")
+		},
+	}
+}
+
+// transferSymlinkUnsupportedErrors is the undeclared half of the symlink
+// capability, the mirror of tty/unsupported-errors: a target that does not
+// declare link preservation must refuse a tree that carries one, wrapping
+// ErrNotSupported, rather than dropping the link and reporting success.
+func transferSymlinkUnsupportedErrors() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "symlink-unsupported-errors",
+		Description: "Without the SymlinkPreserve capability, a transfer carrying a symlink fails wrapping ErrNotSupported instead of dropping it",
+		Gate: func(caps invoke.Capabilities) (bool, string) {
+			return !caps.SymlinkPreserve, "target declares symlink preservation; transfer/symlinks-preserve covers it"
+		},
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			writeHostFixture(t, srcDir, "real.txt", "real")
+			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			err := env.Upload(t.Context(), srcDir, remote)
+			require.Error(t, err,
+				"a transfer carrying a symlink to a target that cannot preserve links reported success")
+
+			assert.ErrorIs(t, err, invoke.ErrNotSupported)
+		},
 	}
 }
 
