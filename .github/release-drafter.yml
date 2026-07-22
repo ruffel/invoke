@@ -54,12 +54,11 @@ version-resolver:
 # omitted, and without it every release resolved to a patch however much had
 # changed.
 #
-# Note what the breaking rule requires: the Conventional Commits "!" marker,
-# as in "fix(fake)!: ...". This repository has not used it — v0.4.0's
-# breaking change was titled "fix(fake): ..." — so either that convention is
-# adopted or the "breaking" label is applied by hand. Left as it is, a
-# breaking change is drafted as a patch, which is the previous failure in a
-# new form.
+# A breaking change carries the Conventional Commits "!" marker, as in
+# "fix(fake)!: ...". That is what the rule below matches, and it is the only
+# thing that raises the minor: a breaking change titled without it drafts as
+# a patch, which is the previous failure in a new form. The convention is
+# stated in the README, under Development.
 autolabeler:
   - label: 'breaking'
     title: '/^\w+(\(.+\))?!:/'

@@ -160,6 +160,13 @@ The integration lanes run the suite against a real OpenSSH server and a
 real container, and compare the providers against each other. They need a
 container runtime, so they are not part of `just check`.
 
+Commits and pull request titles are [Conventional
+Commits](https://www.conventionalcommits.org): `fix(ssh): ...`,
+`test(invoketest): ...`, one reviewable concern each. A change that breaks
+callers carries the `!` marker — `fix(fake)!: ...` — which is what tells
+the release draft to raise the minor rather than the patch. Pre-1.0 a
+breaking change is a minor; nothing here resolves to a major.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
