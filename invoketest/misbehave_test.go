@@ -64,6 +64,7 @@ type defects struct {
 	plainMissingBinary bool // strip ErrNotFound from missing-binary failures
 	plainWorkdirError  bool // strip ErrInvalidWorkdir from workdir failures
 	plainLookPathError bool // strip ErrNotFound from LookPath failures
+	launderTerminal    bool // dress a terminal outcome up as a retryable transport failure
 
 	// Transfer defects.
 	corruptUploads           bool // upload garbage in place of the source
@@ -123,6 +124,10 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 
 		if m.d.plainWorkdirError && errors.Is(err, invoke.ErrInvalidWorkdir) {
 			return nil, errors.New("misbehave: something went wrong")
+		}
+
+		if m.d.launderTerminal && isTerminalStartError(err) {
+			return nil, &invoke.TransportError{Op: "start", Err: err}
 		}
 
 		return nil, err
@@ -519,6 +524,8 @@ func (p *misbehaveProcess) corruptError(res invoke.Result, err error) (waitOutco
 	}
 
 	switch {
+	case p.d.launderTerminal:
+		return waitOutcome{result: res, err: &invoke.TransportError{Op: "wait", Err: err}}, true
 	case p.d.collapseSignalNames && exitErr.Signal != "":
 		return waitOutcome{result: res, err: &invoke.ExitError{Code: exitErr.Code, Signal: invoke.SIGTERM}}, true
 	case p.d.clampExitCode && exitErr.Code >= signalBoundary:
@@ -543,6 +550,18 @@ func asExitError(err error) *invoke.ExitError {
 	}
 
 	return nil
+}
+
+// isTerminalStartError reports whether a Start failure is one that asking
+// again will not change — the families the executor treats as terminal, so
+// the launderTerminal defect knows which errors to disguise as retryable.
+// Cancellation is deliberately excluded: a provider's own per-attempt
+// deadline is a context error inside a genuine transport failure.
+func isTerminalStartError(err error) bool {
+	return errors.Is(err, invoke.ErrNotFound) ||
+		errors.Is(err, invoke.ErrInvalidWorkdir) ||
+		errors.Is(err, invoke.ErrClosed) ||
+		errors.Is(err, invoke.ErrNotSupported)
 }
 
 // neverEOFReader blocks forever, simulating an inherited terminal stdin.
@@ -652,6 +671,7 @@ func defectCatalog() []defectCase {
 		{name: "unclassified lookpath", contract: "errors/lookpath-classifies", defects: defects{plainLookPathError: true}},
 		{name: "bare lookpath name", contract: "errors/lookpath-classifies", defects: defects{bareLookPath: true}},
 		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
+		{name: "terminal laundered as transport", contract: "errors/terminal-outcomes-are-not-transport", defects: defects{launderTerminal: true}},
 
 		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},
 		{name: "corrupted binary", contract: "transfer/binary-content-survives", defects: defects{corruptUploads: true}},
