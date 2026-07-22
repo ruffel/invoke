@@ -78,6 +78,13 @@ func (e *ExitError) Error() string {
 //
 // It is the only retryable family in the taxonomy: the failure is
 // environmental, not a verdict about the command.
+//
+// It is not a wrapper for one. Because it unwraps, a TransportError
+// carrying an [ExitError] or one of the sentinels above belongs to both
+// families at once, and the outcome it carries is the one that decides:
+// such an error is terminal and is never retried. A provider with a
+// verdict about the command should return that verdict rather than dress
+// it as a transport failure.
 type TransportError struct {
 	// Op names the operation that failed: "start", "wait", "upload",
 	// "download", "lookpath".
