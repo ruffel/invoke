@@ -328,7 +328,14 @@ func (p *process) pumpStdin(stdin io.Reader) {
 		_, _ = io.Copy(p.attach.Conn, stdin)
 	}
 
-	_ = p.attach.CloseWrite()
+	// Half-closing signals end-of-input on a multiplexed stream, but a
+	// terminal is one bidirectional stream: closing its write half tears
+	// the whole connection down, and the command's output with it. Under a
+	// TTY the write side is left to close with the rest of the connection
+	// when the process exits.
+	if !p.tty {
+		_ = p.attach.CloseWrite()
+	}
 }
 
 // pumpOutput demultiplexes the attached stream into the caller's writers.

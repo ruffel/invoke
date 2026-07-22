@@ -44,10 +44,7 @@ func TestDockerContractSuite(t *testing.T) {
 
 	invoketest.Verify(t, func(it invoketest.T) invoke.Environment {
 		return dialContainer(asTestingT(it))
-	}, invoketest.WithKnownGap("tty/stderr-merges-into-stdout",
-		"under a requested TTY the provider captures no command output at all, though the daemon "+
-			"delivers it — the docker CLI shows the same command's output — so this is the provider's "+
-			"attach handling, not a daemon limitation; fixed separately"))
+	})
 }
 
 func TestMissingContainerIsNotFound(t *testing.T) {
