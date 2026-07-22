@@ -13,6 +13,32 @@
 // vocabulary; commands that are neither registered nor builtin fail with
 // [invoke.ErrNotFound], exactly as a missing binary does on a real
 // target.
+//
+// # What the shell runs
+//
+// [invoke.Shell] scripts are interpreted, not executed, and the
+// interpreter covers a subset: sequencing with ; and &&, single and
+// double quotes, $NAME expansion, $(command) substitution, redirection to
+// /dev/null and between the two output streams, cd, and exit.
+//
+// A script reaching outside that subset is refused — wrapping
+// [invoke.ErrNotSupported], before any process exists — rather than run
+// wrongly. Pipelines, || lists, redirection to a file, input redirection,
+// backquotes, newline-separated commands, background commands, and the
+// special and positional parameters ($?, $1, $$) are all refused by name.
+// The alternative was worse than useless: an unrecognized character is
+// just another character to a tokenizer, so a pipeline used to become
+// arguments to the first command and `false || echo rescued` exited 1
+// having printed nothing, where every real target exits 0 having printed.
+// A test asserting that is not merely unverified — it asserts the
+// opposite of the truth.
+//
+// The builtins are likewise a vocabulary rather than an implementation:
+// they cover the options the contract suite and ordinary shell-outs use.
+// Notably cat reads standard input and ignores file arguments, echo takes
+// no flags, and test and cd do not follow symbolic links. A script
+// needing more than the subset belongs in a handler registered with
+// [Environment.Handle], or on a real target.
 package fake
 
 import (
@@ -140,6 +166,15 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	handler, builtin := e.resolve(cmd.Path)
 	if handler == nil && !builtin {
 		return nil, fmt.Errorf("fake: start %q: %w", cmd.Path, invoke.ErrNotFound)
+	}
+
+	// Refused before the process exists, so it cannot be mistaken for the
+	// command running and failing. A script the shell cannot run is a
+	// thing this target cannot do, not a verdict about the script.
+	if handler == nil {
+		if err := shellScriptSupported(cmd); err != nil {
+			return nil, err
+		}
 	}
 
 	e.record(cmd)

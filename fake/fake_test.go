@@ -173,3 +173,60 @@ func TestUnknownCommandIsNotFound(t *testing.T) {
 	_, err := env.Start(t.Context(), invoke.New("unscripted-command"), invoke.IO{})
 	assert.ErrorIs(t, err, invoke.ErrNotFound)
 }
+
+// TestUnsupportedShellSyntaxIsRefusedNotRun pins the shape of the
+// refusal, which matters as much as the refusal itself.
+//
+// A script the fake shell cannot run is refused before a process exists,
+// wrapping ErrNotSupported. Reporting it as a command that ran and failed
+// would satisfy a caller asserting failure — and such a caller is exactly
+// the one being misled, since `false || echo rescued` exits zero on every
+// real target.
+func TestUnsupportedShellSyntaxIsRefusedNotRun(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	proc, err := env.Start(t.Context(), invoke.Shell("false || echo rescued"), invoke.IO{})
+	if err == nil {
+		_ = proc.Close()
+
+		require.Fail(t, "a script the fake shell cannot run reported success")
+	}
+
+	assert.ErrorIs(t, err, invoke.ErrNotSupported,
+		"an unrunnable script is a thing this target cannot do")
+
+	var exitErr *invoke.ExitError
+
+	assert.NotErrorAs(t, err, &exitErr,
+		"refusing a script must not look like the script running and failing")
+
+	assert.Contains(t, err.Error(), "||", "the refusal must name what it could not run")
+}
+
+// TestUnsupportedSyntaxNestedInQuotesIsRefusedLoudly covers the script
+// the check at Start cannot see: quoted, and so opaque until it runs.
+func TestUnsupportedSyntaxNestedInQuotesIsRefusedLoudly(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	var stdout, stderr bytes.Buffer
+
+	proc, err := env.Start(t.Context(),
+		invoke.Shell(`sh -c 'echo hi | tr h H'`), invoke.IO{Stdout: &stdout, Stderr: &stderr})
+	require.NoError(t, err, "the outer script is within the subset")
+
+	result, waitErr := proc.Wait()
+	require.Error(t, waitErr, "a nested script the shell cannot run must not report success")
+
+	assert.NotEqual(t, 0, result.ExitCode)
+	assert.Contains(t, stderr.String(), "not simulated",
+		"the failure must say what the shell could not run")
+	assert.Empty(t, stdout.String(), "nothing must be produced by a script that did not run")
+}

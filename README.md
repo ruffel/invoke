@@ -116,6 +116,13 @@ command that flushes something substantial on the way out.
 mock: it passes the same contract suite the real providers do, so a test
 written against it cannot come to rely on behavior no real target has.
 
+Its shell interprets a subset — sequencing, quoting, `$NAME`, `$(...)`,
+redirection to `/dev/null` and between the output streams — and refuses
+what it cannot run, naming it, rather than running it wrongly. A pipeline
+or a `||` list fails with `ErrNotSupported` instead of quietly becoming
+arguments to the first command. Script anything beyond the subset with
+`Handle`, or run it against a real target.
+
 ```go
 env := fake.New()
 env.Handle("systemctl", func(_ context.Context, cmd invoke.Command, s *fake.Session) int {
