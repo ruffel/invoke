@@ -20,30 +20,42 @@ import (
 // tell whether it did. Classifying it retryable would let the executor
 // run an arbitrary command a second time — the asymmetry with transfers,
 // which are retryable precisely because their delivery is atomic.
+//
+// One outage surfaces several ways depending on which part of the session
+// notices it first: a missing exit status, a broken channel, a read error
+// on the connection. The caller did not choose which, so all of them must
+// classify alike or retryability becomes a coin flip on identical
+// outages. This repeats to cover whichever the timing produces.
 func TestSeveredConnectionDuringCommandIsTerminal(t *testing.T) {
 	t.Parallel()
 
-	srv := startTestServer(t)
-	env := dialServer(t, srv)
+	const attempts = 8
 
-	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
-	require.NoError(t, err)
+	for i := range attempts {
+		srv := startTestServer(t)
+		env := dialServer(t, srv)
 
-	// Let the command settle, then drop the connection under it.
-	time.Sleep(50 * time.Millisecond)
-	srv.sever()
+		proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+		require.NoErrorf(t, err, "attempt %d", i)
 
-	_, waitErr := proc.Wait()
-	require.Error(t, waitErr, "Wait after the connection died reported success")
+		// Let the command settle, then drop the connection under it.
+		time.Sleep(50 * time.Millisecond)
+		srv.sever()
 
-	var transportErr *invoke.TransportError
+		_, waitErr := proc.Wait()
+		require.Errorf(t, waitErr, "attempt %d: Wait after the connection died reported success", i)
 
-	assert.NotErrorAs(t, waitErr, &transportErr, "Wait after the connection died must be a terminal error: "+
-		"an interrupted command must not be retried automatically")
+		var transportErr *invoke.TransportError
 
-	// The reason must be legible: "no exit status" alone does not tell a
-	// caller their command may have half-run.
-	assert.ErrorContains(t, waitErr, "may or may not", "the error does not report the outcome as unknown")
+		assert.NotErrorAsf(t, waitErr, &transportErr,
+			"attempt %d: Wait after the connection died must be a terminal error: "+
+				"an interrupted command must not be retried automatically", i)
+
+		// The reason must be legible: "no exit status" alone does not tell
+		// a caller their command may have half-run.
+		assert.ErrorContainsf(t, waitErr, "may or may not",
+			"attempt %d: the error does not report the outcome as unknown", i)
+	}
 }
 
 // TestSeveredConnectionDuringTransferIsTransportError checks the same for

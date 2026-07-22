@@ -366,23 +366,25 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 		return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
 	}
 
-	// ExitMissingError: the command ran but no status came back, which is
-	// what a connection dying under a running command looks like.
+	// Every remaining failure is the same fact in a different shape: the
+	// command was started and no status came back for it.
 	//
-	// This is deliberately terminal rather than a TransportError. The
-	// command may have already taken effect, and nothing here can tell
+	// ExitMissingError is the shape the library names, but which one an
+	// outage produces is not something the caller chose — the same dying
+	// connection surfaces as a missing status, a broken channel, or a
+	// read error, depending on which part of the session noticed first.
+	// Classifying only the named one as terminal made retryability a coin
+	// flip on identical outages.
+	//
+	// So none of them is a TransportError, which is the retryable family.
+	// The command may already have taken effect, and nothing here can tell
 	// whether it did, so retrying it would be at-least-once execution of
 	// an arbitrary command. File transfers classify the same outage as
 	// retryable because their delivery is atomic; commands have no such
 	// guarantee, and the caller must decide.
-	var missing *ssh.ExitMissingError
-	if errors.As(err, &missing) {
-		return invoke.Result{ExitCode: -1, Duration: duration},
-			fmt.Errorf("ssh: wait: the connection ended before the remote command reported a status, "+
-				"so it may or may not have run to completion: %w", err)
-	}
-
-	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.TransportError{Op: "wait", Err: err}
+	return invoke.Result{ExitCode: -1, Duration: duration},
+		fmt.Errorf("ssh: wait: the connection ended before the remote command reported a status, "+
+			"so it may or may not have run to completion: %w", err)
 }
 
 // waitSignal reports the signal a session-wait error attributes the
