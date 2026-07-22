@@ -44,9 +44,7 @@ func TestDockerContractSuite(t *testing.T) {
 
 	invoketest.Verify(t, func(it invoketest.T) invoke.Environment {
 		return dialContainer(asTestingT(it))
-	}, invoketest.WithKnownGap("lifecycle/cancel-during-drain-keeps-outcome",
-		"the outcome is read from the context before the exec's own inspected status, so a cancellation "+
-			"arriving while output drains rewrites a completed exit; fixed separately"))
+	})
 }
 
 func TestMissingContainerIsNotFound(t *testing.T) {

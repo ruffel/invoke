@@ -233,8 +233,6 @@ func (p *process) Signal(sig invoke.Signal) error {
 		return fmt.Errorf("docker: signal %s: %w", sig, err)
 	}
 
-	p.sentSignal.Store(sig)
-
 	return nil
 }
 
@@ -267,6 +265,15 @@ func (p *process) kill(sig invoke.Signal) error {
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
 	defer cancel()
+
+	// Recorded before the kill is delivered, not after it is confirmed.
+	// The command dies the instant the signal lands, which can be well
+	// before the request that sent it returns, and the wait that reads
+	// this is racing the same event. Recording the intent up front means
+	// the death is recognizable as this side's doing however that race
+	// falls; a signal that never arrived stays harmless, because an exit
+	// is only credited to it when the status matches the signal too.
+	p.sentSignal.Store(sig)
 
 	// The wrapper writes the file before exec'ing, so it may not exist
 	// for the first instants of the command's life; wait briefly for it
@@ -353,7 +360,26 @@ func (p *process) doWait() {
 
 // outcome asks the daemon for the exit status and folds it into the
 // package taxonomy.
+//
+// The status is asked for before the attribution flags are read.
+// Cancellation and Close are things this side did, and neither unruns a
+// command the daemon already has a status for: the command finished,
+// whatever this side went on to want. Reading the flags first turned a
+// completed command into a cancellation whenever the two raced — and a
+// caller who retries on cancellation would then run it again.
+//
+// What the flags may claim is a death this side could have caused: an
+// exit that matches a signal sent from here, or no status to be had. The
+// inspect deliberately outlives the caller's context so that asking is
+// still possible once it has been canceled.
 func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
+	inspect, inspectErr := p.inspect()
+	if inspectErr == nil {
+		if res, out, settled := p.reportedExit(inspect.ExitCode, duration); settled {
+			return res, out
+		}
+	}
+
 	if p.closedByUser.Load() {
 		return invoke.Result{ExitCode: -1, Duration: duration},
 			fmt.Errorf("docker: wait: process terminated by Close: %w", invoke.ErrClosed)
@@ -363,27 +389,38 @@ func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
 		return invoke.Result{ExitCode: -1, Duration: duration}, fmt.Errorf("docker: wait: %w", ctxErr)
 	}
 
-	inspect, err := p.inspect()
-	if err != nil {
-		return invoke.Result{ExitCode: -1, Duration: duration}, err
+	if inspectErr != nil {
+		return invoke.Result{ExitCode: -1, Duration: duration}, inspectErr
+	}
+
+	// A kill matching a signal sent from here, which nobody here has
+	// claimed: the command's own death by the caller's own Signal.
+	sig, _ := p.signalDeath(inspect.ExitCode)
+
+	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
+}
+
+// reportedExit returns the outcome for a status that settles the command
+// on its own, and whether the status was one.
+//
+// An exit matching a signal sent from here is not: this side may have
+// ended the command, so who ended it is decided by the attribution flags
+// rather than here.
+func (p *process) reportedExit(exitCode int, duration time.Duration) (invoke.Result, error, bool) { //nolint:revive // The flag distinguishes "not settled here" from a nil outcome.
+	if _, ok := p.signalDeath(exitCode); ok {
+		return invoke.Result{}, nil, false
 	}
 
 	if p.copyErr != nil {
 		return invoke.Result{ExitCode: -1, Duration: duration},
-			&invoke.TransportError{Op: "wait", Err: p.copyErr}
+			&invoke.TransportError{Op: "wait", Err: p.copyErr}, true
 	}
 
-	if inspect.ExitCode == 0 {
-		return invoke.Result{ExitCode: 0, Duration: duration}, nil
+	if exitCode == 0 {
+		return invoke.Result{ExitCode: 0, Duration: duration}, nil, true
 	}
 
-	if sig, ok := p.signalDeath(inspect.ExitCode); ok {
-		return invoke.Result{ExitCode: -1, Duration: duration},
-			&invoke.ExitError{Code: -1, Signal: sig}
-	}
-
-	return invoke.Result{ExitCode: inspect.ExitCode, Duration: duration},
-		&invoke.ExitError{Code: inspect.ExitCode}
+	return invoke.Result{ExitCode: exitCode, Duration: duration}, &invoke.ExitError{Code: exitCode}, true
 }
 
 // inspect reports the finished command's status, allowing for the daemon
