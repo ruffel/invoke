@@ -60,6 +60,10 @@ jobs:
         run: cd docker && golangci-lint fmt --diff ./...
       - name: Check go.mod is tidy
         run: go mod tidy -diff
+      - name: Check the docker module's go.mod is tidy
+        # Resolved with the workspace off, the way a consumer meets it:
+        # against the published core version its go.mod names.
+        run: cd docker && GOWORK=off go mod tidy -diff
 
   windows-build:
     name: Windows cross-build
