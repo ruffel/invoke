@@ -90,17 +90,20 @@ fmt-check:
     golangci-lint fmt --diff ./...
     cd docker && golangci-lint fmt --diff ./...
 
-# Tidy go.mod/go.sum.
+# Tidy go.mod/go.sum in both modules.
 #
-# The docker module is omitted until the core module is released: it
-# resolves the core module through the workspace, and tidy would try to
-# fetch a version that does not exist yet.
+# The submodule is tidied with the workspace off, the way a consumer
+# resolves it: against the published core module its go.mod names, not the
+# local checkout the workspace would substitute. That version now exists,
+# so the submodule is no longer maintained by hand.
 tidy:
     go mod tidy
+    cd docker && GOWORK=off go mod tidy
 
-# Fail if go.mod/go.sum need tidying.
+# Fail if either module's go.mod/go.sum needs tidying.
 tidy-check:
     go mod tidy -diff
+    cd docker && GOWORK=off go mod tidy -diff
 
 # Check the tree is ready to be tagged as VERSION (e.g. v0.2.0).
 #
