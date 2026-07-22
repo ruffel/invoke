@@ -13,6 +13,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/creack/pty"
 	"github.com/pkg/sftp"
@@ -407,6 +408,11 @@ func runExec(channel ssh.Channel, state *sessionState, command string) {
 	reportExit(channel, cmd.Wait())
 }
 
+// ptyDrainGrace bounds the wait for a terminal's output to reach the
+// channel after the command has exited, so a descendant still holding the
+// terminal open cannot stall the session for good.
+const ptyDrainGrace = 2 * time.Second
+
 // runExecWithPTY runs the command attached to a real pseudo-terminal, so
 // a command asking whether it has one gets a truthful answer.
 func runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
@@ -422,9 +428,27 @@ func runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
 	state.setCmd(cmd)
 
 	go func() { _, _ = io.Copy(master, channel) }()
-	go func() { _, _ = io.Copy(channel, master) }()
 
-	reportExit(channel, cmd.Wait())
+	drained := make(chan struct{})
+
+	go func() {
+		defer close(drained)
+
+		_, _ = io.Copy(channel, master)
+	}()
+
+	waitErr := cmd.Wait()
+
+	// The terminal's output has to arrive before the exit status closes
+	// the channel, or the command's last words are thrown away — which a
+	// real server does not do. Reading the terminal ends when the command
+	// releases it, which exiting does.
+	select {
+	case <-drained:
+	case <-time.After(ptyDrainGrace):
+	}
+
+	reportExit(channel, waitErr)
 }
 
 // reportExit sends the SSH exit-status or exit-signal for a finished
