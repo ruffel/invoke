@@ -90,7 +90,15 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		done:    make(chan struct{}),
 	}
 
-	e.track(p)
+	if err := e.track(p); err != nil {
+		// The environment closed while the exec was being created; tear it
+		// down rather than leak it, detaching from ctx exactly as the other
+		// kill paths do.
+		//nolint:contextcheck // discard's kill detaches by design; see kill's comment.
+		p.discard()
+
+		return nil, err
+	}
 
 	go p.pumpStdin(stdio.Stdin)
 	go p.pumpOutput(stdio)
@@ -250,6 +258,23 @@ func (p *process) Close() error {
 	})
 
 	return nil
+}
+
+// discard tears down an exec that was created but never handed back,
+// because the environment closed before it could be tracked. The stdin
+// and output pumps have not started, so there is nothing to unblock;
+// killing the process and closing the stream is the whole of it.
+func (p *process) discard() {
+	if !p.tty {
+		_ = p.attach.CloseWrite()
+	}
+
+	// Best effort, exactly as Close's own kill is: a shell-less container
+	// cannot be signalled, and the exec then runs to its own end whether
+	// this is reached or not.
+	_ = p.kill(invoke.SIGKILL)
+
+	p.attach.Close()
 }
 
 // kill signals the command by the id its wrapper recorded.

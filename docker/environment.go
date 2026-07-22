@@ -239,11 +239,27 @@ func (e *Environment) checkOpen(op string) error {
 	return nil
 }
 
-func (e *Environment) track(p *process) {
+// track registers a running process so Close can terminate it, unless the
+// environment has closed in the meantime.
+//
+// Start checks the closed flag once at entry and then spends several
+// daemon round-trips creating the exec. A Close landing in that window has
+// already snapshotted the active set and moved on, so a process added
+// afterwards would run in a closed environment with nothing left to stop
+// it. Re-checking here under the same lock closes that gap: a process is
+// either registered before Close snapshots, and terminated with the rest,
+// or refused, and torn down by its caller.
+func (e *Environment) track(p *process) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.closed {
+		return fmt.Errorf("docker: start: %w", invoke.ErrClosed)
+	}
+
 	e.active[p] = struct{}{}
+
+	return nil
 }
 
 func (e *Environment) untrack(p *process) {
