@@ -3,17 +3,187 @@ package fake
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"github.com/ruffel/invoke"
 )
 
 // The mini-shell interprets the POSIX subset the contract suite and
 // typical incidental scripts use: command sequencing with ; and &&,
 // single and double quotes, $VAR expansion, $(command) substitution,
 // numeric redirects to /dev/null and between the two output streams, cd,
-// and exit. Nothing more — a script needing more belongs in a consumer
-// handler.
+// and exit.
+//
+// Nothing more, and the boundary is enforced rather than described: a
+// script reaching past the subset is refused by name, because the
+// alternative is a tokenizer treating what it does not recognize as
+// ordinary text and answering wrongly without saying so. A script needing
+// more belongs in a consumer handler.
+
+// shellScriptSupported refuses a shell command whose script uses a
+// construct this shell cannot run, naming it and wrapping
+// [invoke.ErrNotSupported].
+//
+// The refusal is deliberately not an exit status. A caller asserting that
+// a command failed would be satisfied by one, and the whole reason to
+// refuse is that such a caller is being told something untrue.
+func shellScriptSupported(cmd invoke.Command) error {
+	if cmd.Path != "sh" || len(cmd.Args) < 2 || cmd.Args[0] != "-c" {
+		return nil
+	}
+
+	if err := unsupportedSyntax(cmd.Args[1]); err != nil {
+		return fmt.Errorf(
+			"fake: start: the fake shell does not simulate %s; script it with Handle, "+
+				"or run it against a real target: %w", err, invoke.ErrNotSupported)
+	}
+
+	return nil
+}
+
+// exitUnsupportedSyntax is the status a nested script gets when it uses a
+// construct the shell cannot run. It sits above the range a simulated
+// command would return, so it is not mistaken for one.
+const exitUnsupportedSyntax = 93
+
+// unsupportedSyntax reports the first construct a script uses that this
+// shell does not implement, or nil when the script is within the subset.
+//
+// What falls outside the subset used to be taken literally, because an
+// unrecognized character is just another character to a tokenizer: a
+// pipeline became arguments to the first command, a redirection became
+// two more words, and `false || echo rescued` exited 1 having printed
+// nothing where a real shell exits 0 having printed. A test written
+// against that is not merely unverified — it can assert the opposite of
+// what every real target does — so a script this shell cannot run is
+// refused rather than run wrongly.
+//
+//nolint:cyclop,gocognit // One pass over the script; the cases read better together than split.
+func unsupportedSyntax(script string) error {
+	runes := []rune(script)
+
+	inSingle, inDouble := false, false
+	wordStart := 0
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+
+		if inSingle {
+			if r == '\'' {
+				inSingle = false
+			}
+
+			continue
+		}
+
+		if inDouble {
+			switch r {
+			case '"':
+				inDouble = false
+			case '$':
+				if err := unsupportedParameter(runes, i); err != nil {
+					return err
+				}
+			}
+
+			continue
+		}
+
+		switch r {
+		case '\'':
+			inSingle = true
+		case '"':
+			inDouble = true
+		case ' ', '\t':
+			wordStart = i + 1
+		case '\n':
+			// A newline that only trails the script separates nothing.
+			if strings.TrimSpace(string(runes[i:])) != "" {
+				return errors.New("a newline separating commands")
+			}
+		case '|':
+			if i+1 < len(runes) && runes[i+1] == '|' {
+				return fmt.Errorf("an %q list", "||")
+			}
+
+			return fmt.Errorf("a %q pipeline", "|")
+		case '<':
+			return errors.New("input redirection")
+		case '`':
+			return errors.New("backquote substitution")
+		case '&':
+			if i+1 < len(runes) && runes[i+1] == '&' {
+				i++
+
+				continue
+			}
+
+			return errors.New("a background command")
+		case '>':
+			end := wordEnd(runes, i)
+
+			word := string(runes[wordStart:end])
+			if _, ok := parseRedirect(word); !ok {
+				return fmt.Errorf("the redirection %q", word)
+			}
+
+			i = end - 1
+		case '$':
+			if err := unsupportedParameter(runes, i); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+// unsupportedParameter reports a parameter form the shell expands to
+// nothing useful. $NAME and $(command) are interpreted; the special and
+// positional parameters are not, and would otherwise survive as the
+// literal text a caller wrote.
+func unsupportedParameter(runes []rune, at int) error {
+	next := at + 1
+	if next >= len(runes) {
+		return nil
+	}
+
+	r := runes[next]
+
+	if r == '(' || r == '_' || unicode.IsLetter(r) {
+		return nil
+	}
+
+	if unicode.IsDigit(r) || strings.ContainsRune("?$!#@*", r) {
+		return fmt.Errorf("the parameter %q", "$"+string(r))
+	}
+
+	// A $ before anything else is an ordinary character to a real shell
+	// too, so it is left alone.
+	return nil
+}
+
+// wordEnd returns the index just past the word containing position at.
+//
+// A word ends at whitespace or at whatever separates commands, so a
+// redirection written flush against the next one — "2>/dev/null; cmd" —
+// is read as the redirection it is. An ampersand does not end it: the
+// duplicating forms, ">&2" and "2>&1", contain one.
+func wordEnd(runes []rune, at int) int {
+	for i := at; i < len(runes); i++ {
+		switch runes[i] {
+		case ' ', '\t', '\n', ';', '|', ')':
+			return i
+		}
+	}
+
+	return len(runes)
+}
 
 // step is one simple command in a script, with its connector to the
 // previous step.
@@ -23,7 +193,18 @@ type step struct {
 }
 
 // execScript runs a shell script within the session.
+//
+// A script reaching here has usually been checked at Start, where a
+// construct this shell cannot run is refused outright. One nested inside
+// quotes — `sh -c 'a | b'` — is opaque until it runs, so it is checked
+// again here and refused loudly rather than mis-run.
 func execScript(ctx context.Context, s *session, script string) (int, bool) {
+	if err := unsupportedSyntax(script); err != nil {
+		_, _ = io.WriteString(s.stderr, "sh: "+err.Error()+" is not simulated by the fake shell\n")
+
+		return exitUnsupportedSyntax, false
+	}
+
 	steps, ok := splitScript(script)
 	if !ok {
 		_, _ = io.WriteString(s.stderr, "sh: syntax error\n")
