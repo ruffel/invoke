@@ -65,7 +65,11 @@
 //   - TTY — allocated by every target that runs real processes.
 //   - Signals — delivered by every target, though a container must have a
 //     shell for one to reach the right process; without a shell the
-//     capability is not declared. The docker package documents why.
+//     capability is not declared. The docker package documents why, and
+//     the ssh package documents the one thing its protocol will not
+//     confirm. A signal always reaches the process it names; whether it
+//     also reaches that process's children is a property of the target,
+//     described on [Process.Signal].
 //   - SymlinkPreserve — honored by every target.
 //
 // # Testing

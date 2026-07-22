@@ -64,6 +64,14 @@ type Process interface {
 	// Signal delivers sig to the process. It either delivers the signal
 	// or returns an error (wrapping [ErrNotSupported] when the target
 	// cannot deliver it); it never silently does nothing.
+	//
+	// What reaches the process is guaranteed. What reaches its children
+	// is not, and targets differ: one that runs the command in a process
+	// group of its own signals the whole group, which is what a terminal
+	// does and what the local machine therefore does; one that can only
+	// address a single process signals that one alone. Code that needs a
+	// command's children to receive a signal should send it to them
+	// rather than rely on which kind of target it is talking to.
 	Signal(sig Signal) error
 
 	// Close releases the handle, terminating the process if it is still
