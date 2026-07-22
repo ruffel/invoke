@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -75,6 +76,19 @@ func TestLookPath(t *testing.T) {
 
 	_, err = env.LookPath(t.Context(), "definitely-not-a-real-binary-abc123")
 	assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath(missing)")
+
+	// A name with a separator is resolved as a path rather than searched
+	// on PATH, and an unresolvable one must classify the same way.
+	_, err = env.LookPath(t.Context(), "./invoke-definitely-not-here")
+	assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath of a missing relative path")
+
+	// A file that exists but cannot be executed also fails to resolve to
+	// something runnable.
+	notExec := filepath.Join(t.TempDir(), "not-exec")
+	require.NoError(t, os.WriteFile(notExec, []byte("#!/bin/sh\n"), 0o600), "writing non-executable file")
+
+	_, err = env.LookPath(t.Context(), notExec)
+	assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath of a non-executable file")
 }
 
 // TestTerminationGraceBoundsTheWait checks the configured grace period is

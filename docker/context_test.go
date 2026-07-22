@@ -154,3 +154,35 @@ func TestResolveHostReportsTLSContextsPlainly(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, invoke.ErrNotSupported)
 }
+
+// TestResolveHostRefusesSSHEndpointsPlainly checks an ssh:// daemon
+// endpoint is named as unsupported however it arrives, rather than
+// deferred to the client to fail on with a transport error.
+//
+//nolint:paralleltest // t.Setenv, which the env route needs, forbids t.Parallel.
+func TestResolveHostRefusesSSHEndpointsPlainly(t *testing.T) {
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("explicit host", func(t *testing.T) {
+		_, err := resolveHost(&Config{Host: "ssh://user@host"})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, invoke.ErrNotSupported)
+	})
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("environment", func(t *testing.T) {
+		t.Setenv("DOCKER_HOST", "ssh://user@host")
+
+		_, err := resolveHost(&Config{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, invoke.ErrNotSupported)
+	})
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("context", func(t *testing.T) {
+		writeContext(t, "remote", "remote", "ssh://user@host")
+
+		_, err := resolveHost(&Config{})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, invoke.ErrNotSupported)
+	})
+}
