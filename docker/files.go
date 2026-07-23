@@ -287,15 +287,42 @@ func (e *Environment) removeRemote(dir string) {
 	}
 }
 
-// replacePath moves src onto dst, replacing whatever is there.
+// replacePath moves src onto dst, replacing whatever kind of entry is
+// there — the host-side half of the promise moveRemote keeps inside the
+// container.
+//
+// Staging shares the destination's directory, so each rename here stays
+// on one filesystem. An existing destination is set aside rather than
+// removed, and only cleared once the new one is in its place, so a move
+// that fails leaves the original restored — never a destination deleted
+// ahead of a replacement that did not arrive.
 func replacePath(src, dst string) error {
-	if info, err := os.Lstat(dst); err == nil && info.IsDir() {
-		if err := os.RemoveAll(dst); err != nil {
-			return err
-		}
+	if _, err := os.Lstat(dst); err != nil {
+		// Nothing occupies the destination.
+		return os.Rename(src, dst)
 	}
 
-	return os.Rename(src, dst)
+	asideDir, err := os.MkdirTemp(filepath.Dir(dst), ".invoke-aside-")
+	if err != nil {
+		return err
+	}
+
+	aside := filepath.Join(asideDir, "previous")
+
+	if err := os.Rename(dst, aside); err != nil {
+		_ = os.Remove(asideDir)
+
+		return err
+	}
+
+	if err := os.Rename(src, dst); err != nil {
+		_ = os.Rename(aside, dst)
+		_ = os.RemoveAll(asideDir)
+
+		return err
+	}
+
+	return os.RemoveAll(asideDir)
 }
 
 // classifyTransfer folds a daemon failure into the package taxonomy.
