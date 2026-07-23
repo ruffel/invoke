@@ -8,6 +8,23 @@ updates:
       go-dependencies:
         patterns: ["*"]
 
+  # The docker submodule is its own Go module, so it needs its own entry:
+  # the root directory above covers only the core module's go.mod, which is
+  # why the submodule's dependencies raised alerts but never an update.
+  - package-ecosystem: gomod
+    directory: /docker
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+    ignore:
+      # The core module is pinned to a released version by hand and
+      # repointed only at release time (see RELEASING.md). An automated
+      # bump here would propose a version that does not exist yet and
+      # collide with that process.
+      - dependency-name: "github.com/ruffel/invoke"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
