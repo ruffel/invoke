@@ -53,7 +53,9 @@ func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.Tra
 				return err
 			}
 
-			dirs = append(dirs, pendingDir{path: target, mode: headerMode(header, cfg)})
+			// A directory keeps the mode its header carries; the mode
+			// override is a statement about files.
+			dirs = append(dirs, pendingDir{path: target, mode: header.FileInfo().Mode().Perm()})
 
 			continue
 		}
@@ -216,7 +218,11 @@ func verifyContained(dst, p string) error {
 	return nil
 }
 
-// headerMode is the mode an extracted entry should carry.
+// headerMode is the mode an extracted file should carry: the
+// transfer's override when it set one, and otherwise the mode the
+// archive recorded. Directories do not pass through here — the
+// override is a statement about files, and a directory keeps the mode
+// its header carries.
 func headerMode(header *tar.Header, cfg invoke.TransferConfig) fs.FileMode {
 	if cfg.Mode != nil {
 		return *cfg.Mode

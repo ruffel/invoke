@@ -34,6 +34,7 @@ func transferContracts() []TestCase {
 		transferRoundTrip(),
 		transferBinaryContentSurvives(),
 		transferModeOverride(),
+		transferModeOverrideIsFilesOnly(),
 		transferFailurePreservesDestination(),
 		transferCancelPreservesDestination(),
 		transferDownloadCancelPreservesDestination(),
@@ -359,6 +360,52 @@ func transferModeOverride() TestCase {
 
 			assert.Equal(t, "new content", readHostFile(t, downloadBack(t, env, remote)),
 				"the overwriting upload's content must win")
+		},
+	}
+}
+
+// transferModeOverrideIsFilesOnly pins which entries a mode override
+// touches. WithMode's contract is about files; a directory keeps its
+// own permissions. A provider that forces directories too produces a
+// different tree from the same call as every other provider — a
+// difference invisible until something permission-sensitive meets it.
+func transferModeOverrideIsFilesOnly() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "mode-override-is-files-only",
+		Description: "WithMode forces file modes and leaves directory modes alone, in both transfer directions",
+		Run: func(t T, env invoke.Environment) {
+			const dirMode = fs.FileMode(0o750)
+
+			src := t.TempDir()
+			sub := filepath.Join(src, "sub")
+			require.NoError(t, os.Mkdir(sub, dirMode), "fixture dir")
+			require.NoError(t, os.Chmod(sub, dirMode), "fixture dir mode, umask-proof")
+			writeHostFixture(t, sub, "leaf.txt", "content")
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+
+			defer cleanupTargetPath(t, env, remote)
+
+			require.NoError(t, env.Upload(t.Context(), src, remote, invoke.WithMode(overrideMode)), "Upload")
+
+			assert.Truef(t, probeTargetMode(t, env, remote+"/sub/leaf.txt", overrideMode),
+				"uploaded file mode is not %v; WithMode must force file modes", overrideMode)
+			assert.Truef(t, probeTargetMode(t, env, remote+"/sub", dirMode),
+				"uploaded directory mode is not %v; WithMode must leave directory modes alone", dirMode)
+
+			back := filepath.Join(t.TempDir(), "back")
+			require.NoError(t, env.Download(t.Context(), remote, back, invoke.WithMode(overrideMode)), "Download")
+
+			leaf, err := os.Stat(filepath.Join(back, "sub", "leaf.txt"))
+			require.NoError(t, err, "downloaded file")
+			assert.Equal(t, overrideMode, leaf.Mode().Perm(),
+				"downloaded file mode; WithMode must force file modes")
+
+			subInfo, err := os.Stat(filepath.Join(back, "sub"))
+			require.NoError(t, err, "downloaded directory")
+			assert.Equal(t, dirMode, subInfo.Mode().Perm(),
+				"downloaded directory mode; WithMode must leave directory modes alone")
 		},
 	}
 }

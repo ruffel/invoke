@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,6 +72,7 @@ type defects struct {
 	corruptUploads           bool // upload garbage in place of the source
 	flattenModes             bool // force a fixed mode, ignoring source and option
 	dropModeOption           bool // strip WithMode from the options
+	modeOverrideOnDirs       bool // apply a WithMode override to directories too
 	destroyOnFailure         bool // clobber the upload destination when a transfer fails
 	destroyDownloadOnFailure bool // clobber the local destination when a download fails
 	shallowTrees             bool // upload only a tree's top-level files
@@ -222,6 +224,11 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 	}
 
 	err := m.base.Upload(ctx, src, remotePath, rebuilt...)
+
+	if err == nil && m.d.modeOverrideOnDirs && cfg.Mode != nil {
+		forceDirModes(remotePath, *cfg.Mode)
+	}
+
 	if err != nil && m.d.destroyOnFailure {
 		junk, junkErr := corruptCopyOf(localPath)
 		if junkErr == nil {
@@ -232,6 +239,19 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 	}
 
 	return err
+}
+
+// forceDirModes applies mode to every directory under root — the
+// modeOverrideOnDirs defect: a WithMode override leaking onto entries
+// it was never about.
+func forceDirModes(root string, mode fs.FileMode) {
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, mode)
+		}
+
+		return nil
+	})
 }
 
 func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
@@ -736,6 +756,7 @@ func defectCatalog() []defectCase {
 		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},
 		{name: "corrupted binary", contract: "transfer/binary-content-survives", defects: defects{corruptUploads: true}},
 		{name: "flattened modes", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{flattenModes: true}},
+		{name: "mode override leaks onto directories", contract: "transfer/mode-override-is-files-only", defects: defects{modeOverrideOnDirs: true}},
 		{name: "dropped mode option", contract: "transfer/mode-override-applies-on-overwrite", defects: defects{dropModeOption: true}},
 		{name: "destroy on failure", contract: "transfer/failure-preserves-destination", defects: defects{destroyOnFailure: true}},
 		{name: "destroy on cancel", contract: "transfer/cancel-preserves-destination", defects: defects{destroyOnFailure: true}},
