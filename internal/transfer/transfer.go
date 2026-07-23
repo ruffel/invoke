@@ -11,7 +11,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -608,10 +607,6 @@ func (r *progressReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		r.current += int64(n)
 		r.fn(invoke.TransferProgress{Path: r.path, Current: r.current, Total: r.total})
-	}
-
-	if err != nil && !errors.Is(err, io.EOF) {
-		return n, err
 	}
 
 	return n, err

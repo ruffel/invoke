@@ -29,7 +29,8 @@ type Config struct {
 	Host string
 
 	// Context names a docker context to take the endpoint from,
-	// overriding whichever one is current.
+	// overriding whichever one is current — and DOCKER_HOST, as the
+	// docker command's own --context flag does.
 	Context string
 
 	// Timeout bounds daemon calls that must not block indefinitely;
@@ -57,7 +58,9 @@ func WithHost(host string) Option {
 }
 
 // WithContext takes the daemon endpoint from the named docker context,
-// rather than from whichever one the installation currently selects.
+// rather than from whichever one the installation currently selects —
+// overriding an ambient DOCKER_HOST too, as the docker command's own
+// --context flag does.
 //
 // Naming a context that cannot be read fails, rather than falling back to
 // the default endpoint: the fallback is a different daemon, and commands

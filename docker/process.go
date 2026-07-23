@@ -576,15 +576,19 @@ func classifyStart(err error) error {
 	msg := err.Error()
 
 	switch {
-	case strings.Contains(msg, "executable file not found"),
-		strings.Contains(msg, "no such file or directory"),
-		strings.Contains(msg, "starting container process caused: exec"):
-		return fmt.Errorf("docker: start: %w", invoke.ErrNotFound)
-
+	// The workdir patterns are read first: runc's chdir failure ends in
+	// "no such file or directory", and reading the missing-binary
+	// patterns before it blamed the executable for a directory that
+	// does not exist.
 	case strings.Contains(msg, "no such directory"),
 		strings.Contains(msg, "not a directory"),
 		strings.Contains(msg, "chdir"):
 		return fmt.Errorf("docker: start: workdir: %w", invoke.ErrInvalidWorkdir)
+
+	case strings.Contains(msg, "executable file not found"),
+		strings.Contains(msg, "no such file or directory"),
+		strings.Contains(msg, "starting container process caused: exec"):
+		return fmt.Errorf("docker: start: %w", invoke.ErrNotFound)
 
 	default:
 		return &invoke.TransportError{Op: "start", Err: err}
@@ -643,13 +647,10 @@ func signalNumber(sig invoke.Signal) (int, bool) {
 }
 
 // supportedSignal reports whether sig is in the portable signal set the
-// provider delivers.
+// provider delivers: exactly the names it can number for kill, so the
+// two cannot drift apart.
 func supportedSignal(sig invoke.Signal) bool {
-	switch sig {
-	case invoke.SIGINT, invoke.SIGTERM, invoke.SIGKILL, invoke.SIGHUP,
-		invoke.SIGQUIT, invoke.SIGUSR1, invoke.SIGUSR2:
-		return true
-	default:
-		return false
-	}
+	_, ok := linuxSignalNumbers[sig]
+
+	return ok
 }

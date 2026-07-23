@@ -3,8 +3,9 @@
 // invoketest contract suite.
 //
 // The daemon is found the way the docker command finds it: an endpoint
-// passed to [WithHost], then DOCKER_HOST, then the endpoint recorded by
-// the current context — which is where installations that do not use the
+// passed to [WithHost], then a context named by [WithContext] or
+// DOCKER_CONTEXT, then DOCKER_HOST, then the endpoint recorded by the
+// current context — which is where installations that do not use the
 // conventional socket, such as Colima and Rancher Desktop, put theirs.
 //
 // Commands are delivered to the daemon as a real argument vector, so

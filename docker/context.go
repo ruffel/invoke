@@ -29,7 +29,7 @@ const defaultContextName = "default"
 // An empty result means the client's own defaults apply.
 func resolveHost(cfg *Config) (string, error) {
 	// An explicit endpoint is the caller's decision and outranks
-	// everything, as does the environment the docker command reads first.
+	// everything.
 	if cfg.Host != "" {
 		if err := checkEndpoint(cfg.Host); err != nil {
 			return "", err
@@ -38,15 +38,23 @@ func resolveHost(cfg *Config) (string, error) {
 		return cfg.Host, nil
 	}
 
-	if host := os.Getenv("DOCKER_HOST"); host != "" {
-		if err := checkEndpoint(host); err != nil {
-			return "", err
-		}
+	name, explicit := contextName(cfg)
 
-		return "", nil
+	// The environment the docker command reads outranks the stored
+	// current context, but not a context somebody named: docker
+	// --context beats DOCKER_HOST, WithContext is that flag, and
+	// DOCKER_CONTEXT gets the same warning-and-preference from the
+	// docker command itself.
+	if !explicit {
+		if host := os.Getenv("DOCKER_HOST"); host != "" {
+			if err := checkEndpoint(host); err != nil {
+				return "", err
+			}
+
+			return "", nil
+		}
 	}
 
-	name, explicit := contextName(cfg)
 	if name == "" || name == defaultContextName {
 		return "", nil
 	}
