@@ -155,6 +155,15 @@ func requestPTY(session *ssh.Session, tty *invoke.TTY) error {
 	}
 
 	if err := session.RequestPty(defaultTerm, rows, cols, modes); err != nil {
+		// The library reports the server's refusal and a transport
+		// failure through the same call, distinguishable only by its
+		// refusal sentinel. A refusal — PermitTTY no — answers the same
+		// way every time; classifying it as transport invites futile
+		// retries of a policy verdict.
+		if err.Error() == "ssh: pty-req failed" {
+			return fmt.Errorf("ssh: start: the server refused terminal allocation: %w", invoke.ErrNotSupported)
+		}
+
 		return &invoke.TransportError{Op: "pty", Err: err}
 	}
 

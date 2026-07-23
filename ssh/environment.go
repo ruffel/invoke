@@ -5,9 +5,11 @@
 // Commands are delivered to the remote login shell as a single, shell-safe
 // command line (the SSH protocol carries a command string, not an argv),
 // with environment variables sent out of band so they do not appear in the
-// remote process table. Host-key verification is fail-closed: a connection
-// requires known_hosts, an explicit callback, or an explicit insecure
-// override.
+// remote process table. The login shell is assumed POSIX-compatible:
+// command lines, pre-flight checks, and environment prologues are plain
+// sh, and a csh-family login shell will misread them. Host-key
+// verification is fail-closed: a connection requires known_hosts, an
+// explicit callback, or an explicit insecure override.
 package ssh
 
 import (
@@ -203,8 +205,11 @@ func (e *Environment) OS() invoke.TargetOS {
 }
 
 // Capabilities reports the SSH target's optional features. Terminal
-// allocation is available, the protocol carrying a pseudo-terminal
-// request natively, and SFTP preserves symbolic links.
+// allocation is available — the protocol carries a pseudo-terminal
+// request natively, though a server configured with PermitTTY no
+// refuses it, and that refusal is reported wrapping
+// [invoke.ErrNotSupported] rather than retried. SFTP preserves symbolic
+// links.
 //
 // Signal delivery is declared with a caveat this provider cannot resolve
 // for itself. The protocol carries a signal request, and the servers this
@@ -234,7 +239,7 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 		return "", err
 	}
 
-	out, code, err := e.runRaw(ctx, "command -v "+quoteArg(name))
+	out, code, err := e.runRaw(ctx, lookPathLine(name))
 	if err != nil {
 		return "", fmt.Errorf("ssh: lookpath %q: %w", name, err)
 	}
@@ -366,15 +371,17 @@ func (e *Environment) probeAlive(ctx context.Context, bound time.Duration) bool 
 	}
 }
 
-// detectOS runs uname on the remote host to classify its operating system,
-// defaulting to Linux when the answer is unrecognized.
+// detectOS runs uname on the remote host to classify its operating
+// system. A system it does not recognize — or a probe that fails — is
+// reported as undetermined: "probably Linux" is a guess, and the
+// taxonomy has an honest value for not knowing.
 func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
 	out, code, err := e.runRaw(probeCtx, "uname -s")
 	if err != nil || code != 0 {
-		return invoke.OSLinux
+		return invoke.OSUnknown
 	}
 
 	switch strings.TrimSpace(out) {
@@ -383,7 +390,7 @@ func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	case "Linux":
 		return invoke.OSLinux
 	default:
-		return invoke.OSLinux
+		return invoke.OSUnknown
 	}
 }
 

@@ -52,6 +52,13 @@ type testServer struct {
 	// AcceptEnv configuration does — the ordinary case in the field.
 	refuseEnv bool
 
+	// refusePTY declines pty-req, as a server with PermitTTY no does.
+	refusePTY bool
+
+	// unameOutput, when set, answers a uname probe with this text
+	// instead of the host's own answer.
+	unameOutput string
+
 	// authorizedKey, when set, is accepted for public-key
 	// authentication alongside the password.
 	authorizedKey ssh.PublicKey
@@ -133,6 +140,17 @@ func withStalledSFTP() serverOption {
 // alongside the password.
 func withAuthorizedKey(pub ssh.PublicKey) serverOption {
 	return func(s *testServer) { s.authorizedKey = pub }
+}
+
+// withRefusedPTY declines pty-req, as a server with PermitTTY no does.
+func withRefusedPTY() serverOption {
+	return func(s *testServer) { s.refusePTY = true }
+}
+
+// withUnameOutput answers a uname probe with the given text, standing
+// in for a server whose operating system this package has never met.
+func withUnameOutput(out string) serverOption {
+	return func(s *testServer) { s.unameOutput = out }
 }
 
 // withRefusedEnv declines every env request, which is what a stock sshd
@@ -394,10 +412,22 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 				removeEnvFilesNamedIn(line)
 			}
 
+			if s.unameOutput != "" && strings.Contains(line, "uname") {
+				// The probe runs a real command either way; only the
+				// answer is staged.
+				line = "echo " + s.unameOutput
+			}
+
 			go runExec(channel, state, line)
 
 			reply(req, true)
 		case "pty-req":
+			if s.refusePTY {
+				reply(req, false)
+
+				continue
+			}
+
 			state.pty = true
 
 			reply(req, true)
