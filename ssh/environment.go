@@ -136,11 +136,33 @@ func connect(ctx context.Context, cfg *Config) (*ssh.Client, io.Closer, error) {
 	// call open indefinitely.
 	_ = conn.SetDeadline(handshakeDeadline(dialCtx, cfg.timeout()))
 
+	// The deadline covers timeouts; a plain cancellation has no deadline
+	// to fire, so a watcher closes the socket — which is what unblocks a
+	// handshake in progress.
+	handshakeDone := make(chan struct{})
+
+	go func() {
+		select {
+		case <-dialCtx.Done():
+			_ = conn.Close()
+		case <-handshakeDone:
+		}
+	}()
+
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientCfg)
+
+	close(handshakeDone)
+
 	if err != nil {
 		_ = conn.Close()
 
 		closeAgent(agentConn)
+
+		// When the caller's own context ended the handshake, that is
+		// the cause worth reporting.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, nil, fmt.Errorf("ssh: connect: %w", ctxErr)
+		}
 
 		return nil, nil, &invoke.TransportError{Op: "handshake", Err: err}
 	}
@@ -244,7 +266,8 @@ func (e *Environment) Close() error {
 	e.mu.Unlock()
 
 	// Stop probing and wait for the loop to finish before the connection
-	// goes away, so no probe outlives Close.
+	// goes away, so no probe outlives Close. The wait is bounded: a
+	// probe already in flight answers or times out within one interval.
 	if e.stopKeepAlive != nil {
 		e.stopKeepAlive()
 		<-e.keepAliveDone
@@ -264,6 +287,13 @@ func (e *Environment) Close() error {
 // startKeepAlive probes the server periodically so a connection that dies
 // without a close — a dropped link, a NAT timeout — is discovered rather
 // than leaving the next operation blocked on a socket nobody is serving.
+//
+// A probe the server does not answer within one interval is that
+// discovery. The client is closed on the spot, which is what unblocks
+// everything still waiting on the dead link: running Waits, transfers,
+// and Close itself. Without the bound, a probe on a black-holed
+// connection would block in its own send until the kernel gave up on
+// the socket — and hold Close hostage with it.
 func (e *Environment) startKeepAlive() {
 	interval := e.cfg.keepAlive()
 	if interval <= 0 {
@@ -273,6 +303,11 @@ func (e *Environment) startKeepAlive() {
 	ctx, cancel := context.WithCancel(context.Background())
 	e.stopKeepAlive = cancel
 	e.keepAliveDone = make(chan struct{})
+
+	// The grace is how long an answer may take before the link is
+	// declared dead. It is floored: an answer bound tighter than a
+	// second measures scheduling noise, not the link.
+	grace := max(interval, probeGraceFloor)
 
 	go func() {
 		defer close(e.keepAliveDone)
@@ -285,15 +320,50 @@ func (e *Environment) startKeepAlive() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				// A failed probe means the connection is gone; the
-				// operations using it report that themselves, so the
-				// loop only needs to stop asking.
-				if _, _, err := e.client.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+				if !e.probeAlive(ctx, grace) {
+					_ = e.client.Close()
+
 					return
 				}
 			}
 		}
 	}()
+}
+
+// probeGraceFloor is the least time a probe gets to answer.
+const probeGraceFloor = time.Second
+
+// probeAlive sends one keepalive and reports whether the server answered
+// within bound. An answer slower than the probing cadence is
+// indistinguishable from none; a stopped loop no longer cares either
+// way.
+func (e *Environment) probeAlive(ctx context.Context, bound time.Duration) bool {
+	answered := make(chan error, 1)
+
+	go func() {
+		_, _, err := e.client.SendRequest("keepalive@openssh.com", true, nil)
+		answered <- err
+	}()
+
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+
+	select {
+	case err := <-answered:
+		return err == nil
+	case <-timer.C:
+		return false
+	case <-ctx.Done():
+		// Stopping. Liveness no longer matters, but a probe already on
+		// the wire is seen out first — no probe outlives Close — with
+		// the same bound, so a dead link cannot hold this open either.
+		select {
+		case <-answered:
+		case <-timer.C:
+		}
+
+		return true
+	}
 }
 
 // detectOS runs uname on the remote host to classify its operating system,
