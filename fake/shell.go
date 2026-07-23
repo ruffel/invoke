@@ -427,24 +427,35 @@ func parseRedirect(word string) (redirect, bool) {
 	return redirect{}, false
 }
 
+// shellWord is one tokenized word together with how it was written.
+// Only a word written entirely bare can be a redirect: quoting makes a
+// metacharacter data, and an expansion's value is data wherever it
+// lands — which is how a real shell reads both.
+type shellWord struct {
+	text string
+	bare bool
+}
+
 // tokenize splits a simple command into argv words and redirects,
 // performing quote handling, $VAR expansion, and $() substitution. It
 // returns, in order: the argv words, the redirects, whether the command
 // parsed, and whether a substitution was interrupted by cancellation.
 func tokenize(ctx context.Context, s *session, text string) ([]string, []redirect, bool, bool) {
 	var (
-		words   []string
+		words   []shellWord
 		current strings.Builder
 	)
 
 	haveWord := false
+	bare := true
 
 	flush := func() {
 		if haveWord {
-			words = append(words, current.String())
+			words = append(words, shellWord{text: current.String(), bare: bare})
 			current.Reset()
 
 			haveWord = false
+			bare = true
 		}
 	}
 
@@ -457,19 +468,8 @@ func tokenize(ctx context.Context, s *session, text string) ([]string, []redirec
 
 			i++
 
-		case '\'':
-			end := indexRune(runes, i+1, '\'')
-			if end < 0 {
-				return nil, nil, false, false
-			}
-
-			current.WriteString(string(runes[i+1 : end]))
-
-			haveWord = true
-			i = end + 1
-
-		case '"':
-			segment, next, segOK, segInterrupted := expandDoubleQuoted(ctx, s, runes, i+1)
+		case '\'', '"', '$':
+			segment, next, segOK, segInterrupted := expandSegment(ctx, s, runes, i)
 			if segInterrupted {
 				return nil, nil, false, true
 			}
@@ -481,21 +481,7 @@ func tokenize(ctx context.Context, s *session, text string) ([]string, []redirec
 			current.WriteString(segment)
 
 			haveWord = true
-			i = next
-
-		case '$':
-			segment, next, segOK, segInterrupted := expandDollar(ctx, s, runes, i)
-			if segInterrupted {
-				return nil, nil, false, true
-			}
-
-			if !segOK {
-				return nil, nil, false, false
-			}
-
-			current.WriteString(segment)
-
-			haveWord = true
+			bare = false
 			i = next
 
 		default:
@@ -513,21 +499,47 @@ func tokenize(ctx context.Context, s *session, text string) ([]string, []redirec
 	return argv, redirects, true, false
 }
 
-// classifyWords separates tokenized words into argv and redirects.
-func classifyWords(words []string) ([]string, []redirect) {
+// expandSegment consumes one quoted or expanded segment starting at a
+// quote or a $, yielding the data it contributes to the current word.
+// It returns, in order: the segment, the index after it, whether it
+// parsed, and whether a substitution was interrupted.
+func expandSegment(ctx context.Context, s *session, runes []rune, at int) (string, int, bool, bool) {
+	switch runes[at] {
+	case '\'':
+		end := indexRune(runes, at+1, '\'')
+		if end < 0 {
+			return "", 0, false, false
+		}
+
+		return string(runes[at+1 : end]), end + 1, true, false
+
+	case '"':
+		return expandDoubleQuoted(ctx, s, runes, at+1)
+
+	default: // '$'
+		return expandDollar(ctx, s, runes, at)
+	}
+}
+
+// classifyWords separates tokenized words into argv and redirects. A
+// word carrying quoted or expanded content is never a redirect, however
+// much it looks like one.
+func classifyWords(words []shellWord) ([]string, []redirect) {
 	var (
 		argv      []string
 		redirects []redirect
 	)
 
 	for _, word := range words {
-		if r, isRedirect := parseRedirect(word); isRedirect {
-			redirects = append(redirects, r)
+		if word.bare {
+			if r, isRedirect := parseRedirect(word.text); isRedirect {
+				redirects = append(redirects, r)
 
-			continue
+				continue
+			}
 		}
 
-		argv = append(argv, word)
+		argv = append(argv, word.text)
 	}
 
 	return argv, redirects
