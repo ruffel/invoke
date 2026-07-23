@@ -207,6 +207,77 @@ func TestUnsupportedShellSyntaxIsRefusedNotRun(t *testing.T) {
 	assert.Contains(t, err.Error(), "||", "the refusal must name what it could not run")
 }
 
+// TestBracedNamesAndSpacedRedirectsRun pins the two spellings the shell
+// accepts as part of its subset: ${NAME} is the same expansion as
+// $NAME, and a space before /dev/null is the same redirection as the
+// flush form. Accepting either at Start and then mishandling it would
+// be the silent wrong answer the refusal machinery exists to prevent.
+func TestBracedNamesAndSpacedRedirectsRun(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		script     string
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name:       "braced name expands",
+			script:     `echo ${REGION}`,
+			wantStdout: "eu-west-1\n",
+		},
+		{
+			name:       "braced name expands inside double quotes",
+			script:     `printf '%s' "${REGION}/vm"`,
+			wantStdout: "eu-west-1/vm",
+		},
+		{
+			name:       "spaced null redirect discards stdout",
+			script:     `echo hi > /dev/null`,
+			wantStdout: "",
+		},
+		{
+			name:       "spaced null redirect discards the named stream",
+			script:     `echo hi 1> /dev/null`,
+			wantStdout: "",
+		},
+		{
+			name:       "a hash inside a word is data",
+			script:     `echo a#b`,
+			wantStdout: "a#b\n",
+		},
+		{
+			name:       "a quoted glob character is data",
+			script:     `echo '*'`,
+			wantStdout: "*\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := fake.New(fake.WithEnv("REGION=eu-west-1"))
+
+			t.Cleanup(func() { _ = env.Close() })
+
+			var stdout, stderr bytes.Buffer
+
+			proc, err := env.Start(t.Context(), invoke.Shell(tt.script), invoke.IO{Stdout: &stdout, Stderr: &stderr})
+			require.NoError(t, err, "every script here is within the subset")
+
+			res, waitErr := proc.Wait()
+			require.NoError(t, waitErr, "want exit 0")
+			require.Equal(t, 0, res.ExitCode, "want exit 0")
+
+			assert.Equal(t, tt.wantStdout, stdout.String(),
+				"stdout must match what a real shell produces")
+			assert.Equal(t, tt.wantStderr, stderr.String(),
+				"stderr must match what a real shell produces")
+		})
+	}
+}
+
 // TestQuotedMetacharactersAreDataAtRuntime pins what happens after
 // acceptance. The check at Start already lets a quoted metacharacter
 // through as data; the tokenizer must then keep treating it as data. A
