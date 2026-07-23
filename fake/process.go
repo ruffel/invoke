@@ -45,7 +45,8 @@ type process struct {
 	cancelRun context.CancelFunc
 	done      chan struct{}
 
-	// Set by the run goroutine before closing done.
+	// Set through finish or abandon before done is closed.
+	finishOnce  sync.Once
 	exitCode    int
 	interrupted bool
 
@@ -61,8 +62,20 @@ type process struct {
 	closeOnce sync.Once
 }
 
+// abandonGrace is how long a terminated body gets to finish before the
+// caller is released without it. It mirrors the local provider's
+// default termination grace: the same wedge — a read nothing can
+// interrupt — gets the same bounded patience.
+const abandonGrace = 2 * time.Second
+
 // spawn launches fn as the simulated process body.
-func (e *Environment) spawn(ctx context.Context, fn func(runCtx context.Context) (int, bool)) *process {
+//
+// The body owns the happy path: it publishes its outcome and releases
+// its context registration when it returns. A watcher covers the path
+// where the body cannot return — wedged in a caller-supplied Read that
+// nothing in Go can interrupt — by abandoning it a grace period after
+// its context is canceled, so Wait, Signal, and Close stay bounded.
+func (e *Environment) spawn(ctx context.Context, guard *outputGuard, fn func(runCtx context.Context) (int, bool)) *process {
 	runCtx, cancel := context.WithCancel(ctx)
 
 	p := &process{
@@ -76,9 +89,33 @@ func (e *Environment) spawn(ctx context.Context, fn func(runCtx context.Context)
 	e.track(p)
 
 	go func() {
-		defer close(p.done)
+		// Releasing the context registration on return keeps a
+		// long-lived parent context from accumulating one child per
+		// completed command.
+		defer cancel()
 
-		p.exitCode, p.interrupted = fn(runCtx)
+		// The deferred publish reports a panicking body as interrupted
+		// rather than leaving Wait blocked forever.
+		code, interrupted := -1, true
+
+		defer func() { p.finish(code, interrupted) }()
+
+		code, interrupted = fn(runCtx)
+	}()
+
+	go func() {
+		select {
+		case <-p.done:
+		case <-runCtx.Done():
+			timer := time.NewTimer(abandonGrace)
+			defer timer.Stop()
+
+			select {
+			case <-p.done:
+			case <-timer.C:
+				p.abandon(guard)
+			}
+		}
 	}()
 
 	return p
@@ -166,6 +203,32 @@ func (p *process) mapOutcome(duration time.Duration) (invoke.Result, error) {
 		errors.New("fake: wait: process interrupted for an unknown reason")
 }
 
+// finish publishes the body's own outcome, once.
+func (p *process) finish(code int, interrupted bool) {
+	p.finishOnce.Do(func() {
+		p.exitCode = code
+		p.interrupted = interrupted
+
+		close(p.done)
+	})
+}
+
+// abandon releases the caller from a body that did not stop when told
+// to. The writers are silenced first, so a goroutine that later comes
+// back to life cannot write into buffers whose owner was told the
+// process is over. Attribution is unaffected: whoever canceled the run
+// context recorded why before doing so.
+func (p *process) abandon(guard *outputGuard) {
+	p.finishOnce.Do(func() {
+		guard.silence()
+
+		p.exitCode = -1
+		p.interrupted = true
+
+		close(p.done)
+	})
+}
+
 // deliverableSignal reports whether the fake target delivers sig; the
 // whole supported set default-terminates a simulated process.
 func deliverableSignal(sig invoke.Signal) bool {
@@ -183,8 +246,51 @@ type emptyReader struct{}
 
 func (emptyReader) Read(_ []byte) (int, error) { return 0, io.EOF }
 
-// newSession materializes the execution state for one invocation.
-func (e *Environment) newSession(cmd invoke.Command, stdio invoke.IO) *session {
+// outputGuard stands between a process body and the caller's writers.
+// Silencing it discards all further writes, and blocks until any write
+// in flight has drained — after which nothing can land in the caller's
+// buffers, however late an abandoned goroutine wakes up.
+type outputGuard struct {
+	mu       sync.Mutex
+	silenced bool
+}
+
+// wrap guards w; a nil writer is the usual discard.
+func (g *outputGuard) wrap(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+
+	return &guardedWriter{guard: g, w: w}
+}
+
+func (g *outputGuard) silence() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.silenced = true
+}
+
+type guardedWriter struct {
+	guard *outputGuard
+	w     io.Writer
+}
+
+func (w *guardedWriter) Write(b []byte) (int, error) {
+	w.guard.mu.Lock()
+	defer w.guard.mu.Unlock()
+
+	if w.guard.silenced {
+		return len(b), nil
+	}
+
+	return w.w.Write(b)
+}
+
+// newSession materializes the execution state for one invocation. The
+// returned guard silences the session's caller-facing writers if the
+// process is abandoned.
+func (e *Environment) newSession(cmd invoke.Command, stdio invoke.IO) (*session, *outputGuard) {
 	env := make(map[string]string, len(e.baseEnv)+len(cmd.Env))
 	maps.Copy(env, e.baseEnv)
 
@@ -199,10 +305,12 @@ func (e *Environment) newSession(cmd invoke.Command, stdio invoke.IO) *session {
 		dir = "/"
 	}
 
+	guard := &outputGuard{}
+
 	s := &session{
 		stdin:  stdio.Stdin,
-		stdout: stdio.Stdout,
-		stderr: stdio.Stderr,
+		stdout: guard.wrap(stdio.Stdout),
+		stderr: guard.wrap(stdio.Stderr),
 		dir:    dir,
 		env:    env,
 		fs:     e.fs,
@@ -213,13 +321,5 @@ func (e *Environment) newSession(cmd invoke.Command, stdio invoke.IO) *session {
 		s.stdin = emptyReader{}
 	}
 
-	if s.stdout == nil {
-		s.stdout = io.Discard
-	}
-
-	if s.stderr == nil {
-		s.stderr = io.Discard
-	}
-
-	return s
+	return s, guard
 }
