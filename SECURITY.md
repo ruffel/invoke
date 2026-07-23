@@ -37,5 +37,13 @@ are worth stating, because they shape what counts as a vulnerability:
   it.** A file transfer must not let a hostile target write outside the
   destination the caller chose, and an interrupted command must not be
   reported as one that certainly ran. Failures of that kind are in scope.
+- **The Docker daemon is trusted infrastructure.** The docker provider is
+  a client of a daemon the caller chose to talk to; a vulnerability in the
+  daemon itself is the daemon's to fix, and the exposure tracks the
+  installed Docker Engine version rather than anything this library pins.
+  The `github.com/docker/docker` module carries both the daemon and the
+  client under one path, so an advisory against it may name daemon code
+  this provider never compiles — the client packages are all that reach a
+  consumer's binary.
 
 [`Shell`]: https://pkg.go.dev/github.com/ruffel/invoke#Shell
