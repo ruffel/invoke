@@ -97,6 +97,13 @@ func (t *terminal) start(stdio invoke.IO) {
 // A terminal ends when nothing holds it open, and something the command
 // left behind can hold it open indefinitely, so the wait is bounded and
 // the end is released either way — which unblocks any copy still on it.
+//
+// Released, and then joined: the copier may hold bytes it read just
+// before the release, and its last write must land before Wait returns,
+// because after that the buffers belong to the caller again. The close
+// is what unblocks a copier still mid-read, so the join cannot wait on
+// the terminal — only on the caller's own writer, exactly as the
+// non-terminal path waits on it.
 func (t *terminal) finish(grace time.Duration) {
 	select {
 	case <-t.copied:
@@ -104,6 +111,8 @@ func (t *terminal) finish(grace time.Duration) {
 	}
 
 	_ = t.primary.Close()
+
+	<-t.copied
 }
 
 // close releases both ends without waiting, for a command that never
