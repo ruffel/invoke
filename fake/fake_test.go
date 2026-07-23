@@ -67,6 +67,145 @@ func TestHandlersOverrideBuiltinsAndRecordCalls(t *testing.T) {
 	assert.Equal(t, "--fast", calls[0].Args[1], "want the deploy invocation recorded")
 }
 
+// TestNamesResolveConsistently pins one rule across Start, LookPath and
+// the shell: a name the fake answers for is answerable everywhere it
+// can be written. A handler callable by Start but unknown to a script,
+// or a LookPath answer Start then refuses, is the fake disagreeing with
+// itself — and both patterns work on every real target.
+func TestNamesResolveConsistently(t *testing.T) {
+	t.Parallel()
+
+	newEnv := func(t *testing.T) *fake.Environment {
+		t.Helper()
+
+		env := fake.New()
+
+		t.Cleanup(func() { _ = env.Close() })
+
+		env.Handle("deploy", func(_ context.Context, _ invoke.Command, s *fake.Session) int {
+			_, _ = io.WriteString(s.Stdout, "deployed\n")
+
+			return 0
+		})
+
+		return env
+	}
+
+	runScript := func(t *testing.T, env *fake.Environment, script string) (invoke.Result, string, error) {
+		t.Helper()
+
+		var stdout bytes.Buffer
+
+		proc, err := env.Start(t.Context(), invoke.Shell(script), invoke.IO{Stdout: &stdout})
+		require.NoError(t, err, "the script must start")
+
+		res, waitErr := proc.Wait()
+
+		return res, stdout.String(), waitErr
+	}
+
+	t.Run("scripts reach registered handlers", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+
+		_, stdout, err := runScript(t, env, "deploy && echo done")
+		require.NoError(t, err)
+
+		assert.Equal(t, "deployed\ndone\n", stdout)
+	})
+
+	t.Run("substitutions reach registered handlers", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+
+		_, stdout, err := runScript(t, env, `echo "$(deploy)"`)
+		require.NoError(t, err)
+
+		assert.Equal(t, "deployed\n", stdout)
+	})
+
+	t.Run("a failing handler fails the script", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+		env.Handle("deploy", func(_ context.Context, _ invoke.Command, _ *fake.Session) int {
+			return 3
+		})
+
+		res, stdout, err := runScript(t, env, "deploy && echo done")
+
+		var exitErr *invoke.ExitError
+
+		require.ErrorAs(t, err, &exitErr, "the handler's failure is the script's failure")
+		assert.Equal(t, 3, res.ExitCode)
+		assert.Empty(t, stdout, "&& must not run its right side")
+	})
+
+	t.Run("handlers override builtins in scripts", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+		env.Handle("echo", func(_ context.Context, _ invoke.Command, s *fake.Session) int {
+			_, _ = io.WriteString(s.Stdout, "handled\n")
+
+			return 0
+		})
+
+		_, stdout, err := runScript(t, env, "echo native")
+		require.NoError(t, err)
+
+		assert.Equal(t, "handled\n", stdout, "Handle overrides a builtin in scripts as it does at Start")
+	})
+
+	t.Run("LookPath answers are startable", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+
+		for _, name := range []string{"echo", "deploy"} {
+			resolved, err := env.LookPath(t.Context(), name)
+			require.NoError(t, err, "LookPath(%q)", name)
+
+			var stdout bytes.Buffer
+
+			proc, err := env.Start(t.Context(), invoke.New(resolved), invoke.IO{Stdout: &stdout})
+			require.NoErrorf(t, err, "Start must accept LookPath's own answer %q", resolved)
+
+			_, err = proc.Wait()
+			require.NoError(t, err)
+		}
+	})
+
+	t.Run("the conventional path runs in scripts", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+
+		_, stdout, err := runScript(t, env, "/usr/bin/echo hi")
+		require.NoError(t, err)
+
+		assert.Equal(t, "hi\n", stdout)
+	})
+
+	t.Run("unknown names still fail everywhere", func(t *testing.T) {
+		t.Parallel()
+
+		env := newEnv(t)
+
+		_, err := env.LookPath(t.Context(), "nope")
+		assert.ErrorIs(t, err, invoke.ErrNotFound)
+
+		_, err = env.Start(t.Context(), invoke.New("/usr/bin/nope"), invoke.IO{})
+		assert.ErrorIs(t, err, invoke.ErrNotFound)
+
+		res, _, waitErr := runScript(t, env, "nope")
+		require.Error(t, waitErr)
+		assert.Equal(t, 127, res.ExitCode, "a script's unknown command stays the shell's 127")
+	})
+}
+
 func TestHandlerNonZeroExitIsExitError(t *testing.T) {
 	t.Parallel()
 

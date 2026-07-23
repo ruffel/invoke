@@ -47,6 +47,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"sync"
 
 	"github.com/ruffel/invoke"
@@ -126,7 +127,11 @@ func New(opts ...Option) *Environment {
 }
 
 // Handle registers a handler for commands whose Path equals name,
-// overriding any builtin of the same name.
+// overriding any builtin of the same name. A handler is reachable
+// everywhere the name can be written: started directly, invoked from a
+// [invoke.Shell] script or a $(...) substitution, and through the path
+// LookPath reports for it. Calls records commands given to Start; a
+// script's internal invocations belong to the script.
 func (e *Environment) Handle(name string, h Handler) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -165,7 +170,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, fmt.Errorf("fake: start: workdir %q: %w", cmd.Dir, invoke.ErrInvalidWorkdir)
 	}
 
-	handler, builtin := e.resolve(cmd.Path)
+	handler, builtin := e.resolveCommand(cmd.Path)
 	if handler == nil && !builtin {
 		return nil, fmt.Errorf("fake: start %q: %w", cmd.Path, invoke.ErrNotFound)
 	}
@@ -192,7 +197,8 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	}), nil
 }
 
-// LookPath resolves name against the fake's handlers and builtins.
+// LookPath resolves name against the fake's handlers and builtins. The
+// answer is itself resolvable: what LookPath reports, Start accepts.
 func (e *Environment) LookPath(ctx context.Context, name string) (string, error) {
 	if err := e.checkOpen("lookpath"); err != nil {
 		return "", err
@@ -202,7 +208,11 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 		return "", fmt.Errorf("fake: lookpath: %w", err)
 	}
 
-	if handler, builtin := e.resolve(name); handler != nil || builtin {
+	if handler, builtin := e.resolveCommand(name); handler != nil || builtin {
+		if path.IsAbs(name) {
+			return name, nil
+		}
+
 		return "/usr/bin/" + name, nil
 	}
 
@@ -277,6 +287,34 @@ func (e *Environment) resolve(name string) (Handler, bool) {
 	}
 
 	return nil, builtinKnown(name)
+}
+
+// resolveCommand resolves an invoked path the way the target's own
+// lookup would: the exact registered or builtin name, or the basename
+// of the conventional /usr/bin home LookPath reports for every known
+// name. One rule serves Start, LookPath and the shell, so the three
+// cannot disagree about what exists.
+func (e *Environment) resolveCommand(pathStr string) (Handler, bool) {
+	if h, b := e.resolve(pathStr); h != nil || b {
+		return h, b
+	}
+
+	if alias := commandName(pathStr); alias != pathStr {
+		return e.resolve(alias)
+	}
+
+	return nil, false
+}
+
+// commandName maps an invoked path to the name the fake knows it by:
+// bare names as written, and the basename of the conventional /usr/bin
+// home.
+func commandName(pathStr string) string {
+	if dir, base := path.Split(pathStr); dir == "/usr/bin/" {
+		return base
+	}
+
+	return pathStr
 }
 
 func (e *Environment) record(cmd invoke.Command) {
