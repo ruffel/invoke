@@ -106,12 +106,14 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 	if err != nil {
 		// A bare name missing from PATH reports exec.ErrNotFound; a name
 		// with a separator is looked up as a path, so a missing or
-		// non-executable file reports the filesystem's own error instead.
-		// All of them mean the same thing to a caller: the name did not
-		// resolve to something runnable.
+		// non-executable file reports the filesystem's own error instead
+		// — and a directory reports its own errno again. All of them
+		// mean the same thing to a caller: the name did not resolve to
+		// something runnable.
 		if errors.Is(err, exec.ErrNotFound) ||
 			errors.Is(err, fs.ErrNotExist) ||
-			errors.Is(err, fs.ErrPermission) {
+			errors.Is(err, fs.ErrPermission) ||
+			namesDirectory(name) {
 			return "", fmt.Errorf("local: lookpath %q: %w", name, invoke.ErrNotFound)
 		}
 
@@ -161,11 +163,24 @@ func (e *Environment) untrack(p *process) {
 	delete(e.active, p)
 }
 
-// dirExists reports whether path names an existing directory; it backs the
-// workdir pre-check so a bad Dir classifies as ErrInvalidWorkdir instead of
-// surfacing as an ambiguous exec failure.
-func dirExists(path string) bool {
-	info, err := os.Stat(path)
+// namesDirectory reports whether name is a directory on disk, the one
+// unrunnable shape whose lookup error carries no portable sentinel.
+func namesDirectory(name string) bool {
+	info, err := os.Stat(name)
 
 	return err == nil && info.IsDir()
+}
+
+// usableDir reports whether path names a directory the command could
+// enter; it backs the workdir pre-check so a bad Dir classifies as
+// ErrInvalidWorkdir instead of surfacing as an exec failure that blames
+// the binary. Existing is half the promise: a directory that "cannot be
+// entered" — sealed by its mode — fails the same way.
+func usableDir(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	return dirEnterable(path)
 }

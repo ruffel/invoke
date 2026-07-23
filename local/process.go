@@ -67,7 +67,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, fmt.Errorf("local: start: %w", err)
 	}
 
-	if cmd.Dir != "" && !dirExists(cmd.Dir) {
+	if cmd.Dir != "" && !usableDir(cmd.Dir) {
 		return nil, fmt.Errorf("local: start: workdir %q: %w", cmd.Dir, invoke.ErrInvalidWorkdir)
 	}
 
@@ -156,7 +156,7 @@ func (p *process) Signal(sig invoke.Signal) error {
 	}
 
 	if p.waitReturned.Load() {
-		return errors.New("local: signal: process has exited")
+		return fmt.Errorf("local: signal: %w", os.ErrProcessDone)
 	}
 
 	sys, ok := sysSignal(sig)
@@ -166,7 +166,7 @@ func (p *process) Signal(sig invoke.Signal) error {
 
 	if err := signalGroup(p.execCmd.Process.Pid, sys); err != nil {
 		if errors.Is(err, os.ErrProcessDone) {
-			return errors.New("local: signal: process has exited")
+			return fmt.Errorf("local: signal: %w", os.ErrProcessDone)
 		}
 
 		return fmt.Errorf("local: signal %s: %w", sig, err)
@@ -360,7 +360,11 @@ func (p *process) exitOutcome(code int, sig invoke.Signal, signaled bool, durati
 }
 
 func classifyStartError(cmd invoke.Command, err error) error {
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) {
+	// Permission joins the not-found family for the reason LookPath
+	// already folds it in: the name did not resolve to something
+	// runnable. The workdir pre-check has run by now, so a permission
+	// failure here is the binary's own.
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
 		return fmt.Errorf("local: start %q: %w", cmd.Path, invoke.ErrNotFound)
 	}
 

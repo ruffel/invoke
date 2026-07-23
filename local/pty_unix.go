@@ -5,6 +5,7 @@ package local
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"syscall"
@@ -46,8 +47,8 @@ func attachTerminal(cmd *exec.Cmd, requested *invoke.TTY) (*terminal, error) {
 	cols, rows := requested.Size()
 
 	if err := pty.Setsize(primary, &pty.Winsize{
-		Rows: uint16(rows), //nolint:gosec // Terminal dimensions are small positives.
-		Cols: uint16(cols), //nolint:gosec // Terminal dimensions are small positives.
+		Rows: clampDim(rows),
+		Cols: clampDim(cols),
 	}); err != nil {
 		_ = primary.Close()
 		_ = secondary.Close()
@@ -61,6 +62,18 @@ func attachTerminal(cmd *exec.Cmd, requested *invoke.TTY) (*terminal, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 
 	return &terminal{primary: primary, secondary: secondary, copied: make(chan struct{})}, nil
+}
+
+// clampDim fits a terminal dimension into the wire format's sixteen
+// bits. Size() has already floored non-positive values, so only the
+// ceiling needs enforcing: a dimension beyond it pins to the maximum
+// rather than silently wrapping to something unrelated.
+func clampDim(v int) uint16 {
+	if v > math.MaxUint16 {
+		return math.MaxUint16
+	}
+
+	return uint16(v) //nolint:gosec // Bounded above, floored by Size().
 }
 
 // start begins moving bytes once the command is running, and releases the
