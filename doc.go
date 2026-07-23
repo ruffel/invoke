@@ -19,7 +19,7 @@
 //	}
 //	defer env.Close()
 //
-//	res, stdout, _, err := invoke.NewExecutor(env).Output(ctx, invoke.New("uname", "-s"))
+//	_, stdout, _, err := invoke.NewExecutor(env).Output(ctx, invoke.New("uname", "-s"))
 //
 // [Command] is a plain value describing what to run. It carries no
 // streams and no state, so one can be run repeatedly, or against several
