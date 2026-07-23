@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"sync"
 	"time"
 
@@ -36,6 +37,44 @@ func token(t T) string {
 // output says the command reached its final act, and this covers the
 // short walk from there to the process being gone.
 const exitSettle = 250 * time.Millisecond
+
+// blockingReader is a stdin whose first Read reports it began and then
+// holds — the caller-supplied reader no provider can interrupt: an
+// io.Pipe nobody writes to, a network stream gone quiet. Contracts
+// release it on the way out so a disowned pump goroutine can end.
+type blockingReader struct {
+	// started closes once something is inside Read, so a contract can
+	// wait for the wedge to be real rather than guess.
+	started chan struct{}
+
+	// held blocks the read until the contract releases it.
+	held chan struct{}
+
+	startOnce   sync.Once
+	releaseOnce sync.Once
+}
+
+func newBlockingReader() *blockingReader {
+	return &blockingReader{
+		started: make(chan struct{}),
+		held:    make(chan struct{}),
+	}
+}
+
+// Read reports the first call, then blocks until released; a released
+// read reports end of input.
+func (r *blockingReader) Read(_ []byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+
+	<-r.held
+
+	return 0, io.EOF
+}
+
+// release unblocks the read.
+func (r *blockingReader) release() {
+	r.releaseOnce.Do(func() { close(r.held) })
+}
 
 // blockingWriter is a destination for a process's output that reports the
 // first write and then holds it, so a contract can keep a provider inside

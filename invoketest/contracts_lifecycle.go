@@ -19,6 +19,7 @@ func lifecycleContracts() []TestCase {
 		lifecycleWaitIsIdempotent(),
 		lifecycleConcurrentWaitIsSafe(),
 		lifecycleCancelUnblocksWait(),
+		lifecycleBlockedStdinCannotHangWait(),
 		lifecycleDeadlineUnblocksWait(),
 		lifecycleCancelTerminatesProcess(),
 		lifecycleCancelAfterExitKeepsOutcome(),
@@ -259,6 +260,56 @@ func lifecycleCancelUnblocksWait() TestCase {
 			assert.ErrorIs(t, outcome.err, context.Canceled)
 
 			requireNotExitError(t, outcome.err, "cancellation")
+		},
+	}
+}
+
+// lifecycleBlockedStdinCannotHangWait pins the wedge no provider can
+// interrupt: a caller-supplied Stdin whose Read never returns — an
+// io.Pipe nobody writes to, a network stream gone quiet.
+//
+// Nothing in Go can unblock that read, so the temptation is to wait for
+// it: a provider whose Wait joins the goroutine pumping the caller's
+// reader holds the caller hostage to a reader that owes it nothing,
+// long after the process is dead. The reader is the caller's property;
+// the process's end is the provider's. This contract keeps the two
+// apart.
+func lifecycleBlockedStdinCannotHangWait() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "blocked-stdin-cannot-hang-wait",
+		Description: "A caller Stdin whose Read never returns cannot hold Wait or Close hostage once the process is told to stop",
+		Run: func(t T, env invoke.Environment) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			stdin := newBlockingReader()
+			defer stdin.release()
+
+			proc := startCommand(ctx, t, env, invoke.New("cat"), invoke.IO{Stdin: stdin})
+
+			defer func() { _ = proc.Close() }()
+
+			// The wedge must be real before it is tested: something —
+			// the provider's pump or the command itself — is now inside
+			// the caller's Read.
+			select {
+			case <-stdin.started:
+			case <-time.After(contractTimeout):
+				require.FailNow(t, "nothing read from the caller's stdin within the contract deadline")
+			}
+
+			cancel()
+
+			outcome := waitOrTimeout(t, proc)
+			require.Error(t, outcome.err, "Wait after cancel returned nil error")
+
+			assert.ErrorIs(t, outcome.err, context.Canceled,
+				"the interruption must be attributed to the caller's cancel, wedged stdin or not")
+
+			requireNotExitError(t, outcome.err, "cancellation with a wedged stdin")
+
+			assert.NoError(t, closeOrTimeout(t, proc), "Close after an abandoned stdin read")
 		},
 	}
 }

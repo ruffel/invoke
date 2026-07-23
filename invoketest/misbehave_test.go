@@ -59,6 +59,7 @@ type defects struct {
 	silentSignal         bool // Signal reports success and delivers nothing
 	plainSignalError     bool // unsupported signal errors without ErrNotSupported
 	waitFlipFlops        bool // a second Wait returns a different outcome
+	waitJoinsStdin       bool // hold Wait until the caller's stdin reader returns
 
 	// Classification defects.
 	plainMissingBinary bool // strip ErrNotFound from missing-binary failures
@@ -116,7 +117,20 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		m.mu.Unlock()
 	}
 
-	proc, err := m.base.Start(startCtx, m.mutateCommand(cmd), m.mutateStdio(stdio))
+	stdio = m.mutateStdio(stdio)
+
+	// The waitJoinsStdin defect re-creates the tempting mistake: a Wait
+	// that joins the goroutine pumping the caller's reader, and so
+	// blocks until that reader deigns to return.
+	var stdinReturned chan struct{}
+
+	if m.d.waitJoinsStdin && stdio.Stdin != nil {
+		tracked := &returnTrackingReader{r: stdio.Stdin, returned: make(chan struct{})}
+		stdio.Stdin = tracked
+		stdinReturned = tracked.returned
+	}
+
+	proc, err := m.base.Start(startCtx, m.mutateCommand(cmd), stdio)
 	if err != nil {
 		m.release()
 
@@ -135,7 +149,21 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		return nil, err
 	}
 
-	return &misbehaveProcess{base: proc, d: m.d, env: m, startCtx: ctx}, nil
+	return &misbehaveProcess{base: proc, d: m.d, env: m, startCtx: ctx, stdinReturned: stdinReturned}, nil
+}
+
+// returnTrackingReader reports, once, that a Read call has returned.
+type returnTrackingReader struct {
+	r        io.Reader
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (r *returnTrackingReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.once.Do(func() { close(r.returned) })
+
+	return n, err
 }
 
 func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error) {
@@ -440,6 +468,10 @@ type misbehaveProcess struct {
 	startCtx context.Context //nolint:containedctx // Mirrors the real providers, which store the start context.
 	released sync.Once
 
+	// stdinReturned is non-nil under the waitJoinsStdin defect: Wait
+	// blocks on it, honoring a reader that owes it nothing.
+	stdinReturned chan struct{}
+
 	mu         sync.Mutex
 	waitCalls  int
 	closeCalls int
@@ -450,6 +482,11 @@ func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 	// base.Wait is idempotent and concurrency-safe; call it without the
 	// lock so concurrent callers do not serialize on a blocking wait.
 	res, err := p.base.Wait()
+
+	if p.stdinReturned != nil {
+		<-p.stdinReturned
+	}
+
 	p.released.Do(p.env.release)
 
 	p.mu.Lock()
@@ -671,6 +708,7 @@ func defectCatalog() []defectCase {
 		{name: "flip-flopping concurrent wait", contract: "lifecycle/concurrent-wait-is-safe", defects: defects{waitFlipFlops: true}},
 		{name: "ignored cancel", contract: "lifecycle/cancel-unblocks-wait", defects: defects{ignoreCancel: true}},
 		{name: "cancel as exit error", contract: "lifecycle/cancel-unblocks-wait", defects: defects{exitErrorOnCancel: true}},
+		{name: "wait joins the caller's stdin", contract: "lifecycle/blocked-stdin-cannot-hang-wait", defects: defects{waitJoinsStdin: true}},
 		{name: "deadline as cancel", contract: "lifecycle/deadline-unblocks-wait", defects: defects{hardcodeCanceled: true}},
 		{name: "surviving process", contract: "lifecycle/cancel-terminates-process", defects: defects{ignoreCancel: true}},
 		{name: "late cancel overwrites exit", contract: "lifecycle/cancel-after-exit-keeps-outcome", defects: defects{cancelOverwritesExit: true}},
