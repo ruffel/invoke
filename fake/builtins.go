@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ruffel/invoke"
 )
 
 // The builtin vocabulary is deliberately minimal: exactly the POSIX
@@ -28,9 +30,19 @@ func builtinKnown(name string) bool {
 // dispatch runs one command (top-level argv or a shell word) and returns
 // its exit code plus whether it was interrupted by cancellation.
 //
+// Registered handlers come first, as they do at Start: a name the
+// consumer scripted is theirs everywhere it can be written, builtin or
+// not.
+//
 //nolint:cyclop // A flat dispatch table over the builtin vocabulary.
 func dispatch(ctx context.Context, s *session, name string, args []string) (int, bool) {
-	switch name {
+	if handler, _ := s.owner.resolveCommand(name); handler != nil {
+		cmd := invoke.Command{Path: name, Args: args, Dir: s.dir}
+
+		return s.owner.runHandler(ctx, handler, cmd, s)
+	}
+
+	switch commandName(name) {
 	case "sh":
 		return runShellArgv(ctx, s, args)
 	case "sleep":

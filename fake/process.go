@@ -23,6 +23,7 @@ type session struct {
 	dir    string
 	env    map[string]string
 	fs     *vfs
+	owner  *Environment
 }
 
 func (s *session) clone() *session {
@@ -205,6 +206,7 @@ func (e *Environment) newSession(cmd invoke.Command, stdio invoke.IO) *session {
 		dir:    dir,
 		env:    env,
 		fs:     e.fs,
+		owner:  e,
 	}
 
 	if s.stdin == nil {
