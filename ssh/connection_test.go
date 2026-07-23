@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/ssh"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -237,4 +239,144 @@ func TestConstructionHonoursItsContext(t *testing.T) {
 	)
 	require.Error(t, err, "construction with a canceled context must fail")
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestConnectHonorsCancellationMidHandshake pins New's promise that ctx
+// bounds establishing the connection — including the handshake, where a
+// server that accepts the socket and then says nothing would otherwise
+// hold the caller for the full configured timeout.
+func TestConnectHonorsCancellationMidHandshake(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // Test listener.
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = listener.Close() })
+
+	var (
+		connsMu sync.Mutex
+		conns   []net.Conn
+	)
+
+	// Accept and say nothing, holding every socket open.
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+
+			connsMu.Lock()
+
+			conns = append(conns, conn)
+
+			connsMu.Unlock()
+		}
+	}()
+
+	t.Cleanup(func() {
+		connsMu.Lock()
+		defer connsMu.Unlock()
+
+		for _, conn := range conns {
+			_ = conn.Close()
+		}
+	})
+
+	host, portText, err := net.SplitHostPort(listener.Addr().String())
+	require.NoError(t, err)
+
+	port, err := strconv.Atoi(portText)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	const bound = 10 * time.Second
+
+	began := time.Now()
+
+	_, err = ssh.New(ctx, host,
+		ssh.WithPort(port),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithInsecureIgnoreHostKey())
+	require.Error(t, err, "a canceled setup must not connect")
+
+	assert.ErrorIs(t, err, context.Canceled,
+		"the caller's own cancellation is the cause worth reporting")
+
+	assert.Less(t, time.Since(began), bound,
+		"cancellation must interrupt the handshake, not wait out its timeout")
+}
+
+// TestBlackholedConnectionUnblocksWaitAndClose pins what the keepalive
+// exists for. A link that dies silently — no reset, no close — answers
+// nothing; a probe unanswered within one interval must declare the
+// connection dead and close it, unblocking a running Wait with an
+// honest no-status outcome and letting Close return instead of waiting
+// on a socket nobody serves.
+func TestBlackholedConnectionUnblocksWaitAndClose(t *testing.T) {
+	t.Parallel()
+
+	const (
+		probeInterval = 100 * time.Millisecond
+		bound         = 8 * time.Second
+	)
+
+	srv := startTestServer(t)
+
+	env, err := ssh.New(t.Context(), srv.host(),
+		ssh.WithPort(srv.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
+		ssh.WithKeepAlive(probeInterval))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = proc.Close() })
+
+	srv.blackholeNow()
+
+	waited := make(chan error, 1)
+
+	go func() {
+		_, waitErr := proc.Wait()
+		waited <- waitErr
+	}()
+
+	select {
+	case waitErr := <-waited:
+		require.Error(t, waitErr, "a dead link cannot end in a reported success")
+
+		var exitErr *invoke.ExitError
+
+		assert.NotErrorAs(t, waitErr, &exitErr,
+			"no status arrived; the outcome must not read as the command's own exit")
+	case <-time.After(bound):
+		t.Fatal("Wait did not return: the dead link was never discovered")
+	}
+
+	closed := make(chan struct{})
+
+	go func() {
+		_ = env.Close()
+
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(bound):
+		t.Fatal("Close did not return on a blackholed connection")
+	}
 }

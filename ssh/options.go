@@ -141,7 +141,12 @@ func WithCommandLineEnv() Option {
 }
 
 // WithKeepAlive sets how often the connection is probed so a silently
-// dropped link is discovered. A non-positive interval disables probing.
+// dropped link is discovered. Probing is also the discovery bound: a
+// probe unanswered within the interval — floored at one second, since a
+// tighter bound measures scheduling noise rather than the link —
+// declares the connection dead and closes it, unblocking everything
+// still waiting on it, including Close. Zero means the default; a
+// negative interval disables probing.
 func WithKeepAlive(d time.Duration) Option {
 	return func(c *Config) { c.KeepAlive = d }
 }

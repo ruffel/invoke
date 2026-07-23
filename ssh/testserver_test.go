@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -64,6 +65,10 @@ type testServer struct {
 	// delivery-file prologue, so the file is written and its command
 	// then never starts.
 	refuseEnvCommandExec bool
+
+	// blackholed, once set, stops the server answering global requests
+	// while keeping every connection open — a link that silently died.
+	blackholed atomic.Bool
 
 	mu         sync.Mutex
 	sessions   int
@@ -152,6 +157,12 @@ func withExtraHostKey(signer ssh.Signer) serverOption {
 	return func(s *testServer) { s.extraHostKey = signer }
 }
 
+// blackholeNow makes the server stop answering global requests while
+// keeping every connection open, as a silently dead link does.
+func (s *testServer) blackholeNow() {
+	s.blackholed.Store(true)
+}
+
 // keepAliveCount reports how many keepalive probes the server answered.
 func (s *testServer) keepAliveCount() int {
 	s.mu.Lock()
@@ -164,6 +175,10 @@ func (s *testServer) keepAliveCount() int {
 // keepalive probes.
 func (s *testServer) handleGlobalRequests(reqs <-chan *ssh.Request) {
 	for req := range reqs {
+		if s.blackholed.Load() {
+			continue // Swallowed: no reply ever comes.
+		}
+
 		if req.Type == "keepalive@openssh.com" {
 			s.mu.Lock()
 			s.keepAlives++
