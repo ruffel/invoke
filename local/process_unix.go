@@ -110,3 +110,12 @@ func signalName(sig syscall.Signal) invoke.Signal {
 		return invoke.Signal(strconv.Itoa(int(sig)))
 	}
 }
+
+// dirEnterable reports whether the directory's mode lets this process
+// enter it, which is what a working directory has to allow.
+func dirEnterable(path string) bool {
+	return syscall.Access(path, execPermission) == nil
+}
+
+// execPermission is access(2)'s X_OK: permission to traverse.
+const execPermission = 0x1

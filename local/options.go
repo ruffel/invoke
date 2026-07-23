@@ -24,8 +24,10 @@ type Option func(*config)
 // is abandoned and Wait returns, which is why the default is short.
 //
 // A command that flushes something substantial when told to stop needs
-// longer than the default two seconds, or its last output is lost. A
-// caller that would rather never wait can set a shorter one.
+// longer than the default two seconds, or its last output is lost. Zero
+// and negative durations mean the default — the zero value is how an
+// unset configuration reads — so a caller that would rather barely wait
+// sets something tiny, not zero.
 func WithTerminationGrace(d time.Duration) Option {
 	return func(c *config) { c.terminationGrace = d }
 }

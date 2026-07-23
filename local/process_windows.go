@@ -32,3 +32,8 @@ func sysSignal(_ invoke.Signal) (syscall.Signal, bool) {
 func exitSignal(_ *os.ProcessState) (invoke.Signal, bool) {
 	return "", false
 }
+
+// dirEnterable reports whether the directory can be entered. Execution
+// semantics are out of scope on Windows, and its ACL model has no
+// access(2); an existing directory is taken at its word.
+func dirEnterable(_ string) bool { return true }
