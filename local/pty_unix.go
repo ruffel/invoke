@@ -15,10 +15,14 @@ import (
 )
 
 // terminal is the caller's end of a pseudo-terminal, and the goroutines
-// moving bytes across it.
+// moving bytes across it. It holds the command's end too until the
+// command is running: the exec package does not close caller-supplied
+// files when Start fails, so until then the descriptor is this side's
+// to release.
 type terminal struct {
-	primary *os.File
-	copied  chan struct{}
+	primary   *os.File
+	secondary *os.File
+	copied    chan struct{}
 }
 
 // attachTerminal gives cmd a pseudo-terminal of the requested size and
@@ -56,7 +60,7 @@ func attachTerminal(cmd *exec.Cmd, requested *invoke.TTY) (*terminal, error) {
 	cmd.Stderr = secondary
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true}
 
-	return &terminal{primary: primary, copied: make(chan struct{})}, nil
+	return &terminal{primary: primary, secondary: secondary, copied: make(chan struct{})}, nil
 }
 
 // start begins moving bytes once the command is running, and releases the
@@ -65,10 +69,9 @@ func attachTerminal(cmd *exec.Cmd, requested *invoke.TTY) (*terminal, error) {
 // The parent must let go of that end: while any handle to it remains
 // open, reading the caller's end blocks forever rather than reporting
 // that the command has finished with it.
-func (t *terminal) start(cmd *exec.Cmd, stdio invoke.IO) {
-	if secondary, ok := cmd.Stdin.(*os.File); ok {
-		_ = secondary.Close()
-	}
+func (t *terminal) start(stdio invoke.IO) {
+	_ = t.secondary.Close()
+	t.secondary = nil
 
 	if stdio.Stdin != nil {
 		go func() {
@@ -103,8 +106,12 @@ func (t *terminal) finish(grace time.Duration) {
 	_ = t.primary.Close()
 }
 
-// close releases the caller's end without waiting, for a command that
-// never started.
+// close releases both ends without waiting, for a command that never
+// started and so never took ownership of its own end.
 func (t *terminal) close() {
+	if t.secondary != nil {
+		_ = t.secondary.Close()
+	}
+
 	_ = t.primary.Close()
 }
