@@ -73,10 +73,15 @@ func exportPrologue(pairs []string) string {
 //
 // Failing to read it exits rather than running the command without its
 // environment, which is the outcome this whole route exists to avoid.
+// The readability test stands on its own ahead of the source: dot is a
+// special built-in, and a POSIX shell aborts outright when one fails,
+// skipping any || that was waiting to catch it — the guard would never
+// fire from where it looks like it belongs.
 func sourcePrologue(path string) string {
 	quoted := quoteArg(path)
 
-	return ". " + quoted + " || exit " + strconv.Itoa(envDeliveryFailed) + "; rm -f " + quoted + "; "
+	return "[ -r " + quoted + " ] || exit " + strconv.Itoa(envDeliveryFailed) + "; " +
+		". " + quoted + "; rm -f " + quoted + "; "
 }
 
 // Exit codes used by the pre-flight check to distinguish a missing working
@@ -88,6 +93,12 @@ const (
 
 	// envDeliveryFailed reports that the environment file could not be
 	// read, so the command was not run.
+	//
+	// The status is reserved on the file-delivery route: unlike the
+	// pre-check statuses, which run in an exec of their own, this one
+	// shares the command's session, so a command of its own exiting 93
+	// under that route is read as a delivery failure. WithCommandLineEnv
+	// avoids the file and with it the reservation.
 	envDeliveryFailed = 93
 )
 

@@ -20,6 +20,10 @@ type process struct {
 	session *ssh.Session
 	started time.Time
 
+	// envFile is the delivery file the command's prologue sources, when
+	// the file route is in use; empty otherwise.
+	envFile string
+
 	closedByUser atomic.Bool
 	ctxErr       func() error
 
@@ -61,7 +65,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
-	prologue, err := e.deliverEnv(ctx, session, cmd.Env)
+	prologue, envFile, err := e.deliverEnv(ctx, session, cmd.Env)
 	if err != nil {
 		_ = session.Close()
 
@@ -81,12 +85,20 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		env:     e,
 		session: session,
 		started: time.Now(),
+		envFile: envFile,
 		ctxErr:  ctx.Err,
 		done:    make(chan struct{}),
 	}
 
 	if err := session.Start(commandLine(cmd, prologue)); err != nil {
 		_ = session.Close()
+
+		// The delivery file was written for a command that never
+		// started, so nothing ahead will remove it.
+		if envFile != "" {
+			//nolint:contextcheck // Cleanup is detached by design; see removeRemoteFile.
+			e.removeRemoteFile(envFile)
+		}
 
 		return nil, &invoke.TransportError{Op: "start", Err: err}
 	}
@@ -174,7 +186,7 @@ const (
 // command. The values never reach an argument vector. A caller who cannot
 // use a file — a read-only target, say — can opt into carrying them on the
 // command line instead, where every account on the host can read them.
-func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env []string) (string, error) {
+func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env []string) (string, string, error) {
 	var refused []string
 
 	for _, pair := range env {
@@ -189,29 +201,45 @@ func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env 
 	}
 
 	if len(refused) == 0 {
-		return "", nil
+		return "", "", nil
 	}
 
 	if e.cfg.CommandLineEnv {
-		return exportPrologue(refused), nil
+		return exportPrologue(refused), "", nil
 	}
 
 	suffix, err := randomSuffix()
 	if err != nil {
-		return "", fmt.Errorf("ssh: start: %w", err)
+		return "", "", fmt.Errorf("ssh: start: %w", err)
 	}
 
 	path := "/tmp/.invoke-env-" + suffix
 
 	if err := e.writeRemoteFile(ctx, path, exportScript(refused)); err != nil {
-		return "", fmt.Errorf(
+		return "", "", fmt.Errorf(
 			"ssh: start: the server refused %s and they could not be delivered by file either; "+
 				"pass WithCommandLineEnv to send them on the command line, where every account "+
 				"on the host can read them: %w",
 			strings.Join(refusedNames(refused), ", "), err)
 	}
 
-	return sourcePrologue(path), nil
+	return sourcePrologue(path), path, nil
+}
+
+// cleanupTimeout bounds the best-effort removal of a delivery file.
+const cleanupTimeout = 10 * time.Second
+
+// removeRemoteFile deletes a file this package created, best effort and
+// detached from any caller context: the outcome the file supported has
+// already been decided, and a secret left in /tmp is worth one more
+// round trip.
+func (e *Environment) removeRemoteFile(path string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
+	defer cancel()
+
+	if _, _, err := e.runRaw(ctx, "rm -f "+quoteArg(path)); err != nil {
+		return // Best effort: the outcome the file supported is already decided.
+	}
 }
 
 // refusedNames lists the variable names from KEY=VALUE pairs, so an error
@@ -318,6 +346,25 @@ func (p *process) doWait() {
 	p.result, p.waitErr = p.mapOutcome(err, duration)
 
 	_ = p.session.Close()
+
+	p.sweepEnvFile()
+}
+
+// sweepEnvFile removes the delivery file after an ending that may have
+// killed the shell before its own rm ran. An outcome saying the command
+// ran means the file is already gone — the prologue removes it before
+// the command — so only the other endings are swept.
+func (p *process) sweepEnvFile() {
+	if p.envFile == "" || p.waitErr == nil {
+		return
+	}
+
+	var exitErr *invoke.ExitError
+	if errors.As(p.waitErr, &exitErr) {
+		return
+	}
+
+	p.env.removeRemoteFile(p.envFile)
 }
 
 // monitorContext kills the remote command when the start context is
@@ -352,6 +399,18 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 	sig, signaled := waitSignal(err)
 
 	if !signaled {
+		// The guard's status is reserved on the file route: it says the
+		// environment file could not be read, so the command was never
+		// started — which is precisely what makes the failure safe to
+		// retry.
+		if p.envFile != "" && reportedStatus(err) == envDeliveryFailed {
+			return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.TransportError{
+				Op: "env",
+				Err: errors.New(
+					"the environment file could not be read before the command ran, so the command was not started"),
+			}
+		}
+
 		if res, outcome, reported := reportedExit(err, duration); reported {
 			return res, outcome
 		}
@@ -413,6 +472,17 @@ func waitSignal(err error) (invoke.Signal, bool) {
 	}
 
 	return invoke.Signal(sig), true
+}
+
+// reportedStatus returns the exit status a session-wait error carries,
+// or -1 when it carries none.
+func reportedStatus(err error) int {
+	var exitErr *ssh.ExitError
+	if !errors.As(err, &exitErr) {
+		return -1
+	}
+
+	return exitErr.ExitStatus()
 }
 
 // reportedExit returns the outcome for a session-wait error carrying an

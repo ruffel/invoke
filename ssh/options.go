@@ -129,11 +129,13 @@ func WithTimeout(d time.Duration) Option {
 // remote command line when the server refuses to accept them out of band.
 //
 // A server accepts only the variables its AcceptEnv setting names, and
-// the stock setting names none. Without this option a refusal fails the
-// command rather than running it without its environment. With it, the
-// refused variables are exported on the command line — where they appear
-// in the remote process table and every account on the host can read
-// them. Do not use it to pass secrets.
+// the stock setting names none. Refused variables ordinarily travel in a
+// file only the login user can read, which the command line sources and
+// deletes before the command runs; that route needs a writable /tmp, and
+// reserves exit status 93 to report a file that could not be read. With
+// this option the refused variables are exported on the command line
+// instead — where they appear in the remote process table and every
+// account on the host can read them. Do not use it to pass secrets.
 func WithCommandLineEnv() Option {
 	return func(c *Config) { c.CommandLineEnv = true }
 }
