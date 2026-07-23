@@ -207,6 +207,88 @@ func TestUnsupportedShellSyntaxIsRefusedNotRun(t *testing.T) {
 	assert.Contains(t, err.Error(), "||", "the refusal must name what it could not run")
 }
 
+// TestBuiltinsAnswerTruthfullyOrRefuse pins the builtins' failure modes
+// against what a real shell's utilities do. A silent wrong answer —
+// test reporting false for a form it never evaluated, mkdir agreeing
+// about a directory it did not create, rm agreeing about a path that
+// was never there — reads as a verdict, and it would be a made-up one.
+func TestBuiltinsAnswerTruthfullyOrRefuse(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		script     string
+		env        []string
+		wantExit   int
+		wantStdout string
+		inStderr   string
+	}{
+		{name: "test -z on empty is true", script: `test -z ""`, wantExit: 0},
+		{name: "test -z on text is false", script: `test -z x`, wantExit: 1},
+		{name: "test one argument is its non-emptiness", script: `test abc`, wantExit: 0},
+		{name: "test one empty argument is false", script: `test ""`, wantExit: 1},
+		{name: "test refuses a binary form", script: `test a = a`, wantExit: 2, inStderr: "simulated"},
+		{name: "test refuses a numeric form", script: `test 1 -eq 1`, wantExit: 2, inStderr: "simulated"},
+		{name: "test refuses an unknown operator", script: `test -x /tmp`, wantExit: 2, inStderr: "simulated"},
+		{name: "mkdir fails on an existing path", script: `mkdir /tmp`, wantExit: 1, inStderr: "file exists"},
+		{name: "mkdir fails on a missing parent", script: `mkdir /a/b`, wantExit: 1, inStderr: "no such file or directory"},
+		{name: "mkdir -p tolerates both", script: `mkdir -p /a/b && mkdir -p /a/b`, wantExit: 0},
+		{name: "mkdir still creates", script: `mkdir /fresh && test -d /fresh`, wantExit: 0},
+		{name: "rm without an operand fails", script: `rm`, wantExit: 1, inStderr: "missing operand"},
+		{name: "rm fails on a missing path", script: `rm /missing`, wantExit: 1, inStderr: "no such file or directory"},
+		{name: "rm -f tolerates a missing path", script: `rm -f /missing`, wantExit: 0},
+		{name: "rm still removes", script: `touch /f && rm /f && test -e /f`, wantExit: 1},
+		{name: "exit refuses a non-numeric status", script: `exit abc`, wantExit: 2, inStderr: "numeric argument required"},
+		{
+			name:       "cd alone goes home",
+			script:     `mkdir -p /home/dev && cd && pwd`,
+			env:        []string{"HOME=/home/dev"},
+			wantExit:   0,
+			wantStdout: "/home/dev\n",
+		},
+		{
+			name:     "cd alone without HOME fails",
+			script:   `cd`,
+			env:      []string{"HOME="},
+			wantExit: 1,
+			inStderr: "HOME not set",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := fake.New(fake.WithEnv(tt.env...))
+
+			t.Cleanup(func() { _ = env.Close() })
+
+			var stdout, stderr bytes.Buffer
+
+			proc, err := env.Start(t.Context(), invoke.Shell(tt.script), invoke.IO{Stdout: &stdout, Stderr: &stderr})
+			require.NoError(t, err, "every script here is within the subset")
+
+			res, waitErr := proc.Wait()
+			assert.Equal(t, tt.wantExit, res.ExitCode, "exit code must match a real shell's")
+
+			if tt.wantExit == 0 {
+				assert.NoError(t, waitErr)
+			} else {
+				var exitErr *invoke.ExitError
+
+				assert.ErrorAs(t, waitErr, &exitErr, "a non-zero answer is an ExitError, not a refusal")
+			}
+
+			assert.Equal(t, tt.wantStdout, stdout.String(), "stdout")
+
+			if tt.inStderr != "" {
+				assert.Contains(t, stderr.String(), tt.inStderr,
+					"the failure must say what went wrong")
+			}
+		})
+	}
+}
+
 // TestBracedNamesAndSpacedRedirectsRun pins the two spellings the shell
 // accepts as part of its subset: ${NAME} is the same expansion as
 // $NAME, and a space before /dev/null is the same redirection as the

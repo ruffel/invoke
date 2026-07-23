@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -235,7 +236,17 @@ func runTest(s *session, args []string) int {
 		args = args[1:]
 	}
 
-	ok := evalTest(s, args)
+	ok, known := evalTest(s, args)
+	if !known {
+		// A form outside the simulated set is refused, never guessed
+		// at: a silent false reads as a verdict, and it would be a
+		// made-up one.
+		_, _ = io.WriteString(s.stderr,
+			"test: only the one-argument form and unary -e, -d, -f, -L, -n, -z, -t are simulated\n")
+
+		return 2
+	}
+
 	if negate {
 		ok = !ok
 	}
@@ -247,33 +258,51 @@ func runTest(s *session, args []string) int {
 	return 1
 }
 
-func evalTest(s *session, args []string) bool {
-	if len(args) != 2 {
-		return false
+// evalTest answers the simulated test forms. The second result reports
+// whether the form is one the fake can answer at all.
+func evalTest(s *session, args []string) (bool, bool) {
+	switch len(args) {
+	case 0:
+		// An empty expression is false, as POSIX has it.
+		return false, true
+	case 1:
+		// The one-argument form: true when the string is non-empty.
+		return args[0] != "", true
+	case 2:
+		return evalTestUnary(s, args[0], args[1])
+	default:
+		return false, false
+	}
+}
+
+func evalTestUnary(s *session, op, operand string) (bool, bool) {
+	switch op {
+	case "-n":
+		return operand != "", true
+	case "-z":
+		return operand == "", true
+	case "-t":
+		return false, true // The fake never allocates a terminal.
 	}
 
-	path := vfsClean(s.dir, args[1])
+	target := vfsClean(s.dir, operand)
 
-	node, exists := s.fs.snapshot(path)
+	node, exists := s.fs.snapshot(target)
 
-	switch args[0] {
+	switch op {
 	case "-e":
-		return exists
+		return exists, true
 	case "-d":
-		return exists && node.dir
+		return exists && node.dir, true
 	case "-f":
 		// A regular file: present, and neither a directory nor a link.
 		// The fake does not follow links here, which suffices for the
 		// contracts that probe already-materialized regular files.
-		return exists && !node.dir && node.link == ""
+		return exists && !node.dir && node.link == "", true
 	case "-L":
-		return exists && node.link != ""
-	case "-n":
-		return args[1] != ""
-	case "-t":
-		return false // The fake never allocates a terminal.
+		return exists && node.link != "", true
 	default:
-		return false
+		return false, false
 	}
 }
 
@@ -309,13 +338,45 @@ func runFind(s *session, args []string) int {
 }
 
 func runMkdir(s *session, args []string) int {
+	parents := false
 	if len(args) > 0 && args[0] == "-p" {
+		parents = true
 		args = args[1:]
 	}
 
 	for _, arg := range args {
-		if err := s.fs.mkdirAll(vfsClean(s.dir, arg)); err != nil {
+		target := vfsClean(s.dir, arg)
+
+		if !parents {
+			if code := checkMkdirPlain(s, arg, target); code != 0 {
+				return code
+			}
+		}
+
+		if err := s.fs.mkdirAll(target); err != nil {
 			_, _ = io.WriteString(s.stderr, "mkdir: "+err.Error()+"\n")
+
+			return 1
+		}
+	}
+
+	return 0
+}
+
+// checkMkdirPlain enforces what mkdir without -p cannot tolerate: an
+// existing target, or a missing parent. Tolerating either is -p's job,
+// and agreeing about a directory it did not create would be a verdict
+// the caller never earned.
+func checkMkdirPlain(s *session, arg, target string) int {
+	if _, exists := s.fs.snapshot(target); exists {
+		_, _ = io.WriteString(s.stderr, "mkdir: "+arg+": file exists\n")
+
+		return 1
+	}
+
+	if parent := path.Dir(target); parent != "/" {
+		if node, ok := s.fs.snapshot(parent); !ok || !node.dir {
+			_, _ = io.WriteString(s.stderr, "mkdir: "+arg+": no such file or directory\n")
 
 			return 1
 		}
@@ -337,15 +398,44 @@ func runTouch(s *session, args []string) int {
 }
 
 func runRm(s *session, args []string) int {
+	force := false
+
 	if len(args) > 0 && (args[0] == "-rf" || args[0] == "-fr" || args[0] == "-r" || args[0] == "-f") {
+		force = args[0] != "-r"
 		args = args[1:]
 	}
 
-	for _, arg := range args {
-		s.fs.removeAll(vfsClean(s.dir, arg))
+	if len(args) == 0 {
+		// Without -f, nothing to remove is an error, not a success.
+		if force {
+			return 0
+		}
+
+		_, _ = io.WriteString(s.stderr, "rm: missing operand\n")
+
+		return 1
 	}
 
-	return 0
+	status := 0
+
+	for _, arg := range args {
+		target := vfsClean(s.dir, arg)
+
+		if _, exists := s.fs.snapshot(target); !exists {
+			if force {
+				continue
+			}
+
+			_, _ = io.WriteString(s.stderr, "rm: "+arg+": no such file or directory\n")
+			status = 1
+
+			continue
+		}
+
+		s.fs.removeAll(target)
+	}
+
+	return status
 }
 
 func runDD(ctx context.Context, s *session, args []string) (int, bool) {
