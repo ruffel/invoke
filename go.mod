@@ -17,3 +17,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// Pre-rewrite layout whose providers/* submodule tags were deleted;
+// these versions resolve but cannot build.
+retract [v0.0.1, v0.1.0]

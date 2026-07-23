@@ -58,11 +58,6 @@ git tag docker/v0.2.0
 git push ruffel docker/v0.2.0
 ```
 
-After this, re-enable the submodule's arm of `just tidy` and
-`just tidy-check`, and add `cd docker && go mod tidy -diff` to the CI lint
-job: the reason they were skipped stops being true once a version exists
-to resolve.
-
 ## Verifying the release
 
 Tags are effectively permanent once the module proxy has seen them, so
@@ -92,12 +87,22 @@ The `release-verify` workflow does exactly this on every tag push, so it
 runs whether or not anyone remembers to.
 
 If it fails, the tag cannot be withdrawn — the proxy keeps serving it.
-Publish a corrected patch version instead.
+Publish a corrected patch version instead, and add the bad version to
+the `retract` block in go.mod so the go command steers consumers off it.
 
 ## History on the proxy
 
 Versions up to `v0.1.0` were published under an older layout, with
-providers in `providers/*` submodules that no longer exist. The proxy
-serves them permanently, so those module paths remain resolvable. Nothing
-needs to be done about them; `v0.2.0` supersedes `v0.1.0` for anyone
-asking for the latest, and the old paths simply stop receiving updates.
+providers in `providers/*` submodules. Those submodule tags were later
+deleted and the proxy never cached them, so the old versions resolve but
+do not build: `go get github.com/ruffel/invoke@v0.1.0` succeeds, and the
+consumer's next `go mod tidy` fails asking for `providers/*` revisions
+that no longer exist anywhere.
+
+`go.mod` therefore retracts `[v0.0.1, v0.1.0]`. The go command reads
+retractions from the latest release, then hides those versions from
+version lists and warns anyone already on them — so the directive takes
+effect with the first release that carries it. The `providers/*` paths
+themselves cannot be retracted: retraction is a statement a module makes
+about its own versions, and no new version of those paths will ever
+exist to make it.
