@@ -40,6 +40,20 @@ func commandLine(cmd invoke.Command, prologue string) string {
 	return prologue + line
 }
 
+// envValue returns the last value name carries in env, honoring the
+// same last-wins rule the delivered environment has.
+func envValue(env []string, name string) (string, bool) {
+	value, found := "", false
+
+	for _, pair := range env {
+		if key, v, ok := strings.Cut(pair, "="); ok && key == name {
+			value, found = v, true
+		}
+	}
+
+	return value, found
+}
+
 // exportScript renders KEY=VALUE pairs as a shell script that exports
 // them, for a file the command line sources.
 func exportScript(pairs []string) string {
@@ -115,21 +129,60 @@ const (
 func preCheckLine(cmd invoke.Command) string {
 	var b strings.Builder
 
+	// The check resolves the executable exactly where the command will:
+	// a PATH the caller supplies travels into the pre-check, or the two
+	// disagree — refusing a runnable command, or waving through a name
+	// that resolves elsewhere at run time. PATH is no secret; the
+	// values that stay off command lines travel by the env machinery.
+	if value, ok := envValue(cmd.Env, "PATH"); ok {
+		b.WriteString("PATH=" + quoteArg(value) + "; export PATH; ")
+	}
+
 	if cmd.Dir != "" {
 		b.WriteString("cd " + quoteArg(cmd.Dir) + " 2>/dev/null")
 		b.WriteString(" || exit " + strconv.Itoa(preCheckBadDir) + "; ")
 	}
 
-	// A name is resolved through PATH, which only ever yields something
-	// executable. A path is checked directly, because "command -v" given
-	// a path answers whether the file exists on some shells and whether
-	// it can be executed on others — and the first answer would let a
-	// file that cannot run reach the caller as a runtime failure instead.
+	// A name is resolved by walking PATH for executable files, exactly
+	// as every other provider resolves one. A path is checked directly,
+	// because "command -v" given a path answers whether the file exists
+	// on some shells and whether it can be executed on others — and the
+	// first answer would let a file that cannot run reach the caller as
+	// a runtime failure instead.
 	b.WriteString("case " + quoteArg(cmd.Path) + " in ")
 	b.WriteString("*/*) [ -f " + quoteArg(cmd.Path) + " ] && [ -x " + quoteArg(cmd.Path) + " ]")
 	b.WriteString(" || exit " + strconv.Itoa(preCheckNotFound) + " ;; ")
-	b.WriteString("*) command -v " + quoteArg(cmd.Path) + " >/dev/null 2>&1")
-	b.WriteString(" || exit " + strconv.Itoa(preCheckNotFound) + " ;; ")
+	b.WriteString("*) " + pathWalkLine(quoteArg(cmd.Path), "exit 0", "exit "+strconv.Itoa(preCheckNotFound)) + " ;; ")
+	b.WriteString("esac")
+
+	return b.String()
+}
+
+// pathWalkLine walks the login PATH for the already-quoted name, files
+// only, running hit on the first match and miss when nothing matched.
+//
+// The walk is what keeps resolution honest: "command -v" answers for
+// shell builtins and keywords too, so it blesses a bare "cd" that no
+// exec could ever run, and it shadows a real /bin/echo behind the
+// builtin of the same name. Every other provider resolves through the
+// filesystem; this is the same search spelled in sh.
+func pathWalkLine(quoted, hit, miss string) string {
+	probe := `[ -f "$d/"` + quoted + ` ] && [ -x "$d/"` + quoted + ` ]`
+
+	return "IFS=:; for d in $PATH; do " + probe + " && { " + hit + "; }; done; " + miss
+}
+
+// lookPathLine resolves a name the way the local provider's LookPath
+// does: a name containing a slash is checked directly; a bare name
+// walks the login PATH and prints the first executable file it finds.
+func lookPathLine(name string) string {
+	quoted := quoteArg(name)
+
+	var b strings.Builder
+
+	b.WriteString("case " + quoted + " in ")
+	b.WriteString("*/*) [ -f " + quoted + " ] && [ -x " + quoted + " ] && printf '%s\\n' " + quoted + " ;; ")
+	b.WriteString("*) " + pathWalkLine(quoted, `printf '%s\n' "$d/"`+quoted+"; exit 0", "exit 1") + " ;; ")
 	b.WriteString("esac")
 
 	return b.String()
