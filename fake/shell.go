@@ -15,9 +15,9 @@ import (
 
 // The mini-shell interprets the POSIX subset the contract suite and
 // typical incidental scripts use: command sequencing with ; and &&,
-// single and double quotes, $VAR expansion, $(command) substitution,
-// numeric redirects to /dev/null and between the two output streams, cd,
-// and exit.
+// single and double quotes, $VAR and ${VAR} expansion, $(command)
+// substitution, numeric redirects to /dev/null (flush or spaced) and
+// between the two output streams, cd, and exit.
 //
 // Nothing more, and the boundary is enforced rather than described: a
 // script reaching past the subset is refused by name, because the
@@ -63,7 +63,7 @@ const exitUnsupportedSyntax = 93
 // what every real target does — so a script this shell cannot run is
 // refused rather than run wrongly.
 //
-//nolint:cyclop,gocognit // One pass over the script; the cases read better together than split.
+//nolint:cyclop,gocognit,funlen // One pass over the script; the cases read better together than split.
 func unsupportedSyntax(script string) error {
 	runes := []rune(script)
 
@@ -85,10 +85,15 @@ func unsupportedSyntax(script string) error {
 			switch r {
 			case '"':
 				inDouble = false
+			case '\\':
+				return errors.New("a backslash escape")
 			case '$':
-				if err := unsupportedParameter(runes, i); err != nil {
+				next, err := checkDollar(runes, i)
+				if err != nil {
 					return err
 				}
+
+				i = next
 			}
 
 			continue
@@ -99,13 +104,22 @@ func unsupportedSyntax(script string) error {
 			inSingle = true
 		case '"':
 			inDouble = true
-		case ' ', '\t':
+		case ' ', '\t', ';':
 			wordStart = i + 1
 		case '\n':
 			// A newline that only trails the script separates nothing.
 			if strings.TrimSpace(string(runes[i:])) != "" {
 				return errors.New("a newline separating commands")
 			}
+		case '#':
+			// Starting a word, # opens a comment; inside one it is data.
+			if i == wordStart {
+				return errors.New("a comment")
+			}
+		case '*', '?':
+			return fmt.Errorf("the glob character %q", string(r))
+		case '\\':
+			return errors.New("a backslash escape")
 		case '|':
 			if i+1 < len(runes) && runes[i+1] == '|' {
 				return fmt.Errorf("an %q list", "||")
@@ -119,34 +133,90 @@ func unsupportedSyntax(script string) error {
 		case '&':
 			if i+1 < len(runes) && runes[i+1] == '&' {
 				i++
+				wordStart = i + 1
 
 				continue
 			}
 
 			return errors.New("a background command")
 		case '>':
-			end := wordEnd(runes, i)
-
-			word := string(runes[wordStart:end])
-			if _, ok := parseRedirect(word); !ok {
-				return fmt.Errorf("the redirection %q", word)
-			}
-
-			i = end - 1
-		case '$':
-			if err := unsupportedParameter(runes, i); err != nil {
+			next, err := checkRedirect(runes, wordStart, i)
+			if err != nil {
 				return err
 			}
+
+			i = next
+		case '$':
+			next, err := checkDollar(runes, i)
+			if err != nil {
+				return err
+			}
+
+			i = next
 		}
 	}
 
 	return nil
 }
 
+// checkDollar vets one $ form and reports how far the scan may skip.
+// The contents of a $(command) substitution are vetted recursively —
+// necessarily so inside double quotes, where the main scan treats
+// everything as data and would never see a construct hiding there.
+func checkDollar(runes []rune, at int) (int, error) {
+	if err := unsupportedParameter(runes, at); err != nil {
+		return 0, err
+	}
+
+	next := at + 1
+	if next >= len(runes) || runes[next] != '(' {
+		return at, nil
+	}
+
+	end := matchParen(runes, next)
+	if end < 0 {
+		// Unclosed: left for the runtime to report as the syntax error
+		// a real shell makes of it.
+		return at, nil
+	}
+
+	if err := unsupportedSyntax(string(runes[next+1 : end-1])); err != nil {
+		return 0, err
+	}
+
+	return end - 1, nil
+}
+
+// checkRedirect vets one unquoted > form: the flush redirections
+// parseRedirect recognizes, and the spaced spelling of a /dev/null
+// target. It reports how far the scan may skip, or refuses the word.
+func checkRedirect(runes []rune, wordStart, at int) (int, error) {
+	end := wordEnd(runes, at)
+
+	word := string(runes[wordStart:end])
+	if _, ok := parseRedirect(word); ok {
+		return end - 1, nil
+	}
+
+	if _, ok := redirectPrefix(word); ok {
+		target := end
+		for target < len(runes) && (runes[target] == ' ' || runes[target] == '\t') {
+			target++
+		}
+
+		targetEnd := wordEnd(runes, target)
+		if string(runes[target:targetEnd]) == devNull {
+			return targetEnd - 1, nil
+		}
+	}
+
+	return 0, fmt.Errorf("the redirection %q", word)
+}
+
 // unsupportedParameter reports a parameter form the shell expands to
-// nothing useful. $NAME and $(command) are interpreted; the special and
-// positional parameters are not, and would otherwise survive as the
-// literal text a caller wrote.
+// nothing useful. $NAME, ${NAME} and $(command) are interpreted; the
+// special and positional parameters and the ${ operator forms are not,
+// and would otherwise survive as the literal text a caller wrote.
 func unsupportedParameter(runes []rune, at int) error {
 	next := at + 1
 	if next >= len(runes) {
@@ -155,7 +225,19 @@ func unsupportedParameter(runes []rune, at int) error {
 
 	r := runes[next]
 
-	if r == '(' || r == '_' || unicode.IsLetter(r) {
+	if r == '(' {
+		if next+1 < len(runes) && runes[next+1] == '(' {
+			return errors.New("arithmetic expansion")
+		}
+
+		return nil
+	}
+
+	if r == '{' {
+		return unsupportedBrace(runes, next)
+	}
+
+	if r == '_' || unicode.IsLetter(r) {
 		return nil
 	}
 
@@ -166,6 +248,39 @@ func unsupportedParameter(runes []rune, at int) error {
 	// A $ before anything else is an ordinary character to a real shell
 	// too, so it is left alone.
 	return nil
+}
+
+// unsupportedBrace vets a ${...} form. The plain braced name is the
+// same expansion as the bare one; the operator forms — defaults,
+// substrings, replacements — are refused by name rather than surviving
+// as the literal text a caller wrote.
+func unsupportedBrace(runes []rune, brace int) error {
+	end := indexRune(runes, brace+1, '}')
+	if end < 0 {
+		return errors.New("an unclosed ${ parameter")
+	}
+
+	name := runes[brace+1 : end]
+	if !isName(name) {
+		return fmt.Errorf("the parameter form %q", "${"+string(name)+"}")
+	}
+
+	return nil
+}
+
+// isName reports whether runes form a valid variable name.
+func isName(runes []rune) bool {
+	if len(runes) == 0 {
+		return false
+	}
+
+	for i, r := range runes {
+		if !isVarRune(r, i == 0) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // wordEnd returns the index just past the word containing position at.
@@ -363,6 +478,9 @@ func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) 
 	return code, false, wasInterrupted
 }
 
+// devNull is the only redirect target the shell simulates.
+const devNull = "/dev/null"
+
 // redirect is one parsed redirection word.
 type redirect struct {
 	fd     int    // 1 or 2
@@ -420,11 +538,24 @@ func parseRedirect(word string) (redirect, bool) {
 		return redirect{fd: fd, toFD: toFD}, true
 	}
 
-	if rest == "/dev/null" {
+	if rest == devNull {
 		return redirect{fd: fd, toPath: rest}, true
 	}
 
 	return redirect{}, false
+}
+
+// redirectPrefix recognizes the head of a spaced redirection — ">",
+// "1>", "2>" — and reports which stream it names.
+func redirectPrefix(word string) (int, bool) {
+	switch word {
+	case ">", "1>":
+		return 1, true
+	case "2>":
+		return 2, true
+	default:
+		return 0, false
+	}
 }
 
 // shellWord is one tokenized word together with how it was written.
@@ -523,17 +654,28 @@ func expandSegment(ctx context.Context, s *session, runes []rune, at int) (strin
 
 // classifyWords separates tokenized words into argv and redirects. A
 // word carrying quoted or expanded content is never a redirect, however
-// much it looks like one.
+// much it looks like one; a bare ">" whose next bare word is /dev/null
+// is the spaced spelling of the flush form.
 func classifyWords(words []shellWord) ([]string, []redirect) {
 	var (
 		argv      []string
 		redirects []redirect
 	)
 
-	for _, word := range words {
+	for i := 0; i < len(words); i++ {
+		word := words[i]
+
 		if word.bare {
 			if r, isRedirect := parseRedirect(word.text); isRedirect {
 				redirects = append(redirects, r)
+
+				continue
+			}
+
+			if fd, ok := redirectPrefix(word.text); ok && i+1 < len(words) &&
+				words[i+1].bare && words[i+1].text == devNull {
+				redirects = append(redirects, redirect{fd: fd, toPath: devNull})
+				i++
 
 				continue
 			}
@@ -581,30 +723,19 @@ func expandDoubleQuoted(ctx context.Context, s *session, runes []rune, start int
 	return "", 0, false, false
 }
 
-// expandDollar consumes a $NAME or $(command) form starting at the $. It
-// returns, in order: the expanded value, the index after the form,
-// whether it parsed, and whether a substitution was interrupted.
+// expandDollar consumes a $NAME, ${NAME} or $(command) form starting at
+// the $. It returns, in order: the expanded value, the index after the
+// form, whether it parsed, and whether a substitution was interrupted.
 func expandDollar(ctx context.Context, s *session, runes []rune, start int) (string, int, bool, bool) {
 	i := start + 1
 
 	if i < len(runes) && runes[i] == '(' {
-		depth := 1
-		j := i + 1
-
-		for ; j < len(runes) && depth > 0; j++ {
-			switch runes[j] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-		}
-
-		if depth != 0 {
+		end := matchParen(runes, i)
+		if end < 0 {
 			return "", 0, false, false
 		}
 
-		inner := string(runes[i+1 : j-1])
+		inner := string(runes[i+1 : end-1])
 
 		var captured bytes.Buffer
 
@@ -616,7 +747,21 @@ func expandDollar(ctx context.Context, s *session, runes []rune, start int) (str
 			return "", 0, false, true
 		}
 
-		return strings.TrimRight(captured.String(), "\n"), j, true, false
+		return strings.TrimRight(captured.String(), "\n"), end, true, false
+	}
+
+	if i < len(runes) && runes[i] == '{' {
+		end := indexRune(runes, i+1, '}')
+		if end < 0 {
+			return "", 0, false, false
+		}
+
+		name := runes[i+1 : end]
+		if !isName(name) {
+			return "", 0, false, false
+		}
+
+		return s.lookupEnv(string(name)), end + 1, true, false
 	}
 
 	nameEnd := i
@@ -637,6 +782,27 @@ func isVarRune(r rune, first bool) bool {
 	}
 
 	return !first && r >= '0' && r <= '9'
+}
+
+// matchParen returns the index just past the ) matching the ( at open,
+// or -1 when the script ends first.
+func matchParen(runes []rune, open int) int {
+	depth := 1
+
+	for i := open + 1; i < len(runes); i++ {
+		switch runes[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+
+		if depth == 0 {
+			return i + 1
+		}
+	}
+
+	return -1
 }
 
 func indexRune(runes []rune, from int, want rune) int {
