@@ -36,9 +36,11 @@
 // The builtins are likewise a vocabulary rather than an implementation:
 // they cover the options the contract suite and ordinary shell-outs use.
 // Notably cat reads standard input and ignores file arguments, echo takes
-// no flags, and test and cd do not follow symbolic links. A script
-// needing more than the subset belongs in a handler registered with
-// [Environment.Handle], or on a real target.
+// no flags, and test and cd do not follow symbolic links. A form a
+// builtin does not simulate — a test operator outside its unary set,
+// most utility flags — fails loudly on standard error rather than being
+// answered falsely. A script needing more than the subset belongs in a
+// handler registered with [Environment.Handle], or on a real target.
 package fake
 
 import (

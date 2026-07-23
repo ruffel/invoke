@@ -451,23 +451,9 @@ func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) 
 
 	switch argv[0] {
 	case "exit":
-		code := 0
-		if len(argv) > 1 {
-			code, _ = strconv.Atoi(argv[1])
-		}
-
-		return code, true, false
-
+		return runExit(s, argv)
 	case "cd":
-		if len(argv) != 2 || !s.fs.isDir(vfsClean(s.dir, argv[1])) {
-			_, _ = io.WriteString(s.stderr, "cd: no such directory\n")
-
-			return 1, false, false
-		}
-
-		s.dir = vfsClean(s.dir, argv[1])
-
-		return 0, false, false
+		return runCD(s, argv)
 	}
 
 	sub := s.clone()
@@ -480,6 +466,56 @@ func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) 
 
 // devNull is the only redirect target the shell simulates.
 const devNull = "/dev/null"
+
+// runExit answers the exit builtin. A status that is not a number is
+// the error a real shell reports, never a quiet zero.
+func runExit(s *session, argv []string) (int, bool, bool) {
+	if len(argv) == 1 {
+		return 0, true, false
+	}
+
+	code, err := strconv.Atoi(argv[1])
+	if err != nil {
+		_, _ = io.WriteString(s.stderr, "sh: exit: "+argv[1]+": numeric argument required\n")
+
+		return 2, true, false
+	}
+
+	return code, true, false
+}
+
+// runCD answers the cd builtin. Without an argument it goes where a
+// real shell goes: $HOME.
+func runCD(s *session, argv []string) (int, bool, bool) {
+	var target string
+
+	switch len(argv) {
+	case 1:
+		target = s.lookupEnv("HOME")
+		if target == "" {
+			_, _ = io.WriteString(s.stderr, "cd: HOME not set\n")
+
+			return 1, false, false
+		}
+	case 2:
+		target = argv[1]
+	default:
+		_, _ = io.WriteString(s.stderr, "cd: too many arguments\n")
+
+		return 1, false, false
+	}
+
+	dest := vfsClean(s.dir, target)
+	if !s.fs.isDir(dest) {
+		_, _ = io.WriteString(s.stderr, "cd: no such directory\n")
+
+		return 1, false, false
+	}
+
+	s.dir = dest
+
+	return 0, false, false
+}
 
 // redirect is one parsed redirection word.
 type redirect struct {
