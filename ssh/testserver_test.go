@@ -1,6 +1,7 @@
 package ssh_test
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/binary"
@@ -49,6 +50,10 @@ type testServer struct {
 	// refuseEnv declines every env request, as a stock sshd with no
 	// AcceptEnv configuration does — the ordinary case in the field.
 	refuseEnv bool
+
+	// authorizedKey, when set, is accepted for public-key
+	// authentication alongside the password.
+	authorizedKey ssh.PublicKey
 
 	// sabotageEnvFile deletes any delivery file a command line names
 	// before running it, standing in for a tmp cleaner that got there
@@ -119,6 +124,12 @@ func withStalledSFTP() serverOption {
 
 // withExtraHostKey offers a second host key of a different type, which
 // the client will prefer unless it constrains negotiation.
+// withAuthorizedKey accepts the given public key for authentication,
+// alongside the password.
+func withAuthorizedKey(pub ssh.PublicKey) serverOption {
+	return func(s *testServer) { s.authorizedKey = pub }
+}
+
 // withRefusedEnv declines every env request, which is what a stock sshd
 // does: AcceptEnv names nothing by default.
 func withRefusedEnv() serverOption {
@@ -226,6 +237,16 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 
 	if srv.extraHostKey != nil {
 		config.AddHostKey(srv.extraHostKey)
+	}
+
+	if srv.authorizedKey != nil {
+		config.PublicKeyCallback = func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			if bytes.Equal(key.Marshal(), srv.authorizedKey.Marshal()) {
+				return &ssh.Permissions{}, nil
+			}
+
+			return nil, errors.New("unknown public key")
+		}
 	}
 
 	go srv.acceptLoop()
