@@ -207,6 +207,88 @@ func TestUnsupportedShellSyntaxIsRefusedNotRun(t *testing.T) {
 	assert.Contains(t, err.Error(), "||", "the refusal must name what it could not run")
 }
 
+// TestQuotedMetacharactersAreDataAtRuntime pins what happens after
+// acceptance. The check at Start already lets a quoted metacharacter
+// through as data; the tokenizer must then keep treating it as data. A
+// quoted "2>&1" that rewires streams is the shell answering wrongly
+// without saying so — on every real target it is a plain argument.
+//
+// The same rule covers values that arrive by expansion: a variable or
+// substitution result is data wherever it lands, never syntax.
+func TestQuotedMetacharactersAreDataAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	envCmd := invoke.Shell(`echo $REDIR`)
+	envCmd.Env = []string{"REDIR=2>&1"}
+
+	tests := []struct {
+		name       string
+		cmd        invoke.Command
+		wantStdout string
+		wantStderr string
+	}{
+		{
+			name:       "single-quoted duplication stays a word",
+			cmd:        invoke.Shell(`echo '2>&1'`),
+			wantStdout: "2>&1\n",
+		},
+		{
+			name:       "double-quoted duplication stays a word",
+			cmd:        invoke.Shell(`echo "2>&1"`),
+			wantStdout: "2>&1\n",
+		},
+		{
+			name:       "single-quoted null redirect stays a word",
+			cmd:        invoke.Shell(`echo '>/dev/null'`),
+			wantStdout: ">/dev/null\n",
+		},
+		{
+			name:       "an expanded value is data wherever it lands",
+			cmd:        envCmd,
+			wantStdout: "2>&1\n",
+		},
+		{
+			name:       "a substituted value is data wherever it lands",
+			cmd:        invoke.Shell(`echo $(printf '2>&1')`),
+			wantStdout: "2>&1\n",
+		},
+		{
+			name:       "a bare null redirect still rewires",
+			cmd:        invoke.Shell(`echo hi >/dev/null`),
+			wantStdout: "",
+		},
+		{
+			name:       "a bare duplication still rewires",
+			cmd:        invoke.Shell(`echo hi 1>&2`),
+			wantStderr: "hi\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := fake.New()
+
+			t.Cleanup(func() { _ = env.Close() })
+
+			var stdout, stderr bytes.Buffer
+
+			proc, err := env.Start(t.Context(), tt.cmd, invoke.IO{Stdout: &stdout, Stderr: &stderr})
+			require.NoError(t, err, "every script here is within the subset")
+
+			res, waitErr := proc.Wait()
+			require.NoError(t, waitErr, "want exit 0")
+			require.Equal(t, 0, res.ExitCode, "want exit 0")
+
+			assert.Equal(t, tt.wantStdout, stdout.String(),
+				"stdout must match what a real shell produces")
+			assert.Equal(t, tt.wantStderr, stderr.String(),
+				"stderr must match what a real shell produces")
+		})
+	}
+}
+
 // TestUnsupportedSyntaxNestedInQuotesIsRefusedLoudly covers the script
 // the check at Start cannot see: quoted, and so opaque until it runs.
 func TestUnsupportedSyntaxNestedInQuotesIsRefusedLoudly(t *testing.T) {
