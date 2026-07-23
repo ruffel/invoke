@@ -9,7 +9,9 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -43,6 +45,20 @@ type testServer struct {
 	// extraHostKey is offered alongside the primary key, so a client
 	// whose known_hosts records only one of them must ask for that one.
 	extraHostKey ssh.Signer
+
+	// refuseEnv declines every env request, as a stock sshd with no
+	// AcceptEnv configuration does — the ordinary case in the field.
+	refuseEnv bool
+
+	// sabotageEnvFile deletes any delivery file a command line names
+	// before running it, standing in for a tmp cleaner that got there
+	// first.
+	sabotageEnvFile bool
+
+	// refuseEnvCommandExec declines the exec of a command carrying a
+	// delivery-file prologue, so the file is written and its command
+	// then never starts.
+	refuseEnvCommandExec bool
 
 	mu         sync.Mutex
 	sessions   int
@@ -103,6 +119,24 @@ func withStalledSFTP() serverOption {
 
 // withExtraHostKey offers a second host key of a different type, which
 // the client will prefer unless it constrains negotiation.
+// withRefusedEnv declines every env request, which is what a stock sshd
+// does: AcceptEnv names nothing by default.
+func withRefusedEnv() serverOption {
+	return func(s *testServer) { s.refuseEnv = true }
+}
+
+// withSabotagedEnvFile deletes a delivery file named by a command line
+// just before the command runs.
+func withSabotagedEnvFile() serverOption {
+	return func(s *testServer) { s.sabotageEnvFile = true }
+}
+
+// withRefusedEnvCommandExec declines the exec of any command carrying a
+// delivery-file prologue.
+func withRefusedEnvCommandExec() serverOption {
+	return func(s *testServer) { s.refuseEnvCommandExec = true }
+}
+
 func withExtraHostKey(signer ssh.Signer) serverOption {
 	return func(s *testServer) { s.extraHostKey = signer }
 }
@@ -299,11 +333,30 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 	for req := range requests {
 		switch req.Type {
 		case "env":
+			if s.refuseEnv {
+				reply(req, false)
+
+				continue
+			}
+
 			state.addEnv(req.Payload)
 			reply(req, true)
 		case "exec":
 			line := execCommand(req.Payload)
 			s.recordExec(line)
+
+			// Only the command-carrying exec is refused: its prologue
+			// starts with the readability guard. The write and any
+			// cleanup pass, so the orphan is the fix's to remove.
+			if s.refuseEnvCommandExec && strings.Contains(line, envFilePrefix) && strings.Contains(line, "[ -r ") {
+				reply(req, false)
+
+				continue
+			}
+
+			if s.sabotageEnvFile {
+				removeEnvFilesNamedIn(line)
+			}
 
 			go runExec(channel, state, line)
 
@@ -548,4 +601,18 @@ func readString(b []byte) (string, []byte) {
 	}
 
 	return string(b[4 : 4+n]), b[4+n:]
+}
+
+// envFilePrefix is the prefix every delivery file's path carries.
+const envFilePrefix = "/tmp/.invoke-env-"
+
+// envFilePattern matches a delivery file's path inside a command line.
+var envFilePattern = regexp.MustCompile(`/tmp/\.invoke-env-[0-9a-f]+`)
+
+// removeEnvFilesNamedIn deletes every delivery file a command line
+// names, standing in for a tmp cleaner racing the shell.
+func removeEnvFilesNamedIn(line string) {
+	for _, path := range envFilePattern.FindAllString(line, -1) {
+		_ = os.Remove(path)
+	}
 }

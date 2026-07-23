@@ -250,3 +250,129 @@ func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// deliveredEnvFile digs the delivery file's path out of the recorded
+// execs, so a test can check what became of it on the host the test
+// server runs commands on.
+func deliveredEnvFile(t *testing.T, srv *testServer) string {
+	t.Helper()
+
+	for _, line := range srv.recordedExecs() {
+		if m := envFilePattern.FindString(line); m != "" {
+			return m
+		}
+	}
+
+	t.Fatal("no delivery file appears in the recorded execs")
+
+	return ""
+}
+
+// TestFileEnvRouteDeliversAndCleansUp runs the file-based delivery route
+// end to end against a server that refuses env requests — the stock
+// sshd posture — and holds it to both halves of its promise: the value
+// arrives, and the file is gone before the command runs.
+func TestFileEnvRouteDeliversAndCleansUp(t *testing.T) {
+	t.Parallel()
+
+	const secret = "file-route-value"
+
+	srv := startTestServer(t, withRefusedEnv())
+	env := dialServer(t, srv)
+
+	cmd := invoke.New("printenv", "TOKEN")
+	cmd.Env = []string{"TOKEN=" + secret}
+
+	out, result, err := runOutput(t, env, cmd)
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode, "the variable did not reach the command")
+	assert.Equal(t, secret, strings.TrimSpace(out), "the variable did not reach the command")
+
+	_, statErr := os.Stat(deliveredEnvFile(t, srv))
+	assert.True(t, os.IsNotExist(statErr),
+		"the delivery file must be gone before the command runs")
+
+	for _, line := range srv.recordedExecs() {
+		assert.NotContains(t, line, secret, "the secret appeared in a remote command line")
+	}
+}
+
+// TestFileEnvGuardReportsAnUndeliveredEnvironment pins the route's
+// failure half. When the delivery file cannot be read — a tmp cleaner
+// got there first — the command must not run without its environment,
+// and the caller must hear a delivery failure rather than a verdict
+// from a command that never started.
+func TestFileEnvGuardReportsAnUndeliveredEnvironment(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t, withRefusedEnv(), withSabotagedEnvFile())
+	env := dialServer(t, srv)
+
+	marker := filepath.Join(t.TempDir(), "ran")
+
+	cmd := invoke.New("touch", marker)
+	cmd.Env = []string{"TOKEN=never-delivered"}
+
+	_, _, err := runOutput(t, env, cmd)
+	require.Error(t, err, "an undelivered environment must not read as success")
+
+	var transportErr *invoke.TransportError
+
+	assert.ErrorAs(t, err, &transportErr,
+		"the command never ran, so the failure is retryable transport, not a verdict")
+
+	var exitErr *invoke.ExitError
+
+	assert.NotErrorAs(t, err, &exitErr,
+		"a delivery failure must not be dressed as the command's own exit")
+
+	_, statErr := os.Stat(marker)
+	assert.True(t, os.IsNotExist(statErr),
+		"the command ran without the environment it was promised")
+}
+
+// TestExitStatusReservedByTheGuardStaysAnExitElsewhere pins the
+// reservation's scope: only the file route reads exit 93 as a delivery
+// failure. A command exiting 93 without one is its own verdict.
+func TestExitStatusReservedByTheGuardStaysAnExitElsewhere(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t)
+	env := dialServer(t, srv)
+
+	_, result, err := runOutput(t, env, invoke.Shell("exit 93"))
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr, "exit 93 without file delivery is the command's own")
+	assert.Equal(t, 93, exitErr.Code)
+	assert.Equal(t, 93, result.ExitCode)
+}
+
+// TestFileEnvIsRemovedWhenTheCommandCannotStart pins the orphan half:
+// a delivery file written for a command whose exec the server then
+// refuses must not outlive the failure.
+func TestFileEnvIsRemovedWhenTheCommandCannotStart(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t, withRefusedEnv(), withRefusedEnvCommandExec())
+	env := dialServer(t, srv)
+
+	cmd := invoke.New("true")
+	cmd.Env = []string{"TOKEN=orphaned"}
+
+	proc, err := env.Start(t.Context(), cmd, invoke.IO{})
+	if err == nil {
+		_ = proc.Close()
+
+		require.Fail(t, "the server refused the exec; Start cannot have succeeded")
+	}
+
+	var transportErr *invoke.TransportError
+
+	assert.ErrorAs(t, err, &transportErr, "a refused exec is the transport's failure")
+
+	_, statErr := os.Stat(deliveredEnvFile(t, srv))
+	assert.True(t, os.IsNotExist(statErr),
+		"values the caller deemed too sensitive for an argv must not persist in /tmp")
+}
