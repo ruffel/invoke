@@ -1,12 +1,19 @@
 # invoke
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/ruffel/invoke.svg)](https://pkg.go.dev/github.com/ruffel/invoke)
+[![CI](https://github.com/ruffel/invoke/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ruffel/invoke/actions/workflows/ci.yml?query=branch%3Amain)
+
 Run commands and transfer files on the local machine, remote SSH hosts, and
 containers through one provider-agnostic Go interface.
 
 ```sh
-go get github.com/ruffel/invoke@v0.3.0
-go get github.com/ruffel/invoke/docker@v0.3.0   # only if you need containers
+go get github.com/ruffel/invoke
+go get github.com/ruffel/invoke/docker   # only if you need containers
 ```
+
+The API reference and runnable examples are on
+[pkg.go.dev](https://pkg.go.dev/github.com/ruffel/invoke); each release is
+documented on [GitHub Releases](https://github.com/ruffel/invoke/releases).
 
 ```go
 env, err := local.New()          // or ssh.New(ctx, host, ...), docker.New(ctx, container, ...)
@@ -15,7 +22,7 @@ if err != nil {
 }
 defer env.Close()
 
-res, stdout, _, err := invoke.NewExecutor(env).Output(ctx, invoke.New("uname", "-s"))
+_, stdout, _, err := invoke.NewExecutor(env).Output(ctx, invoke.New("uname", "-s"))
 ```
 
 Constructing the target is the only line that changes between them.
