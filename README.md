@@ -107,9 +107,10 @@ staging transfers. Without one, both report `ErrNotSupported` rather than
 misbehaving.
 
 **Docker finds its daemon the way the `docker` command does**: an endpoint
-passed to `WithHost`, then `DOCKER_HOST`, then the current context. A
-context reached over TLS is reported as unsupported rather than connected
-to without its certificates.
+passed to `WithHost`, then a context named with `WithContext`, then
+`DOCKER_HOST`, then the current context. A context reached over TLS is
+reported as unsupported rather than connected to without its
+certificates.
 
 **A command can outlive its own exit.** Something it left running may still
 hold its output open, so `Wait` gives up after a grace period rather than

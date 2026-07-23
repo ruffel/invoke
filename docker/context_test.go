@@ -72,7 +72,7 @@ func TestResolveHostPrefersExplicitSettings(t *testing.T) {
 	})
 
 	//nolint:paralleltest // t.Setenv forbids t.Parallel.
-	t.Run("environment beats the context", func(t *testing.T) {
+	t.Run("environment beats the current context", func(t *testing.T) {
 		writeContext(t, "colima", "colima", "unix:///from/context.sock")
 		t.Setenv("DOCKER_HOST", "tcp://from-env:2375")
 
@@ -91,6 +91,31 @@ func TestResolveHostPrefersExplicitSettings(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, "unix:///from/other.sock", host)
+	})
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("a named context beats the environment", func(t *testing.T) {
+		writeContext(t, "colima", "colima", "unix:///from/context.sock")
+		t.Setenv("DOCKER_HOST", "tcp://from-env:2375")
+
+		host, err := resolveHost(&Config{Context: "colima"})
+		require.NoError(t, err)
+
+		assert.Equal(t, "unix:///from/context.sock", host,
+			"docker --context beats DOCKER_HOST, and WithContext is that flag")
+	})
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("DOCKER_CONTEXT beats DOCKER_HOST", func(t *testing.T) {
+		writeContext(t, "", "colima", "unix:///from/context.sock")
+		t.Setenv("DOCKER_CONTEXT", "colima")
+		t.Setenv("DOCKER_HOST", "tcp://from-env:2375")
+
+		host, err := resolveHost(&Config{})
+		require.NoError(t, err)
+
+		assert.Equal(t, "unix:///from/context.sock", host,
+			"the docker command warns and prefers DOCKER_CONTEXT; so does this")
 	})
 }
 
