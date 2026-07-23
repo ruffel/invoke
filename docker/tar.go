@@ -33,7 +33,7 @@ func writeTree(ctx context.Context, tw *tar.Writer, src, base string, cfg invoke
 		return writeEntry(ctx, tw, src, base, base, info, cfg, src)
 	}
 
-	if err := writeDirHeader(tw, base, info, cfg); err != nil {
+	if err := writeDirHeader(tw, base, info); err != nil {
 		return err
 	}
 
@@ -65,7 +65,7 @@ func walkTree(ctx context.Context, tw *tar.Writer, dir, prefix, base, root strin
 		rel := strings.TrimPrefix(name, base+"/")
 
 		if info.IsDir() {
-			if err := writeDirHeader(tw, name, info, cfg); err != nil {
+			if err := writeDirHeader(tw, name, info); err != nil {
 				return err
 			}
 
@@ -117,13 +117,17 @@ func writeEntry(
 	}
 }
 
-// writeDirHeader records a directory and its mode, so the destination
-// does not inherit a default the source never had.
-func writeDirHeader(tw *tar.Writer, name string, info fs.FileInfo, cfg invoke.TransferConfig) error {
+// writeDirHeader records a directory and its own mode, so the
+// destination does not inherit a default the source never had. The
+// transfer's mode override is a statement about files and is not
+// consulted: forcing it onto directories produced a different tree
+// from the same call than every other provider — and 0600 on a
+// directory takes its execute bit, leaving it unusable.
+func writeDirHeader(tw *tar.Writer, name string, info fs.FileInfo) error {
 	return tw.WriteHeader(&tar.Header{
 		Typeflag: tar.TypeDir,
 		Name:     name + "/",
-		Mode:     int64(invoke.EffectiveMode(info.Mode(), cfg).Perm()),
+		Mode:     int64(info.Mode().Perm()),
 		ModTime:  info.ModTime(),
 	})
 }
