@@ -186,9 +186,9 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 
 	e.record(cmd)
 
-	s := e.newSession(cmd, stdio)
+	s, guard := e.newSession(cmd, stdio)
 
-	return e.spawn(ctx, func(runCtx context.Context) (int, bool) {
+	return e.spawn(ctx, guard, func(runCtx context.Context) (int, bool) {
 		if handler != nil {
 			return e.runHandler(runCtx, handler, cmd, s)
 		}

@@ -8,8 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/fake"
@@ -251,6 +253,203 @@ func TestHandlerHonoringCancellationClassifiesAsCancel(t *testing.T) {
 
 	_, waitErr := proc.Wait()
 	assert.ErrorIs(t, waitErr, context.Canceled)
+}
+
+// releasableReader blocks every Read until released, then serves its
+// payload once and EOF thereafter, closing drained. It stands in for
+// the caller-supplied Stdin the fake cannot interrupt: an io.Pipe
+// nobody writes to, a network stream gone quiet.
+type releasableReader struct {
+	started     chan struct{}
+	release     chan struct{}
+	drained     chan struct{}
+	payload     []byte
+	startOnce   sync.Once
+	releaseOnce sync.Once
+	drainOnce   sync.Once
+	served      bool
+}
+
+func newReleasableReader(payload string) *releasableReader {
+	return &releasableReader{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		drained: make(chan struct{}),
+		payload: []byte(payload),
+	}
+}
+
+func (r *releasableReader) Read(p []byte) (int, error) {
+	r.startOnce.Do(func() { close(r.started) })
+
+	<-r.release
+
+	if r.served || len(r.payload) == 0 {
+		return 0, io.EOF
+	}
+
+	r.served = true
+	n := copy(p, r.payload)
+	r.drainOnce.Do(func() { close(r.drained) })
+
+	return n, nil
+}
+
+func (r *releasableReader) releaseNow() {
+	r.releaseOnce.Do(func() { close(r.release) })
+}
+
+// TestBlockedStdinCannotHangTheLifecycle pins the fake's version of a
+// guarantee the local provider engineered deliberately: a
+// caller-supplied Stdin whose Read never returns must not hang Wait,
+// Signal, or Close. Nothing in Go can interrupt such a read, so the
+// process is abandoned after a bounded grace — the caller released
+// with the right classification, and the wedged goroutine's writers
+// silenced so nothing lands in buffers whose owner has moved on.
+func TestBlockedStdinCannotHangTheLifecycle(t *testing.T) {
+	t.Parallel()
+
+	const bound = 8 * time.Second
+
+	start := func(t *testing.T, ctx context.Context) (*fake.Environment, invoke.Process, *releasableReader, *bytes.Buffer) {
+		t.Helper()
+
+		env := fake.New()
+
+		t.Cleanup(func() { _ = env.Close() })
+
+		reader := newReleasableReader("late\n")
+
+		t.Cleanup(reader.releaseNow)
+
+		var stdout bytes.Buffer
+
+		proc, err := env.Start(ctx, invoke.New("cat"), invoke.IO{Stdin: reader, Stdout: &stdout})
+		require.NoError(t, err)
+
+		<-reader.started // the body is now inside the caller's Read
+
+		return env, proc, reader, &stdout
+	}
+
+	awaitWait := func(t *testing.T, proc invoke.Process) error {
+		t.Helper()
+
+		results := make(chan error, 1)
+
+		go func() {
+			_, err := proc.Wait()
+			results <- err
+		}()
+
+		select {
+		case err := <-results:
+			return err
+		case <-time.After(bound):
+			t.Fatal("Wait did not return: a process wedged in a stdin read has hung the lifecycle")
+
+			return nil
+		}
+	}
+
+	t.Run("cancellation unblocks Wait", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+
+		_, proc, _, _ := start(t, ctx)
+
+		cancel()
+
+		err := awaitWait(t, proc)
+		assert.ErrorIs(t, err, context.Canceled, "the interruption must be attributed to the caller's cancel")
+	})
+
+	t.Run("Close unblocks Wait", func(t *testing.T) {
+		t.Parallel()
+
+		_, proc, _, _ := start(t, t.Context())
+
+		closed := make(chan struct{})
+
+		go func() {
+			_ = proc.Close()
+
+			close(closed)
+		}()
+
+		select {
+		case <-closed:
+		case <-time.After(bound):
+			t.Fatal("Close did not return")
+		}
+
+		err := awaitWait(t, proc)
+		assert.ErrorIs(t, err, invoke.ErrClosed, "a process killed by Close reports ErrClosed")
+	})
+
+	t.Run("a signal unblocks Wait", func(t *testing.T) {
+		t.Parallel()
+
+		_, proc, _, _ := start(t, t.Context())
+
+		require.NoError(t, proc.Signal(invoke.SIGKILL), "the fake declares Signals")
+
+		err := awaitWait(t, proc)
+
+		var exitErr *invoke.ExitError
+
+		require.ErrorAs(t, err, &exitErr, "a delivered kill is a signal death")
+		assert.Equal(t, invoke.SIGKILL, exitErr.Signal)
+	})
+
+	t.Run("environment Close returns with a wedged process", func(t *testing.T) {
+		t.Parallel()
+
+		env, _, _, _ := start(t, t.Context())
+
+		closed := make(chan struct{})
+
+		go func() {
+			_ = env.Close()
+
+			close(closed)
+		}()
+
+		select {
+		case <-closed:
+		case <-time.After(bound):
+			t.Fatal("Environment.Close did not return while a process was wedged in a stdin read")
+		}
+	})
+
+	t.Run("an abandoned body cannot write into the caller's buffers", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(t.Context())
+
+		_, proc, reader, stdout := start(t, ctx)
+
+		cancel()
+
+		err := awaitWait(t, proc)
+		require.ErrorIs(t, err, context.Canceled)
+
+		// Wake the wedged goroutine after the fact: its Read now yields
+		// data, it will try to write, and the write must go nowhere.
+		// The guard was silenced before Wait returned, so even a write
+		// racing this assertion is a discarded one.
+		reader.releaseNow()
+
+		select {
+		case <-reader.drained:
+		case <-time.After(bound):
+			t.Fatal("the abandoned body never woke from its reader")
+		}
+
+		assert.Empty(t, stdout.String(),
+			"output delivered after Wait returned would race the caller's own reads")
+	})
 }
 
 func TestWithEnvSeedsBaseEnvironment(t *testing.T) {
