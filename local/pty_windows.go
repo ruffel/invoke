@@ -20,7 +20,7 @@ func attachTerminal(_ *exec.Cmd, _ *invoke.TTY) (*terminal, error) {
 	return nil, fmt.Errorf("local: start: tty allocation: %w", invoke.ErrNotSupported)
 }
 
-func (t *terminal) start(_ *exec.Cmd, _ invoke.IO) {}
+func (t *terminal) start(_ invoke.IO) {}
 
 func (t *terminal) finish(_ time.Duration) {}
 

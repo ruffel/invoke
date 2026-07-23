@@ -115,7 +115,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	}
 
 	if p.term != nil {
-		p.term.start(execCmd, stdio)
+		p.term.start(stdio)
 	}
 
 	if p.stdinR != nil {
