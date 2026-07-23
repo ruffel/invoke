@@ -461,10 +461,19 @@ func (p *process) inspect() (container.ExecInspect, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
 	defer cancel()
 
+	return p.env.settleInspect(ctx, p.execID)
+}
+
+// settleInspect reports an exec's status once the daemon agrees it has
+// stopped, allowing for the window where the stream has ended but the
+// daemon still calls the command running. An inspect answered inside
+// that window carries exit code zero, so trusting one mistakes an
+// unfinished command for a successful one.
+func (e *Environment) settleInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
 	const settleInterval = 5 * time.Millisecond
 
 	for {
-		inspect, err := p.env.client.ContainerExecInspect(ctx, p.execID)
+		inspect, err := e.client.ContainerExecInspect(ctx, execID)
 		if err != nil {
 			return container.ExecInspect{}, &invoke.TransportError{Op: "inspect", Err: err}
 		}
@@ -545,9 +554,15 @@ func (e *Environment) runRaw(ctx context.Context, argv []string) (string, int, e
 		return "", -1, &invoke.TransportError{Op: "exec", Err: err}
 	}
 
-	inspect, err := e.client.ContainerExecInspect(ctx, resp.ID)
+	// Bounded independently of the caller's context, which may carry no
+	// deadline: a status that never settles must surface as an error
+	// rather than a spin.
+	settleCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
+	defer cancel()
+
+	inspect, err := e.settleInspect(settleCtx, resp.ID)
 	if err != nil {
-		return stdout.String(), -1, &invoke.TransportError{Op: "inspect", Err: err}
+		return stdout.String(), -1, err
 	}
 
 	return stdout.String(), inspect.ExitCode, nil
