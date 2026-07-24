@@ -18,29 +18,52 @@
 //
 // [invoke.Shell] scripts are interpreted, not executed, and the
 // interpreter covers a subset: sequencing with ; and &&, single and
-// double quotes, $NAME expansion, $(command) substitution, redirection to
-// /dev/null and between the two output streams, cd, and exit.
+// double quotes, $NAME and ${NAME} expansion, $(command) substitution,
+// redirection to /dev/null (flush or spaced) and between the two output
+// streams, cd, and exit.
 //
 // A script reaching outside that subset is refused — wrapping
 // [invoke.ErrNotSupported], before any process exists — rather than run
 // wrongly. Pipelines, || lists, redirection to a file, input redirection,
-// backquotes, newline-separated commands, background commands, and the
-// special and positional parameters ($?, $1, $$) are all refused by name.
-// The alternative was worse than useless: an unrecognized character is
-// just another character to a tokenizer, so a pipeline used to become
-// arguments to the first command and `false || echo rescued` exited 1
-// having printed nothing, where every real target exits 0 having printed.
-// A test asserting that is not merely unverified — it asserts the
-// opposite of the truth.
+// backquotes, newline-separated commands, background commands, comments,
+// globs, backslash escapes, arithmetic expansion, the ${ operator forms,
+// and the special and positional parameters ($?, $1, $$) are all refused
+// by name. The alternative was worse than useless: an unrecognized
+// character is just another character to a tokenizer, so a pipeline used
+// to become arguments to the first command and `false || echo rescued`
+// exited 1 having printed nothing, where every real target exits 0
+// having printed. A test asserting that is not merely unverified — it
+// asserts the opposite of the truth.
 //
-// The builtins are likewise a vocabulary rather than an implementation:
-// they cover the options the contract suite and ordinary shell-outs use.
-// Notably cat reads standard input and ignores file arguments, echo takes
-// no flags, and test and cd do not follow symbolic links. A form a
-// builtin does not simulate — a test operator outside its unary set,
-// most utility flags — fails loudly on standard error rather than being
-// answered falsely. A script needing more than the subset belongs in a
-// handler registered with [Environment.Handle], or on a real target.
+// # The builtin vocabulary
+//
+// The builtins are a vocabulary rather than an implementation: they
+// cover the forms the contract suite and ordinary shell-outs use, and a
+// form outside them — a test operator beyond the set below, most
+// utility flags — fails loudly on standard error rather than being
+// answered falsely. What the fake answers without a handler:
+//
+//   - sh -c, running the script through this same interpreter
+//   - echo (no flags) and printf (%s and %% conversions, the common
+//     backslash escapes)
+//   - cat, reading standard input; file arguments are ignored
+//   - test, with the one-argument form, an optional leading !, and the
+//     unary -e, -d, -f, -L, -n, -z, and -t; test and cd do not follow
+//     symbolic links
+//   - true, false, sleep SECONDS, pwd, and uname (which reports Linux,
+//     matching [Environment.OS])
+//   - find PATH -maxdepth 0 -perm MODE, and dd if=/dev/zero with
+//     optional bs= and count=
+//   - mkdir [-p], touch, and rm [-r|-f|-rf], each with the failure
+//     modes a real target has
+//
+// Inside scripts, cd (to $HOME with no argument) and exit (numeric
+// statuses only) are the shell's own. Anything else — ls, cp, grep,
+// env, chmod — is an unknown command: [invoke.ErrNotFound] from Start,
+// the shell's exit 127 from a script. Register your own with
+// [Environment.Handle], which overrides any builtin of the same name
+// and is reachable everywhere the name can be written. A script needing
+// more than the subset belongs in a handler, or on a real target.
 package fake
 
 import (
