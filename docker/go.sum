@@ -65,8 +65,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
-github.com/ruffel/invoke v0.4.0 h1:dIEFAqQF3/nTwf4i3hjcB1DA5A6fnqJBr1YoqCyx4Ag=
-github.com/ruffel/invoke v0.4.0/go.mod h1:DPlWkdI52ummK0PwhDTwWRNu6jY4GupAhqwby+J4qqo=
+github.com/ruffel/invoke v0.5.0 h1:yg8Dj+dQnaW0ftCu11BrPGOmrA/eXxoYelinBFOn/5s=
+github.com/ruffel/invoke v0.5.0/go.mod h1:qa+Vvd7Kbtd1MBwzMCsdeV1rYVp7QFXJQ/9Z1DDPLVw=
 github.com/sirupsen/logrus v1.9.3 h1:dueUQJ1C2q9oE3F7wvmSGAaVtTmUizReu6fjN8uqzbQ=
 github.com/sirupsen/logrus v1.9.3/go.mod h1:naHLuLoDiP4jHNo9R0sCBMtWGeIprob74mVsIT4qYEQ=
 github.com/skeema/knownhosts v1.3.2 h1:EDL9mgf4NzwMXCTfaxSD/o/a5fxDw/xL9nkU28JjdBg=
