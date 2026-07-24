@@ -49,29 +49,18 @@ version-resolver:
       - 'chore'
   default: patch
 
-# Labels are read from the pull request title, which this repository writes
-# as a Conventional Commit. Labelling was the step the previous setup
-# omitted, and without it every release resolved to a patch however much had
-# changed.
+# The labels above are applied from the pull request title by
+# .github/pr-label.sh, which the workflow runs on every pull request.
+# They are not applied from here: release drafter's own autolabeler
+# stopped writing labels at v7, which forces dry-run mode whenever the
+# ref is a pull request's ephemeral merge commit. The block that used to
+# live here is gone rather than kept as decoration — configuration that
+# silently does nothing is how this broke in the first place.
 #
 # A breaking change carries the Conventional Commits "!" marker, as in
-# "fix(fake)!: ...". That is what the rule below matches, and it is the only
-# thing that raises the minor: a breaking change titled without it drafts as
-# a patch, which is the previous failure in a new form. The convention is
-# stated in the README, under Development.
-autolabeler:
-  - label: 'breaking'
-    title: '/^\w+(\(.+\))?!:/'
-  - label: 'feature'
-    title: '/^feat(\(.+\))?!?:/'
-  - label: 'fix'
-    title: '/^fix(\(.+\))?!?:/'
-  - label: 'test'
-    title: '/^test(\(.+\))?!?:/'
-  - label: 'documentation'
-    title: '/^docs(\(.+\))?!?:/'
-  - label: 'chore'
-    title: '/^(build|ci|refactor|chore|style|perf)(\(.+\))?!?:/'
+# "fix(fake)!: ...". That marker is the only thing that raises the minor:
+# a breaking change titled without it drafts as a patch. The convention
+# is stated in CONTRIBUTING.md.
 
 exclude-labels:
   - 'skip-changelog'
