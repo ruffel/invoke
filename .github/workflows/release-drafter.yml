@@ -1,26 +1,27 @@
-# Keeps a draft release current as pull requests merge. The configuration
-# lives in .github/release-drafter.yml.
+# Keeps a draft release current as pull requests merge, so cutting a
+# release is publishing something already written rather than recalling
+# what changed.
 #
-# That configuration is read from the default branch, always — never from
-# the branch being built. So this fails with "Configuration file ... is not
-# found" on the pull request that introduces it, and on any later one that
-# only edits it: what runs is whatever main already holds. A change to the
-# configuration is therefore proved by the run after it merges, not by the
-# run on its own pull request.
+# The draft reads labels — for its categories and for whether a release is
+# a minor or a patch — and those labels come from the pull request title,
+# applied by the label job below rather than by release drafter itself.
+# Its own autolabeler stopped writing them at v7, which forces dry-run
+# mode whenever the ref is a pull request's ephemeral merge commit; every
+# write was discarded in silence, and with no labels every draft resolved
+# to a patch however much had changed.
+#
+# The drafting configuration lives in .github/release-drafter.yml, and is
+# read from the default branch, always — never from the branch being
+# built. So a change to that file is proved by the run after it merges,
+# not by the run on its own pull request. The label job is not subject to
+# this: it runs the script from the branch under test.
 name: Release drafter
 
-# Drafting runs on main rather than on a tag. This repository tags two
-# modules together — vX.Y.Z and docker/vX.Y.Z — and drafting per tag would
-# raise a second, duplicate draft for the submodule. Keeping the draft
-# current on main means the notes already exist when the tag is pushed.
 on:
   push:
     branches: [main]
-  # Labels a pull request as it arrives or is retitled, which is what both
-  # the categories and the version resolution read. A pull request from a
-  # fork carries a read-only token, so its labels have to be applied by
-  # hand; pull_request_target would fix that by running with write access
-  # against code from the fork, which is not a trade worth making.
+  # Labels a pull request as it arrives or is retitled, which is what the
+  # draft reads once it merges.
   pull_request:
     types: [opened, reopened, edited, synchronize]
 
@@ -32,13 +33,73 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  label:
+    name: Label the pull request
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # Apply the labels.
+      issues: write # Create one the repository does not have yet.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Apply the labels its title implies
+        # A pull request from a fork carries a read-only token, so its
+        # labels have to be applied by hand. pull_request_target would
+        # fix that by running with write access against code from the
+        # fork, which is not a trade worth making.
+        if: github.event.pull_request.head.repo.fork == false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A title is whatever its author typed. Interpolating one into
+          # the script below would run it; an environment variable is
+          # read as data.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          labels=$(.github/pr-label.sh "$PR_TITLE")
+
+          if [ -z "$labels" ]; then
+            echo "\"$PR_TITLE\" names no Conventional Commit type; nothing to label" >&2
+            exit 0
+          fi
+
+          # A label the repository has never used yet is created rather
+          # than reported: the set is decided by the drafting categories,
+          # and a release should not be miscategorized over a colour.
+          while IFS= read -r label; do
+            case "$label" in
+              breaking) colour=b60205 ;;
+              security) colour=d93f0b ;;
+              feature) colour=0e8a16 ;;
+              fix) colour=1d76db ;;
+              test) colour=5319e7 ;;
+              documentation) colour=0075ca ;;
+              *) colour=ededed ;;
+            esac
+
+            if ! gh label list --json name --jq '.[].name' | grep -qxF "$label"; then
+              gh label create "$label" --color "$colour" \
+                --description "Groups this change in the release notes."
+            fi
+          done <<<"$labels"
+
+          echo "labelling #$PR_NUMBER: $(echo "$labels" | paste -sd, -)"
+          gh pr edit "$PR_NUMBER" --add-label "$(echo "$labels" | paste -sd, -)"
+
+  # Drafting runs on main rather than on a tag. This repository tags two
+  # modules together — vX.Y.Z and docker/vX.Y.Z — and drafting per tag
+  # would raise a second, duplicate draft for the submodule. Keeping the
+  # draft current on main means the notes already exist when the tag is
+  # pushed.
   draft:
     name: Update the draft release
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write # Write the draft release.
-      pull-requests: write # Apply labels.
     steps:
       - uses: release-drafter/release-drafter@eada3c96a64734dd381cfbda23511034e328ddb0 # v7.6.0
         env:

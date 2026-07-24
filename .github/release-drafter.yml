@@ -4,77 +4,77 @@
 #
 # The draft is a starting point rather than the finished notes. It groups by
 # the kind of change, and a release worth reading usually groups by theme
-# and says why each change mattered; v0.4.0's notes did, and no generator
-# would have produced them. Edit before publishing.
+# and says why each change mattered; v0.4.0's and v0.5.0's notes did, and no
+# generator would have produced them. Edit before publishing.
+#
+# Every rule below lives on a category, which is the one schema v7 is not
+# deprecating: a category says what it is (type), what it collects (when),
+# and what it does to the version (semver-increment). The older spellings —
+# categories[*].labels, exclude-labels, version-resolver — still work but
+# warn on every run, and they are documented as going away. Migrating on a
+# warning rather than on a removal is the difference between doing this
+# deliberately and doing it under a broken release.
 
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 
 categories:
+  # Dropped before anything else looks at it.
+  - type: pre-exclude
+    when:
+      labels: ['skip-changelog']
+
+  # Pre-1.0, a breaking change raises the minor rather than the major.
+  # semver-increment is deliberately absent everywhere it would say
+  # "patch", which is its default; naming it only where a category lifts
+  # the version keeps the two that do visible. No category says "major":
+  # v1.0.0 is a decision to take deliberately, not one to arrive at by
+  # labelling.
   - title: 'Breaking changes'
-    labels: ['breaking']
+    when:
+      labels: ['breaking']
+    semver-increment: minor
   - title: 'Security'
-    labels: ['security']
+    when:
+      labels: ['security']
   - title: 'Features'
-    labels: ['feature']
+    when:
+      labels: ['feature']
+    semver-increment: minor
   - title: 'Fixes'
-    labels: ['fix']
+    when:
+      labels: ['fix']
   - title: 'Contracts and tests'
-    labels: ['test']
+    when:
+      labels: ['test']
   - title: 'Documentation'
-    labels: ['documentation']
+    when:
+      labels: ['documentation']
   - title: 'Build and CI'
-    labels: ['chore']
+    when:
+      labels: ['chore']
 
 change-template: '- $TITLE (#$NUMBER)'
 
 # A title carrying markdown of its own would otherwise render as markdown.
 change-title-escapes: '\<*_&'
 
-# Pre-1.0, a breaking change raises the minor rather than the major. No
-# major bucket is listed on purpose: leaving one would let an ordinary
-# release resolve to v1.0.0, which is a decision to take deliberately and
-# not one to arrive at by labelling.
-version-resolver:
-  minor:
-    labels:
-      - 'breaking'
-      - 'feature'
-  patch:
-    labels:
-      - 'security'
-      - 'fix'
-      - 'test'
-      - 'documentation'
-      - 'chore'
-  default: patch
-
-# Labels are read from the pull request title, which this repository writes
-# as a Conventional Commit. Labelling was the step the previous setup
-# omitted, and without it every release resolved to a patch however much had
-# changed.
+# A pull request matching no category at all resolves the version by the
+# schema's own default, which is patch — the behaviour the version-resolver
+# block used to spell out.
+#
+# The labels themselves are applied from the pull request title by
+# .github/pr-label.sh, which the workflow runs on every pull request. They
+# are not applied from here: release drafter's own autolabeler stopped
+# writing labels at v7, which forces dry-run mode whenever the ref is a
+# pull request's ephemeral merge commit. The block that used to live here
+# is gone rather than kept as decoration — configuration that silently
+# does nothing is how this broke in the first place.
 #
 # A breaking change carries the Conventional Commits "!" marker, as in
-# "fix(fake)!: ...". That is what the rule below matches, and it is the only
-# thing that raises the minor: a breaking change titled without it drafts as
-# a patch, which is the previous failure in a new form. The convention is
-# stated in the README, under Development.
-autolabeler:
-  - label: 'breaking'
-    title: '/^\w+(\(.+\))?!:/'
-  - label: 'feature'
-    title: '/^feat(\(.+\))?!?:/'
-  - label: 'fix'
-    title: '/^fix(\(.+\))?!?:/'
-  - label: 'test'
-    title: '/^test(\(.+\))?!?:/'
-  - label: 'documentation'
-    title: '/^docs(\(.+\))?!?:/'
-  - label: 'chore'
-    title: '/^(build|ci|refactor|chore|style|perf)(\(.+\))?!?:/'
-
-exclude-labels:
-  - 'skip-changelog'
+# "fix(fake)!: ...". That marker is the only thing that raises the minor:
+# a breaking change titled without it drafts as a patch. The convention
+# is stated in CONTRIBUTING.md.
 
 template: |
   $CHANGES
