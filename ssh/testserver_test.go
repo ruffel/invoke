@@ -418,9 +418,16 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 				line = "echo " + s.unameOutput
 			}
 
-			go runExec(channel, state, line)
-
+			// The reply must go out before the command starts. A command can
+			// finish and close the channel in single-digit milliseconds, and a
+			// closed channel silently drops the reply — the client's pending
+			// exec request then fails with EOF, reporting a transport failure
+			// on a connection that never failed. A real sshd answers the
+			// request before it runs the command, so the ordering is also
+			// what this server exists to imitate.
 			reply(req, true)
+
+			go runExec(channel, state, line)
 		case "pty-req":
 			if s.refusePTY {
 				reply(req, false)
