@@ -42,7 +42,7 @@ func TestUploadStagesOnTheDestinationFilesystem(t *testing.T) {
 	require.NoError(t, env.Upload(t.Context(), local, "/data/payload.txt"),
 		"upload must stage on the destination's filesystem, not depend on /tmp being writable")
 
-	_, stdout, _, err := invoke.NewExecutor(env).Output(t.Context(), invoke.New("cat", "/data/payload.txt"))
+	stdout, err := invoke.NewExecutor(env).Output(t.Context(), invoke.New("cat", "/data/payload.txt"))
 	require.NoError(t, err, "reading the uploaded file")
 
 	assert.Equal(t, "delivered", string(stdout), "the upload did not arrive at the destination")
@@ -75,7 +75,7 @@ func TestUploadReplacesAnExistingDirectory(t *testing.T) {
 
 	require.NoError(t, env.Upload(t.Context(), srcDir, "/data/target"), "upload over an existing directory")
 
-	_, stdout, _, err := exec.Output(t.Context(), invoke.New("cat", "/data/target/new.txt"))
+	stdout, err := exec.Output(t.Context(), invoke.New("cat", "/data/target/new.txt"))
 	require.NoError(t, err, "reading the replacement content")
 	assert.Equal(t, "fresh", string(stdout), "the new content did not arrive")
 

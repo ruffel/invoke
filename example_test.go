@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/fake"
@@ -15,6 +16,26 @@ import (
 
 // The quickstart, against a real target: constructing the environment is
 // the only line that differs between local, ssh and docker.
+func ExampleText() {
+	env, err := local.New()
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() { _ = env.Close() }()
+
+	out, err := invoke.Text(context.Background(), env, invoke.New("echo", "from the host"))
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(out)
+	// Output: from the host
+}
+
+// An Executor states policy once — here, retry with backoff — and every
+// call inherits it. For a single call with no shared defaults, the
+// package-level [Text] and [Run] need no Executor at all.
 func ExampleNewExecutor() {
 	env, err := local.New()
 	if err != nil {
@@ -23,13 +44,14 @@ func ExampleNewExecutor() {
 
 	defer func() { _ = env.Close() }()
 
-	_, stdout, _, err := invoke.NewExecutor(env).Output(
-		context.Background(), invoke.New("echo", "from the host"))
+	exec := invoke.NewExecutor(env, invoke.WithRetry(3, invoke.ExponentialBackoff(time.Second)))
+
+	out, err := exec.Text(context.Background(), invoke.New("echo", "from the host"))
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("%s", stdout)
+	fmt.Println(out)
 	// Output: from the host
 }
 
@@ -42,7 +64,7 @@ func ExampleExecutor_Output() {
 
 	exec := invoke.NewExecutor(env)
 
-	_, stdout, _, err := exec.Output(context.Background(), invoke.New("echo", "hello"))
+	stdout, err := exec.Output(context.Background(), invoke.New("echo", "hello"))
 	if err != nil {
 		panic(err)
 	}
@@ -59,7 +81,7 @@ func ExampleWithRetry() {
 
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, invoke.ConstantBackoff(0)))
 
-	res, _, _, err := exec.Output(context.Background(), invoke.Shell("exit 0"))
+	res, err := exec.Run(context.Background(), invoke.Shell("exit 0"), invoke.IO{})
 	fmt.Println(res.ExitCode, err)
 	// Output: 0 <nil>
 }
@@ -72,9 +94,7 @@ func ExampleExitError() {
 
 	defer func() { _ = env.Close() }()
 
-	exec := invoke.NewExecutor(env)
-
-	_, err := exec.Run(context.Background(), invoke.Shell("exit 3"), invoke.IO{})
+	_, err := invoke.Run(context.Background(), env, invoke.Shell("exit 3"), invoke.IO{})
 
 	var exitErr *invoke.ExitError
 
@@ -191,7 +211,7 @@ func ExampleEnvironment_Handle() {
 
 	exec := invoke.NewExecutor(env)
 
-	_, stdout, _, err := exec.Output(context.Background(), invoke.New("systemctl", "restart", "nginx"))
+	stdout, err := exec.Output(context.Background(), invoke.New("systemctl", "restart", "nginx"))
 	if err != nil {
 		panic(err)
 	}

@@ -56,22 +56,23 @@ func main() {
 	}
 	defer env.Close()
 
-	_, out, _, err := invoke.NewExecutor(env).Output(
-		context.Background(), invoke.New("uname", "-s"))
+	out, err := invoke.Text(context.Background(), env, invoke.New("uname", "-s"))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Print(string(out))
+	fmt.Println(out)
 }
 ```
 
-An `Environment` is a connection to a target; an `Executor` wraps one and
-adds the policy most callers want — output capture, retries, sudo. A
-`Command` is a plain value with no streams and no state, so the same one
-runs repeatedly or against several targets; where output goes belongs to
-the invocation, not the command. Transfers ride the same environment:
-`exec.Upload(ctx, "./dist", "/srv/app")` copies a file or a whole tree.
+An `Environment` is a connection to a target; `invoke.Text` and
+`invoke.Run` execute one command on it. An `Executor` wraps an
+environment when several calls share policy — retries, sudo — so the
+defaults are stated once and every call inherits them. A `Command` is a
+plain value with no streams and no state, so the same one runs
+repeatedly or against several targets; where output goes belongs to the
+invocation, not the command. Transfers ride the same environment:
+`env.Upload(ctx, "./dist", "/srv/app")` copies a file or a whole tree.
 
 To run the same command elsewhere, construct a different target. A remote
 host authenticates with a key file, the agent (`ssh.WithAgent`), or a
@@ -104,7 +105,7 @@ Every failure answers one question first: did the command run? Branch on
 the kind, never the message:
 
 ```go
-_, err := exec.Run(ctx, invoke.Shell("systemctl restart app"), invoke.IO{})
+_, err := invoke.Run(ctx, env, invoke.Shell("systemctl restart app"), invoke.IO{})
 
 var exitErr *invoke.ExitError
 
