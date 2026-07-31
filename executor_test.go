@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ type scriptOutcome struct {
 	err      error
 	startErr error  // returned from Start instead of a process
 	onStdout string // written to the attempt's Stdout before Wait
+	onStderr string // written to the attempt's Stderr before Wait
 }
 
 func (s *scriptEnv) Start(_ context.Context, _ invoke.Command, stdio invoke.IO) (invoke.Process, error) {
@@ -45,6 +47,10 @@ func (s *scriptEnv) Start(_ context.Context, _ invoke.Command, stdio invoke.IO) 
 
 	if out.onStdout != "" && stdio.Stdout != nil {
 		_, _ = stdio.Stdout.Write([]byte(out.onStdout))
+	}
+
+	if out.onStderr != "" && stdio.Stderr != nil {
+		_, _ = stdio.Stderr.Write([]byte(out.onStderr))
 	}
 
 	if out.startErr != nil {
@@ -387,6 +393,157 @@ func TestOutputAttachesStderrToExitError(t *testing.T) {
 	assert.Contains(t, string(exitErr.Stderr), "boom", "ExitError.Stderr must carry the captured stderr")
 }
 
+func TestRunAttachesStderrTailWhenStderrIsDiscarded(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	exec := invoke.NewExecutor(env)
+
+	_, err := exec.Run(t.Context(), invoke.Shell("echo boom 1>&2; exit 3"), invoke.IO{})
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Contains(t, string(exitErr.Stderr), "boom",
+		"a fire-and-forget failure must still say why")
+}
+
+func TestRunStderrTailNotAttachedWhenCallerClaimsStream(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	exec := invoke.NewExecutor(env)
+
+	t.Run("caller's own writer", func(t *testing.T) {
+		t.Parallel()
+
+		var stderr strings.Builder
+
+		_, err := exec.Run(t.Context(), invoke.Shell("echo boom 1>&2; exit 3"), invoke.IO{Stderr: &stderr})
+
+		var exitErr *invoke.ExitError
+
+		require.ErrorAs(t, err, &exitErr)
+
+		assert.Empty(t, exitErr.Stderr, "stderr went to the caller's writer; the error must not duplicate it")
+		assert.Equal(t, "boom\n", stderr.String())
+	})
+
+	t.Run("explicit discard", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := exec.Run(t.Context(), invoke.Shell("echo boom 1>&2; exit 3"), invoke.IO{Stderr: io.Discard})
+
+		var exitErr *invoke.ExitError
+
+		require.ErrorAs(t, err, &exitErr)
+
+		assert.Empty(t, exitErr.Stderr, "io.Discard is the opt-out; nothing may be retained")
+	})
+}
+
+func TestRunStderrTailIsPerAttempt(t *testing.T) {
+	t.Parallel()
+
+	// The first attempt writes stderr and dies at transport; the retry
+	// writes its own stderr and exits non-zero. The tail must carry the
+	// failing attempt's stderr alone, not an accumulation.
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{onStderr: "stale-from-attempt-1", err: transportErr()},
+		{onStderr: "fresh-from-attempt-2", err: &invoke.ExitError{Code: 7}},
+	}}
+
+	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
+
+	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Equal(t, "fresh-from-attempt-2", string(exitErr.Stderr))
+}
+
+func TestRunStderrTailIsBounded(t *testing.T) {
+	t.Parallel()
+
+	// The bound is 8 KiB, and the newest bytes must be the ones kept.
+	noise := strings.Repeat("x", 9*1024)
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{onStderr: noise + "END-OF-STDERR", err: &invoke.ExitError{Code: 1}},
+	}}
+
+	exec := invoke.NewExecutor(env)
+
+	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{})
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Len(t, exitErr.Stderr, 8*1024)
+	assert.True(t, strings.HasSuffix(string(exitErr.Stderr), "END-OF-STDERR"),
+		"the tail must keep the newest bytes")
+}
+
+// TestRunStderrAtTheEnvironmentBoundary pins what the environment
+// receives: a tail writer in place of nil, except under a TTY, where
+// there is no separate stderr stream to retain.
+func TestRunStderrAtTheEnvironmentBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		stdio      invoke.IO
+		wantStderr bool
+	}{
+		{name: "nil stderr becomes the tail writer", stdio: invoke.IO{}, wantStderr: true},
+		{name: "tty leaves stderr alone", stdio: invoke.IO{TTY: &invoke.TTY{}}, wantStderr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var seen invoke.IO
+
+			env := &captureEnv{onIO: func(stdio invoke.IO) { seen = stdio }}
+			exec := invoke.NewExecutor(env)
+
+			_, err := exec.Run(t.Context(), invoke.New("x"), tt.stdio)
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.wantStderr, seen.Stderr != nil)
+		})
+	}
+}
+
+func TestLinesAttachesStderrTailToExitError(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	exec := invoke.NewExecutor(env)
+
+	_, err := exec.Lines(t.Context(), invoke.Shell("echo boom 1>&2; exit 3"), func(string) {})
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Contains(t, string(exitErr.Stderr), "boom",
+		"Lines discards stderr from delivery, not from diagnostics")
+}
+
 func TestLinesDeliversEachLine(t *testing.T) {
 	t.Parallel()
 
@@ -419,13 +576,20 @@ func TestExecutorUploadRetriesTransportErrors(t *testing.T) {
 	assert.Equal(t, 3, env.uploads)
 }
 
-// captureEnv records the Command passed to Start and returns success.
+// captureEnv records what Start was asked for and returns success.
 type captureEnv struct {
 	onStart func(invoke.Command)
+	onIO    func(invoke.IO)
 }
 
-func (c *captureEnv) Start(_ context.Context, cmd invoke.Command, _ invoke.IO) (invoke.Process, error) {
-	c.onStart(cmd)
+func (c *captureEnv) Start(_ context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
+	if c.onStart != nil {
+		c.onStart(cmd)
+	}
+
+	if c.onIO != nil {
+		c.onIO(stdio)
+	}
 
 	return &scriptProcess{result: invoke.Result{ExitCode: 0}}, nil
 }

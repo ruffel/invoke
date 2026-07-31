@@ -58,8 +58,8 @@ type ExitError struct {
 	Signal Signal
 
 	// Stderr optionally holds a tail of the process's standard error,
-	// attached by capture helpers for diagnostics. Providers leave it
-	// empty when output went to the caller's own writers.
+	// attached by the [Executor] for diagnostics whenever the caller did
+	// not claim the stream. Providers leave it empty.
 	Stderr []byte
 }
 

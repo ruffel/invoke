@@ -17,14 +17,20 @@ const (
 	lineScannerStart = 64 * 1024
 	lineScannerMax   = 1024 * 1024
 
-	// maxStderrTail bounds the stderr snippet attached to an ExitError by
-	// Output, for diagnostics without unbounded memory.
+	// maxStderrTail bounds the stderr tail attached to an ExitError, for
+	// diagnostics without unbounded memory.
 	maxStderrTail = 8 * 1024
 )
 
 // Executor adds invocation policy — retry, sudo, and output capture — on
 // top of an [Environment]. The Environment is the mechanism (start a
 // process, move a file); the Executor is the policy layer over it.
+//
+// Failure diagnostics survive by default: an [ExitError] returned by any
+// of its methods carries a bounded tail of the command's standard error
+// unless the caller claimed the stream — by wiring a Stderr writer of
+// their own, by requesting a TTY (which merges standard error into
+// standard output), or by passing [io.Discard] to discard deliberately.
 //
 // Only the operations that carry policy are exposed here (Run, Output,
 // Lines, Upload, Download). For LookPath, OS, Capabilities, or Close, use
@@ -48,6 +54,11 @@ func NewExecutor(env Environment, opts ...Option) *Executor {
 
 // Run starts cmd with the given IO, waits for it, and returns the outcome,
 // applying the configured retry and sudo policy.
+//
+// When stdio carries no Stderr writer and no TTY, Run retains a bounded
+// tail of standard error and attaches it to an [ExitError], so a failed
+// fire-and-forget command still reports why. Pass [io.Discard] as the
+// Stderr to discard standard error unconditionally.
 //
 // When retries are configured and stdio carries a non-nil Stdin, a
 // [WithFreshIO] provider is required: a consumed reader cannot be replayed
@@ -73,7 +84,18 @@ func (e *Executor) Run(ctx context.Context, cmd Command, stdio IO, opts ...Optio
 			attemptIO = cfg.freshIO(attempt)
 		}
 
-		return e.once(ctx, cmd, attemptIO)
+		// A fresh tail per attempt: a retried command's ExitError must
+		// carry the failing attempt's stderr, not its predecessors'.
+		var tw *tailWriter
+		if attemptIO.Stderr == nil && attemptIO.TTY == nil {
+			tw = &tailWriter{max: maxStderrTail}
+			attemptIO.Stderr = tw
+		}
+
+		res, err := e.once(ctx, cmd, attemptIO)
+		attachStderrTail(err, tw)
+
+		return res, err
 	})
 }
 
@@ -104,7 +126,8 @@ func (e *Executor) Output(ctx context.Context, cmd Command, opts ...Option) (Res
 }
 
 // Lines runs cmd and calls onLine for each line of its standard output.
-// Stderr is discarded. It applies the same retry and sudo policy as Run;
+// Stderr goes nowhere, though an [ExitError] still carries a bounded tail
+// of it. Lines applies the same retry and sudo policy as Run;
 // note that a failed-then-retried attempt may have already delivered some
 // lines before failing.
 //
@@ -232,7 +255,9 @@ func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(stri
 		scanErr <- scanner.Err()
 	}()
 
-	proc, err := e.env.Start(ctx, cmd, IO{Stdout: pw})
+	tw := &tailWriter{max: maxStderrTail}
+
+	proc, err := e.env.Start(ctx, cmd, IO{Stdout: pw, Stderr: tw})
 	if err != nil {
 		_ = pw.Close()
 		_ = pr.Close()
@@ -253,6 +278,8 @@ func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(stri
 
 	switch {
 	case waitErr != nil:
+		attachStderrTail(waitErr, tw)
+
 		return res, waitErr
 	case sErr != nil:
 		return res, fmt.Errorf("invoke: streaming output: %w", sErr)
@@ -356,6 +383,47 @@ func applySudo(cfg execConfig, cmd Command) Command {
 	args = append(args, cmd.Args...)
 
 	return Command{Path: "sudo", Args: args, Env: cmd.Env, Dir: cmd.Dir}
+}
+
+// attachStderrTail copies the retained stderr tail onto an [ExitError]
+// that does not already carry one. Any other error, an empty tail, or a
+// nil writer (the caller claimed the stream) leaves err untouched.
+func attachStderrTail(err error, tw *tailWriter) {
+	if tw == nil || len(tw.buf) == 0 {
+		return
+	}
+
+	var exitErr *ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) == 0 {
+		exitErr.Stderr = tw.buf
+	}
+}
+
+// tailWriter retains the last max bytes written through it, so a failing
+// command's stderr can travel on its [ExitError] without unbounded
+// memory. An invocation's stderr has a single writer, so it does not
+// synchronize.
+type tailWriter struct {
+	max int
+	buf []byte
+}
+
+// Write implements io.Writer; it never fails.
+func (w *tailWriter) Write(p []byte) (int, error) {
+	if len(p) >= w.max {
+		w.buf = append(w.buf[:0], p[len(p)-w.max:]...)
+
+		return len(p), nil
+	}
+
+	if overflow := len(w.buf) + len(p) - w.max; overflow > 0 {
+		n := copy(w.buf, w.buf[overflow:])
+		w.buf = w.buf[:n]
+	}
+
+	w.buf = append(w.buf, p...)
+
+	return len(p), nil
 }
 
 // tail returns the last n bytes of b (a copy), or all of b when shorter.

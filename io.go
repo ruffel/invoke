@@ -23,9 +23,11 @@ type IO struct {
 	// Stdout receives the process's standard output. nil discards it.
 	Stdout io.Writer
 
-	// Stderr receives the process's standard error. nil discards it.
-	// Ignored when TTY is set: a pseudo-terminal merges standard error
-	// into standard output.
+	// Stderr receives the process's standard error. nil discards it,
+	// though the [Executor] retains a bounded tail of a failed command's
+	// standard error for its [ExitError]; pass [io.Discard] to discard
+	// unconditionally. Ignored when TTY is set: a pseudo-terminal merges
+	// standard error into standard output.
 	Stderr io.Writer
 
 	// TTY, when non-nil, allocates a pseudo-terminal for the process.
