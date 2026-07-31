@@ -30,6 +30,15 @@ resolves to a major.
 Release notes are drafted automatically as pull requests merge, so a
 well-titled pull request is the changelog entry.
 
+## The convenience surface is closed
+
+A helper earns a place on the `Executor`, or as a package-level
+one-shot, only if nearly every consumer wants it, it cannot be composed
+from the existing surface in a couple of obvious lines, and the
+hand-rolled version hides a trap — lost diagnostics, retry-unsafe
+buffering. A proposal that fails any of the three belongs in the
+caller's code.
+
 ## Behavior is specified by contracts
 
 Provider behavior is enforced by the executable suite in `invoketest`,

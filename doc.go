@@ -8,10 +8,11 @@
 //
 // # Getting started
 //
-// An [Environment] is a target. An [Executor] wraps one and adds the
-// policy most callers want: capturing output, retrying, running under
-// sudo. Constructing the target is the only line that changes between
-// them.
+// An [Environment] is a target; constructing it is the only line that
+// changes between local, ssh and docker. The package-level [Text] and
+// [Run] execute one command on it. An [Executor] wraps an environment
+// when several calls share policy — retry, sudo — so the defaults are
+// stated once.
 //
 //	env, err := local.New()          // or ssh.New(ctx, host, ...), docker.New(ctx, container, ...)
 //	if err != nil {
@@ -19,7 +20,7 @@
 //	}
 //	defer env.Close()
 //
-//	_, stdout, _, err := invoke.NewExecutor(env).Output(ctx, invoke.New("uname", "-s"))
+//	out, err := invoke.Text(ctx, env, invoke.New("uname", "-s"))
 //
 // [Command] is a plain value describing what to run. It carries no
 // streams and no state, so one can be run repeatedly, or against several

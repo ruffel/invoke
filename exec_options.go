@@ -44,6 +44,8 @@ func WithRetry(attempts int, backoff BackoffFunc) Option {
 // WithFreshIO supplies a fresh [IO] for each attempt, so a retried command
 // gets un-consumed streams. It is required to retry a command whose IO
 // carries a non-nil Stdin, since a consumed reader cannot be replayed.
+// The capture helpers ([Executor.Output], [Executor.Text]) own their
+// streams and override any WithFreshIO passed to them.
 func WithFreshIO(fn func(attempt int) IO) Option {
 	return func(c *execConfig) {
 		c.freshIO = fn

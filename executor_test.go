@@ -279,7 +279,7 @@ func TestOutputDoesNotAccumulateAcrossRetries(t *testing.T) {
 
 	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
 
-	_, stdout, _, err := exec.Output(t.Context(), invoke.New("x"))
+	stdout, err := exec.Output(t.Context(), invoke.New("x"))
 	require.NoError(t, err)
 
 	assert.Equal(t, "clean-attempt-2", string(stdout), "Output must return only the successful attempt's output")
@@ -367,12 +367,10 @@ func TestOutputAgainstFakeProvider(t *testing.T) {
 
 	exec := invoke.NewExecutor(env)
 
-	res, stdout, stderr, err := exec.Output(t.Context(), invoke.Shell("echo out; echo err 1>&2"))
+	stdout, err := exec.Output(t.Context(), invoke.Shell("echo out; echo err 1>&2"))
 	require.NoError(t, err)
 
-	assert.Equal(t, 0, res.ExitCode)
-	assert.Equal(t, "out\n", string(stdout))
-	assert.Equal(t, "err\n", string(stderr))
+	assert.Equal(t, "out\n", string(stdout), "stderr must not leak into the captured stdout")
 }
 
 func TestOutputAttachesStderrToExitError(t *testing.T) {
@@ -384,13 +382,113 @@ func TestOutputAttachesStderrToExitError(t *testing.T) {
 
 	exec := invoke.NewExecutor(env)
 
-	_, _, _, err := exec.Output(t.Context(), invoke.Shell("echo boom 1>&2; exit 2")) //nolint:dogsled // Output returns four values; only the error matters here.
+	_, err := exec.Output(t.Context(), invoke.Shell("echo boom 1>&2; exit 2"))
 
 	var exitErr *invoke.ExitError
 
 	require.ErrorAs(t, err, &exitErr)
 
 	assert.Contains(t, string(exitErr.Stderr), "boom", "ExitError.Stderr must carry the captured stderr")
+}
+
+func TestTextTrimsTrailingNewlinesOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		stdout string
+		want   string
+	}{
+		{name: "trailing newline", stdout: "answer\n", want: "answer"},
+		{name: "trailing crlf", stdout: "answer\r\n", want: "answer"},
+		{name: "several trailing newlines", stdout: "answer\n\n\n", want: "answer"},
+		{name: "leading whitespace is data", stdout: "  indented\n", want: "  indented"},
+		{name: "interior newlines are data", stdout: "a\nb\n", want: "a\nb"},
+		{name: "trailing spaces are data", stdout: "answer \n", want: "answer "},
+		{name: "empty output", stdout: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			env := &scriptEnv{outcome: []scriptOutcome{{onStdout: tt.stdout}}}
+			exec := invoke.NewExecutor(env)
+
+			got, err := exec.Text(t.Context(), invoke.New("x"))
+			require.NoError(t, err)
+
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestTextReturnsPartialOutputAndTailOnExitError(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	exec := invoke.NewExecutor(env)
+
+	out, err := exec.Text(t.Context(), invoke.Shell("echo partial; echo boom 1>&2; exit 3"))
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr)
+
+	assert.Equal(t, "partial", out, "stdout captured before the failure must be returned")
+	assert.Contains(t, string(exitErr.Stderr), "boom")
+}
+
+func TestTextIsRetrySafe(t *testing.T) {
+	t.Parallel()
+
+	// The first attempt writes partial output then dies at transport;
+	// the retry writes the real answer. Per-call options must reach the
+	// underlying capture, and its buffer must be fresh per attempt.
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{onStdout: "PARTIAL-FROM-ATTEMPT-1", err: transportErr()},
+		{onStdout: "clean-attempt-2\n"},
+	}}
+
+	exec := invoke.NewExecutor(env)
+
+	got, err := exec.Text(t.Context(), invoke.New("x"), invoke.WithRetry(3, nil))
+	require.NoError(t, err)
+
+	assert.Equal(t, "clean-attempt-2", got)
+}
+
+func TestOneShotRunAppliesOptions(t *testing.T) {
+	t.Parallel()
+
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{err: transportErr()},
+		{result: invoke.Result{ExitCode: 0}},
+	}}
+
+	res, err := invoke.Run(t.Context(), env, invoke.New("x"), invoke.IO{}, invoke.WithRetry(3, nil))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, res.ExitCode)
+	assert.Equal(t, 2, env.startCount(), "options must reach the underlying executor")
+}
+
+func TestOneShotTextAppliesOptions(t *testing.T) {
+	t.Parallel()
+
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{err: transportErr()},
+		{onStdout: "ok\n"},
+	}}
+
+	got, err := invoke.Text(t.Context(), env, invoke.New("x"), invoke.WithRetry(3, nil))
+	require.NoError(t, err)
+
+	assert.Equal(t, "ok", got)
+	assert.Equal(t, 2, env.startCount(), "options must reach the underlying executor")
 }
 
 func TestRunAttachesStderrTailWhenStderrIsDiscarded(t *testing.T) {

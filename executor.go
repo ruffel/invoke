@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -99,30 +100,42 @@ func (e *Executor) Run(ctx context.Context, cmd Command, stdio IO, opts ...Optio
 	})
 }
 
-// Output runs cmd and returns its captured stdout and stderr. It is
-// retry-safe by construction: each attempt writes into fresh buffers, so a
-// failed attempt's partial output never accumulates into the result. On an
-// [ExitError], a tail of stderr is attached for diagnostics.
-func (e *Executor) Output(ctx context.Context, cmd Command, opts ...Option) (Result, []byte, []byte, error) {
-	var stdout, stderr bytes.Buffer
+// Output runs cmd and returns its captured standard output — the exact
+// bytes, trailing newline included; [Executor.Text] is the form shaped
+// for reading the output as an answer. It is retry-safe by construction:
+// each attempt writes into a fresh buffer, so a failed attempt's partial
+// output never accumulates into the result. On a non-nil error the
+// returned bytes hold whatever standard output was captured, and an
+// [ExitError] carries a tail of standard error.
+func (e *Executor) Output(ctx context.Context, cmd Command, opts ...Option) ([]byte, error) {
+	var stdout bytes.Buffer
 
 	fresh := func(int) IO {
 		stdout.Reset()
-		stderr.Reset()
 
-		return IO{Stdout: &stdout, Stderr: &stderr}
+		return IO{Stdout: &stdout}
 	}
 
 	// Output owns the streams, so it forces its own fresh-IO provider
 	// after the caller's options (retry safety is not negotiable here).
-	res, err := e.Run(ctx, cmd, IO{}, append(opts, WithFreshIO(fresh))...)
+	// The IO it supplies carries no Stderr, so Run retains the tail an
+	// ExitError travels with.
+	_, err := e.Run(ctx, cmd, IO{}, append(opts, WithFreshIO(fresh))...)
 
-	var exitErr *ExitError
-	if errors.As(err, &exitErr) && len(exitErr.Stderr) == 0 {
-		exitErr.Stderr = tail(stderr.Bytes(), maxStderrTail)
-	}
+	return stdout.Bytes(), err
+}
 
-	return res, stdout.Bytes(), stderr.Bytes(), err
+// Text runs cmd and returns its standard output as a string with
+// trailing carriage returns and newlines removed — the shape wanted when
+// the output is an answer rather than data. Leading and interior
+// whitespace survive; use [Executor.Output] for the exact bytes.
+//
+// On a non-nil error the string holds whatever standard output was
+// captured, and an [ExitError] carries a tail of standard error.
+func (e *Executor) Text(ctx context.Context, cmd Command, opts ...Option) (string, error) {
+	out, err := e.Output(ctx, cmd, opts...)
+
+	return strings.TrimRight(string(out), "\r\n"), err
 }
 
 // Lines runs cmd and calls onLine for each line of its standard output.
@@ -424,13 +437,4 @@ func (w *tailWriter) Write(p []byte) (int, error) {
 	w.buf = append(w.buf, p...)
 
 	return len(p), nil
-}
-
-// tail returns the last n bytes of b (a copy), or all of b when shorter.
-func tail(b []byte, n int) []byte {
-	if len(b) <= n {
-		return bytes.Clone(b)
-	}
-
-	return bytes.Clone(b[len(b)-n:])
 }
