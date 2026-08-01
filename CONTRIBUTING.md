@@ -6,6 +6,19 @@ Go 1.25 or newer. The repository is two modules — the root and
 `docker/` — joined by a committed `go.work`, so a plain clone builds and
 tests with no setup.
 
+The recipes below need two more tools.
+[`just`](https://github.com/casey/just) runs them, and comes from a
+package manager (`brew install just`, `cargo install just`, or your
+distribution's). `golangci-lint` does the linting and the formatting:
+
+```sh
+just tools              # installs the pinned golangci-lint
+```
+
+The pin matters. `.golangci.yml` is a version 2 configuration, so a
+version 1 binary — still what several distributions package — reports
+errors that are not there. `just tools` installs the version CI uses.
+
 ```sh
 just check              # format, lint, tidy, cross-build, race tests
 just test-integration   # everything needing a container runtime
