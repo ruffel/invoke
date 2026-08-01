@@ -112,7 +112,9 @@ var exitErr *invoke.ExitError
 switch {
 case err == nil: // ran and exited zero
 case errors.As(err, &exitErr): // ran and failed; the exit status is trustworthy
-	log.Printf("restart failed with exit %d", exitErr.Code)
+	// Stderr holds a tail of the command's own diagnostics, kept
+	// whenever the caller did not claim the stream.
+	log.Printf("restart failed with exit %d: %s", exitErr.Code, exitErr.Stderr)
 case errors.Is(err, invoke.ErrNotFound): // could not start: no such executable
 default: // everything else, including transport — the only family retries re-run
 	log.Print(err)

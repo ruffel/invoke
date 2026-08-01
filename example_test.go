@@ -94,19 +94,22 @@ func ExampleExitError() {
 
 	defer func() { _ = env.Close() }()
 
-	_, err := invoke.Run(context.Background(), env, invoke.Shell("exit 3"), invoke.IO{})
+	_, err := invoke.Run(context.Background(), env, invoke.Shell("echo boom >&2; exit 3"), invoke.IO{})
 
 	var exitErr *invoke.ExitError
 
 	switch {
 	case errors.As(err, &exitErr):
-		fmt.Println("ran and failed with", exitErr.Code)
+		// Stderr carries a tail of the command's own diagnostics. The
+		// Executor attaches it whenever the caller did not claim the
+		// stream, so a failure says why and not just how much.
+		fmt.Printf("ran and failed with %d: %s", exitErr.Code, exitErr.Stderr)
 	case errors.Is(err, invoke.ErrNotFound):
 		fmt.Println("could not be started")
 	case err != nil:
 		fmt.Println("something else went wrong")
 	}
-	// Output: ran and failed with 3
+	// Output: ran and failed with 3: boom
 }
 
 // A missing executable is reported before anything runs, so it is never
