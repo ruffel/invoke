@@ -18,18 +18,32 @@ concurrency:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
+        # README promises "Go 1.25 or newer", which is two claims. The
+        # floor leg installs exactly what go.mod declares, so the promised
+        # minimum cannot rot; the stable leg installs the current release,
+        # so a newer toolchain cannot break the tree unnoticed. Neither
+        # version is written here: the floor is read from go.mod, so
+        # raising it needs no edit to this file.
+        go: [floor, stable]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - name: Install the toolchain go.mod declares
+        if: matrix.go == 'floor'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Install the current Go release
+        if: matrix.go == 'stable'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
       - name: Run tests with race detector
         run: go test -race ./...
       - name: Build the docker module
