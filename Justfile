@@ -75,10 +75,17 @@ test-parity:
 # of `check`.
 test-integration: test-docker test-openssh
 
-# Run linters across every module.
+# Run linters across every module, including the tests behind build tags.
+#
+# The integration tests compile only under their tags, so a run without
+# them lints neither the openssh lane nor the docker one — a thousand
+# lines that CI checks and `check` could not fail on. The docker module's
+# tagged run is a superset of its untagged one, so it replaces it.
 lint:
+    golangci-lint config verify
     golangci-lint run ./...
-    cd docker && golangci-lint run ./...
+    golangci-lint run --build-tags openssh ./ssh/
+    cd docker && golangci-lint run --build-tags docker ./...
 
 # Apply the configured formatters (gofumpt, gci).
 fmt:
