@@ -45,7 +45,9 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install golangci-lint
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.8.0
+        # The version is read from the same file `just tools` reads, so a
+        # contributor's linter and this job's linter cannot disagree.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(cat .golangci-version)
       - name: Verify lint configuration
         run: golangci-lint config verify
       - name: Lint

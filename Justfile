@@ -11,6 +11,17 @@ default: check
 # Format-check, lint, tidy-check, cross-build, race tests.
 check: workspace-check fmt-check lint tidy-check build-windows test-race
 
+# Install the pinned development tools that `check` needs.
+#
+# The version lives in .golangci-version rather than here, because CI
+# runs these commands directly rather than installing just, and so cannot
+# call this recipe. A file both sides read is what keeps the binary they
+# install the same one.
+#
+# just itself is not installable this way; see CONTRIBUTING.md.
+tools:
+    go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(cat .golangci-version)
+
 # Fail if the workspace demands a newer toolchain than the modules do.
 #
 # `go work init` and `go work sync` stamp the running toolchain's exact
