@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/ruffel/invoke"
@@ -326,7 +325,7 @@ func TestSpecialFilesErrorByDefaultAndSkipOnRequest(t *testing.T) {
 	writeFixture(t, srcDir, "normal.txt", "normal", modeDefault)
 
 	fifo := filepath.Join(srcDir, "pipe.fifo")
-	if err := syscall.Mkfifo(fifo, uint32(modeDefault)); err != nil {
+	if err := makeFIFO(fifo, uint32(modeDefault)); err != nil {
 		t.Skipf("mkfifo unavailable: %v", err)
 	}
 
