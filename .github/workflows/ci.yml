@@ -32,8 +32,13 @@ jobs:
           go-version-file: go.mod
       - name: Run tests with race detector
         run: go test -race ./...
-      - name: Build the docker module
-        run: cd docker && go build ./...
+      # The contracts that need a daemon are behind the docker build tag
+      # and run in the integration lane. What is left is ordinary unit
+      # tests — tar building, path classification, context resolution —
+      # which need nothing and were the only part of this module never
+      # run on macOS.
+      - name: Run the docker module's tests with race detector
+        run: cd docker && go test -race ./...
 
   lint:
     name: Lint
