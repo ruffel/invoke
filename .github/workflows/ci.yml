@@ -97,8 +97,14 @@ jobs:
           go-version-file: go.mod
       - name: Cross-build for Windows
         run: GOOS=windows go build ./...
+      # `go build` does not compile _test.go files, so vet as well: it is
+      # what notices a test reaching for a POSIX-only symbol.
+      - name: Typecheck for Windows, tests included
+        run: GOOS=windows go vet ./...
       - name: Cross-build the docker module for Windows
         run: cd docker && GOOS=windows go build ./...
+      - name: Typecheck the docker module for Windows, tests included
+        run: cd docker && GOOS=windows go vet ./...
 
   # The unit lane runs the SSH provider against a server written for these
   # tests, which can only confirm what this repository already believes.

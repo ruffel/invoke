@@ -48,9 +48,15 @@ build:
 
 # Cross-build for Windows: everything must compile there, even though
 # execution semantics are POSIX-only this cycle.
+#
+# vet as well as build, because `go build` does not compile _test.go
+# files: a test using a POSIX-only symbol left the claim false in the one
+# place neither this recipe nor CI could see it.
 build-windows:
     GOOS=windows go build ./...
+    GOOS=windows go vet ./...
     cd docker && GOOS=windows go build ./...
+    cd docker && GOOS=windows go vet ./...
 
 # Run tests. The docker provider's contracts need a daemon and are behind
 # a build tag; see test-docker.
