@@ -34,9 +34,9 @@ const (
 // standard output), or by passing [io.Discard] to discard deliberately.
 //
 // Only the operations that carry policy are exposed here (Run, Output,
-// Lines, Upload, Download). For LookPath, OS, Capabilities, or Close, use
-// the Environment directly; if you need no policy at all, you need no
-// Executor.
+// Text, Lines, Upload, Download). For LookPath, OS, Capabilities, or
+// Close, use the Environment directly; if you need no policy at all, you
+// need no Executor.
 type Executor struct {
 	env  Environment
 	base execConfig
