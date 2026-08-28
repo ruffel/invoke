@@ -75,15 +75,15 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		return nil, err
 	}
 
-	chain, err := establish(ctx, cfg)
+	established, err := establish(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	env := &Environment{
 		cfg:    cfg,
-		chain:  chain,
-		client: chain.target(),
+		chain:  established,
+		client: established.target(),
 		active: make(map[*process]struct{}),
 	}
 
