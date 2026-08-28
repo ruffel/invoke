@@ -13,6 +13,8 @@ package ssh_test
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"net"
 	"os/exec"
 	"strconv"
@@ -23,7 +25,9 @@ import (
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/invoketest"
 	"github.com/ruffel/invoke/ssh"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	xssh "golang.org/x/crypto/ssh"
 )
 
 const (
@@ -44,30 +48,50 @@ const (
 	containerStopTimeout = time.Minute
 )
 
-// startOpenSSH launches a container running sshd with its stock
-// configuration and returns the port it is reachable on.
+// allowForwarding and refuseForwarding are a jump host's forwarding
+// policy, stated explicitly in both directions.
+//
+// Explicitly, because a jump host carries nothing unless it is configured
+// to, and the stock answer differs between distributions: the image these
+// tests use refuses forwarding out of the box. Depending on which default
+// an image happens to ship would make this lane test the image rather than
+// the provider.
+const (
+	allowForwarding  = "sed -i 's/^#*AllowTcpForwarding.*/AllowTcpForwarding yes/' /etc/ssh/sshd_config && "
+	refuseForwarding = "sed -i 's/^#*AllowTcpForwarding.*/AllowTcpForwarding no/' /etc/ssh/sshd_config && "
+)
+
+// sshdSetup is the command that brings up a server, with extra inserted
+// into its configuration before it starts.
+//
+// Deliberately stock otherwise: the point is to meet the configuration a
+// user would actually find, including which environment variables it is
+// willing to accept and whether it forwards.
+func sshdSetup(extra string) string {
+	return "apk add --no-cache openssh >/dev/null 2>&1 && " +
+		"ssh-keygen -A >/dev/null 2>&1 && " +
+		"echo '" + opensshUser + ":" + opensshPassword + "' | chpasswd && " +
+		"sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && " +
+		extra +
+		"/usr/sbin/sshd -D"
+}
+
+// startContainer runs a container with the given arguments and removes it
+// when the test finishes.
 //
 // The container runtime is driven through its own command line rather
 // than a client library, so this stays free of the daemon-location
 // problem and of any dependency the provider itself does not need.
-func startOpenSSH(t *testing.T) int {
+func startContainer(t *testing.T, args ...string) string {
 	t.Helper()
-
-	// Deliberately stock: the point is to meet the configuration a user
-	// would actually find, including which environment variables it is
-	// willing to accept.
-	setup := "apk add --no-cache openssh >/dev/null 2>&1 && " +
-		"ssh-keygen -A >/dev/null 2>&1 && " +
-		"echo '" + opensshUser + ":" + opensshPassword + "' | chpasswd && " +
-		"sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && " +
-		"/usr/sbin/sshd -D"
 
 	ctx, cancel := context.WithTimeout(t.Context(), containerStartTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "docker", "run", "-d", "--rm",
-		"-p", "127.0.0.1::22", opensshImage, "sh", "-c", setup).Output()
-	require.NoError(t, err, "starting the sshd container")
+	//nolint:gosec // The arguments are literals and names this test generated.
+	out, err := exec.CommandContext(ctx, "docker",
+		append([]string{"run", "-d", "--rm"}, args...)...).Output()
+	require.NoError(t, err, "starting the container")
 
 	id := strings.TrimSpace(string(out))
 
@@ -78,6 +102,16 @@ func startOpenSSH(t *testing.T) int {
 		//nolint:gosec // The argument is a container id this function just created.
 		_ = exec.CommandContext(removeCtx, "docker", "rm", "-f", id).Run()
 	})
+
+	return id
+}
+
+// startOpenSSH launches a container running sshd with its stock
+// configuration and returns the port it is reachable on.
+func startOpenSSH(t *testing.T) int {
+	t.Helper()
+
+	id := startContainer(t, "-p", "127.0.0.1::22", opensshImage, "sh", "-c", sshdSetup(""))
 
 	return waitForSSHD(t, id)
 }
@@ -174,6 +208,215 @@ func TestOpenSSHContractSuite(t *testing.T) {
 
 		return dialOpenSSH(tt, port)
 	})
+}
+
+// bastionTopology is a target reachable only through a jump host, which is
+// the arrangement jump support exists for.
+type bastionTopology struct {
+	// jumpPort is the jump host's published port on the loopback address,
+	// and the only way into the topology from here.
+	jumpPort int
+
+	// targetName is the target's address on the private network. It
+	// resolves from the jump host and nowhere else.
+	targetName string
+}
+
+// options connect to the target through the jump host, each hop
+// authenticated on its own.
+func (b bastionTopology) options(extra ...ssh.Option) []ssh.Option {
+	opts := []ssh.Option{
+		ssh.WithUser(opensshUser),
+		ssh.WithPassword(opensshPassword),
+		ssh.WithInsecureIgnoreHostKey(),
+		ssh.WithJumpHost("127.0.0.1",
+			ssh.WithPort(b.jumpPort),
+			ssh.WithUser(opensshUser),
+			ssh.WithPassword(opensshPassword),
+			ssh.WithInsecureIgnoreHostKey(),
+		),
+	}
+
+	return append(opts, extra...)
+}
+
+// startBastionTopology brings up a jump host reachable from here and a
+// target reachable only from the jump host.
+//
+// The target publishes no port and lives on a network of its own, so its
+// name resolves through the runtime's embedded DNS from a container
+// attached to that network and from nowhere else. A provider that
+// regressed to dialing the target directly could not reach it at all,
+// which is what makes the second container worth its cost.
+//
+// The network is user-defined but not internal. Both containers install
+// sshd from the package repository when they start, which an internal
+// network would cut them off from; the isolation comes from the target
+// publishing no port rather than from the network refusing egress.
+func startBastionTopology(t *testing.T, jumpExtra string) bastionTopology {
+	t.Helper()
+
+	network := createNetwork(t)
+
+	targetName := uniqueName(t, "target")
+
+	startContainer(t,
+		"--network", network,
+		"--name", targetName,
+		opensshImage, "sh", "-c", sshdSetup(""))
+
+	jumpID := startContainer(t,
+		"-p", "127.0.0.1::22",
+		opensshImage, "sh", "-c", sshdSetup(jumpExtra))
+
+	connectNetwork(t, network, jumpID)
+
+	return bastionTopology{jumpPort: waitForSSHD(t, jumpID), targetName: targetName}
+}
+
+// createNetwork makes a private network for one topology and removes it
+// when the test finishes.
+func createNetwork(t *testing.T) string {
+	t.Helper()
+
+	name := uniqueName(t, "net")
+
+	ctx, cancel := context.WithTimeout(t.Context(), containerStopTimeout)
+	defer cancel()
+
+	//nolint:gosec // The name was generated by this test.
+	require.NoError(t, exec.CommandContext(ctx, "docker", "network", "create", name).Run(),
+		"creating the private network")
+
+	// Registered before any container joins it. Cleanup runs in reverse,
+	// so every container is gone by the time the network is removed —
+	// the only order the runtime accepts.
+	t.Cleanup(func() {
+		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
+		defer removeCancel()
+
+		//nolint:gosec // The name was generated by this test.
+		_ = exec.CommandContext(removeCtx, "docker", "network", "rm", name).Run()
+	})
+
+	return name
+}
+
+// connectNetwork attaches a running container to the private network.
+//
+// The jump host joins after it has started rather than at run time:
+// attaching several networks in one run needs a newer engine than
+// attaching one and connecting the rest.
+func connectNetwork(t *testing.T, network, id string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(t.Context(), containerStopTimeout)
+	defer cancel()
+
+	require.NoError(t, exec.CommandContext(ctx, "docker", "network", "connect", network, id).Run(),
+		"attaching the jump host to the private network")
+}
+
+// uniqueName names a runtime object so parallel tests cannot collide.
+func uniqueName(t *testing.T, kind string) string {
+	t.Helper()
+
+	var raw [6]byte
+
+	_, err := rand.Read(raw[:])
+	require.NoError(t, err, "unique name")
+
+	return fmt.Sprintf("invoke-%s-%x", kind, raw)
+}
+
+// waitForTargetBehindJump waits until the target answers through the jump
+// host, and then checks it answers nowhere else.
+//
+// The second half guards the guard. The topology is only evidence that the
+// jump host is being used if the target cannot be reached without it, and
+// a change that published the target's port for convenience would let a
+// regression to direct dialing pass unnoticed.
+func waitForTargetBehindJump(t *testing.T, topo bastionTopology) {
+	t.Helper()
+
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		env, err := ssh.New(t.Context(), topo.targetName, topo.options()...)
+		if err == nil {
+			_ = env.Close()
+
+			_, direct := ssh.New(t.Context(), topo.targetName,
+				ssh.WithUser(opensshUser),
+				ssh.WithPassword(opensshPassword),
+				ssh.WithInsecureIgnoreHostKey(),
+				ssh.WithTimeout(10*time.Second),
+			)
+			require.Error(t, direct,
+				"the target answered a direct dial: it is not actually behind the jump host, "+
+					"so nothing here would notice a regression to dialing it directly")
+
+			return
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	require.FailNow(t, "the target did not become reachable through the jump host within 90s")
+}
+
+// TestOpenSSHJumpContractSuite runs the shared contracts against a real
+// server reached through a real jump host.
+//
+// The contracts know nothing about how the connection is carried, so they
+// have to pass exactly as they do against a direct one. What this adds
+// over the in-process chain is a real sshd doing the forwarding, with its
+// own idea of what a forwarded channel is worth.
+func TestOpenSSHJumpContractSuite(t *testing.T) {
+	t.Parallel()
+
+	topo := startBastionTopology(t, allowForwarding)
+	waitForTargetBehindJump(t, topo)
+
+	invoketest.Verify(t, func(it invoketest.T) invoke.Environment {
+		tt, ok := it.(*testing.T)
+		require.True(tt, ok, "contract tests require the standard *testing.T")
+
+		env, err := ssh.New(tt.Context(), topo.targetName, topo.options()...)
+		require.NoError(tt, err, "connecting to the target through the jump host")
+
+		tt.Cleanup(func() { _ = env.Close() })
+
+		return env
+	})
+}
+
+// TestOpenSSHRefusedForwardingIsReported checks what a real server does
+// when it is configured not to forward at all.
+//
+// The in-process server answers this case with a refusal these tests
+// wrote themselves, which proves only that the classification matches the
+// imitation. Only a real sshd can say what the refusal actually looks
+// like.
+func TestOpenSSHRefusedForwardingIsReported(t *testing.T) {
+	t.Parallel()
+
+	topo := startBastionTopology(t, refuseForwarding)
+
+	_, err := ssh.New(t.Context(), topo.targetName, topo.options()...)
+	require.Error(t, err, "a jump host that refuses to forward cannot carry a connection")
+
+	var transportErr *invoke.TransportError
+
+	require.ErrorAs(t, err, &transportErr, "a refused forward is a transport failure")
+
+	assert.ErrorContains(t, err, "through jump",
+		"the error must name the connection that refused, not just the one that was wanted")
+
+	var openErr *xssh.OpenChannelError
+
+	require.ErrorAs(t, err, &openErr, "the server's own reason must stay reachable")
+	assert.Equal(t, xssh.Prohibited, openErr.Reason,
+		"a server refusing on policy grounds must be distinguishable from one that could not connect")
 }
 
 // TestOpenSSHEnvFallbackDelivers checks the opt-in fallback does deliver
