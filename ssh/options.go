@@ -3,6 +3,7 @@ package ssh
 import (
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 
 // defaultPort is the standard SSH port, used when none is configured.
 const defaultPort = 22
+
+// maxChainDepth bounds the walk that appends a hop to a chain. It is not a
+// limit on how many hops a connection may have — [Config.validate] rejects
+// a cycle however deep — only a guarantee that a malformed one is reported
+// rather than spun on.
+const maxChainDepth = 1024
 
 // defaultTimeout bounds connection establishment (TCP dial plus SSH
 // handshake) when none is configured.
@@ -119,12 +126,18 @@ func (c *Config) validateHost(target bool) error {
 		return fmt.Errorf("ssh: %s is required", subject)
 	}
 
-	// OpenSSH's ProxyJump takes user@host:port in one string. This API
-	// takes the host alone, with the rest as options, so a value pasted
-	// from ssh_config would otherwise be dialed as a hostname with an @ in
-	// it and fail to resolve for a reason nothing explains.
+	// OpenSSH's ProxyJump takes user@host:port in one string. This API takes
+	// the host alone, with the rest as options, so a value pasted from
+	// ssh_config would otherwise be dialed as a hostname with an @ or a port
+	// buried in it and fail to resolve for a reason nothing explains.
 	if strings.Contains(c.Host, "@") {
 		return fmt.Errorf("ssh: %s %q must not carry a user; set the login user with WithUser", subject, c.Host)
+	}
+
+	// SplitHostPort is the test rather than a search for a colon, because
+	// an IPv6 address is nothing but colons and is a perfectly good host.
+	if _, _, err := net.SplitHostPort(c.Host); err == nil {
+		return fmt.Errorf("ssh: %s %q must not carry a port; set the port with WithPort", subject, c.Host)
 	}
 
 	return nil
@@ -287,12 +300,22 @@ func WithJumpHost(host string, opts ...Option) Option {
 		// they are dialed. Whatever this connection already reaches
 		// through is therefore reached before this hop, and belongs at the
 		// outer end of the hop's own chain.
+		//
+		// The walk is bounded because there is no error to return from an
+		// option: a chain already made cyclic would otherwise spin here
+		// rather than reaching validate, which reports it properly.
 		outermost := jump
-		for outermost.Jump != nil {
+		for range maxChainDepth {
+			if outermost.Jump == nil {
+				break
+			}
+
 			outermost = outermost.Jump
 		}
 
-		outermost.Jump = c.Jump
+		if outermost.Jump == nil {
+			outermost.Jump = c.Jump
+		}
 
 		c.Jump = jump
 	}

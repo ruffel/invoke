@@ -69,6 +69,32 @@ func waitForNoConnections(t *testing.T, srv *testServer, what string) {
 	assert.Failf(t, "connections outlived the chain", "%s: %d still open", what, srv.openConnections())
 }
 
+// connectWithin runs connect and returns its error, failing the test if it
+// does not return within bound.
+//
+// A bound checked after the call has returned is no bound at all: when the
+// mechanism it is testing regresses, the call never returns and the check
+// is never reached. The test then fails as a whole-package timeout with a
+// goroutine dump, rather than by name.
+func connectWithin(t *testing.T, bound time.Duration, connect func() error) error {
+	t.Helper()
+
+	done := make(chan error, 1)
+
+	go func() { done <- connect() }()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(bound):
+		require.FailNow(t, "connecting was never given up on",
+			"no answer within %s; a tunnelled connection has no deadline of its own, so the "+
+				"socket at the head of the chain is what has to be closed", bound)
+
+		return nil
+	}
+}
+
 // startSilentListener accepts connections and says nothing on them, holding
 // every socket open: a server that completes a TCP connection and never
 // begins the SSH conversation.
@@ -310,7 +336,13 @@ func TestJumpHostRefusalNamesBothEnds(t *testing.T) {
 func TestHandshakeThroughAJumpHostIsBounded(t *testing.T) {
 	t.Parallel()
 
-	const bound = 20 * time.Second
+	const (
+		// The timeout the target hop is given, and the margin allowed
+		// around it. A bound of tens of seconds would be met by a
+		// regression that merely waited a very long time.
+		handshakeBound = 500 * time.Millisecond
+		bound          = 20 * handshakeBound
+	)
 
 	t.Run("the target's timeout is honored", func(t *testing.T) {
 		t.Parallel()
@@ -318,20 +350,19 @@ func TestHandshakeThroughAJumpHostIsBounded(t *testing.T) {
 		jump := startTestServer(t)
 		host, port := startSilentListener(t)
 
-		began := time.Now()
+		err := connectWithin(t, bound, func() error {
+			_, err := ssh.New(t.Context(), host,
+				ssh.WithPort(port),
+				ssh.WithUser("tester"),
+				ssh.WithPassword(testPassword),
+				ssh.WithInsecureIgnoreHostKey(),
+				ssh.WithTimeout(handshakeBound),
+				jumpOption(jump),
+			)
 
-		_, err := ssh.New(t.Context(), host,
-			ssh.WithPort(port),
-			ssh.WithUser("tester"),
-			ssh.WithPassword(testPassword),
-			ssh.WithInsecureIgnoreHostKey(),
-			ssh.WithTimeout(500*time.Millisecond),
-			jumpOption(jump),
-		)
+			return err
+		})
 		require.Error(t, err, "a silent target must not read as a connection")
-
-		assert.Less(t, time.Since(began), bound,
-			"the handshake was never given up on: a tunnelled connection has no deadline of its own")
 
 		waitForNoConnections(t, jump, "after a target that never answered")
 	})
@@ -351,30 +382,28 @@ func TestHandshakeThroughAJumpHostIsBounded(t *testing.T) {
 		// Long enough that the chain is up and the target handshake is
 		// blocked before the link stops carrying anything.
 		go func() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(handshakeBound)
 			link.freeze()
 		}()
 
-		began := time.Now()
-
-		_, err := ssh.New(t.Context(), host,
-			ssh.WithPort(port),
-			ssh.WithUser("tester"),
-			ssh.WithPassword(testPassword),
-			ssh.WithInsecureIgnoreHostKey(),
-			ssh.WithTimeout(2*time.Second),
-			ssh.WithJumpHost(link.host(),
-				ssh.WithPort(link.port()),
+		err := connectWithin(t, bound, func() error {
+			_, err := ssh.New(t.Context(), host,
+				ssh.WithPort(port),
 				ssh.WithUser("tester"),
 				ssh.WithPassword(testPassword),
-				ssh.WithHostKeyCallback(xssh.FixedHostKey(jump.hostKey)),
-			),
-		)
-		require.Error(t, err, "a silent target behind a dead link must not read as a connection")
+				ssh.WithInsecureIgnoreHostKey(),
+				ssh.WithTimeout(4*handshakeBound),
+				ssh.WithJumpHost(link.host(),
+					ssh.WithPort(link.port()),
+					ssh.WithUser("tester"),
+					ssh.WithPassword(testPassword),
+					ssh.WithHostKeyCallback(xssh.FixedHostKey(jump.hostKey)),
+				),
+			)
 
-		assert.Less(t, time.Since(began), bound,
-			"giving up on the target wrote a message down a link nothing was carrying; "+
-				"the socket at the head of the chain is what had to be closed")
+			return err
+		})
+		require.Error(t, err, "a silent target behind a dead link must not read as a connection")
 	})
 
 	t.Run("cancellation interrupts it", func(t *testing.T) {
@@ -390,23 +419,26 @@ func TestHandshakeThroughAJumpHostIsBounded(t *testing.T) {
 			cancel()
 		}()
 
-		began := time.Now()
+		err := connectWithin(t, bound, func() error {
+			_, err := ssh.New(ctx, host,
+				ssh.WithPort(port),
+				ssh.WithUser("tester"),
+				ssh.WithPassword(testPassword),
+				ssh.WithInsecureIgnoreHostKey(),
+				// Long enough that only the cancellation can end this.
+				ssh.WithTimeout(time.Minute),
+				jumpOption(jump),
+			)
 
-		_, err := ssh.New(ctx, host,
-			ssh.WithPort(port),
-			ssh.WithUser("tester"),
-			ssh.WithPassword(testPassword),
-			ssh.WithInsecureIgnoreHostKey(),
-			// Long enough that only the cancellation can end this.
-			ssh.WithTimeout(time.Minute),
-			jumpOption(jump),
-		)
+			return err
+		})
 		require.Error(t, err, "a canceled setup must not connect")
 
 		assert.ErrorIs(t, err, context.Canceled,
 			"the caller's own cancellation is the cause worth reporting")
-		assert.Less(t, time.Since(began), bound,
-			"cancellation must interrupt the handshake, not wait out its timeout")
+
+		assert.ErrorContains(t, err, "jump ",
+			"a chain cut short must still say which connection was being made")
 	})
 }
 
@@ -739,8 +771,11 @@ func startCountingAgent(t *testing.T) (string, <-chan struct{}) {
 			}
 
 			go func() {
-				// The agent never answers, so each hop falls back to the
-				// password. Reading returns once the client lets go.
+				// The server offers password authentication only, so the
+				// agent's keys are never asked for and nothing is ever
+				// written here. Reading returns when the client lets go,
+				// which is the event being counted — so a server that grew
+				// public-key authentication would make this vacuous.
 				buf := make([]byte, 1)
 				_, _ = conn.Read(buf)
 				_ = conn.Close()

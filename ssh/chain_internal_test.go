@@ -1,11 +1,121 @@
 package ssh
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// recordingCloser notes when it is closed, so the order a chain tears
+// itself down in can be watched without a live connection behind it.
+type recordingCloser struct {
+	name string
+	log  *[]string
+	mu   *sync.Mutex
+
+	// block, when set, never returns — an inner connection whose close is
+	// a write into a link nobody is draining.
+	block chan struct{}
+}
+
+func (r recordingCloser) Close() error {
+	if r.block != nil {
+		<-r.block
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	*r.log = append(*r.log, r.name)
+
+	return nil
+}
+
+// TestChainClosesOutermostFirst pins the teardown order.
+//
+// It is the reverse of the intuitive one, and the reason is invisible from
+// the outside: only the outermost connection owns a socket, and every
+// inner one is a channel whose close is a write over the hop beneath it.
+// Reversing this passes every end-to-end test in the package, because a
+// healthy chain does not care — which is exactly why the order needs a
+// test that looks at it directly.
+func TestChainClosesOutermostFirst(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu     sync.Mutex
+		closed []string
+	)
+
+	closer := func(name string) recordingCloser {
+		return recordingCloser{name: name, log: &closed, mu: &mu}
+	}
+
+	c := &chain{hops: []hop{
+		{closer: closer("outermost"), agent: closer("outermost agent")},
+		{closer: closer("middle"), agent: closer("middle agent")},
+		{closer: closer("target"), agent: closer("target agent")},
+	}}
+
+	require.NoError(t, c.Close())
+
+	assert.Equal(t, []string{
+		"outermost", "middle", "target",
+		"outermost agent", "middle agent", "target agent",
+	}, closed, "the socket at the head of the chain must be released first")
+}
+
+// TestChainCloseDoesNotWaitOnAnInnerConnection pins what the order is for.
+//
+// An inner close is a write over the hop beneath it, and a link that has
+// died absorbs writes without ever answering. Closing from the target
+// inwards would block there — holding Close open on a connection whose
+// whole problem is that it is already gone.
+func TestChainCloseDoesNotWaitOnAnInnerConnection(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu     sync.Mutex
+		closed []string
+	)
+
+	wedged := make(chan struct{})
+
+	c := &chain{hops: []hop{
+		{closer: recordingCloser{name: "outermost", log: &closed, mu: &mu}},
+		{closer: recordingCloser{name: "inner", log: &closed, mu: &mu, block: wedged}},
+	}}
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		_ = c.Close()
+	}()
+
+	// Close as a whole cannot finish while an inner connection is wedged.
+	// What must not wait on it is the socket, which is the close that
+	// unblocks everything else.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+
+		return len(closed) > 0 && closed[0] == "outermost"
+	}, 5*time.Second, 10*time.Millisecond,
+		"the socket was not released before an inner connection blocked the teardown")
+
+	close(wedged)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return once the inner connection let go")
+	}
+}
 
 // TestHopsAreDialedInTheOrderTheyAreNamed pins what a chain of options
 // means. Repeated jump hosts read as OpenSSH's -J list reads: the first
@@ -146,17 +256,42 @@ func TestValidateRejectsChainsThatCannotBeDialed(t *testing.T) {
 			"the empty hop must be named as the hop it is")
 	})
 
-	t.Run("a pasted user@host is refused", func(t *testing.T) {
+	// Both halves of a pasted ssh_config value. The host is joined to its
+	// port before it is dialed, so a host that already carries one becomes
+	// "[bastion:2222]:22" and fails to resolve for a reason nothing
+	// explains — which is the outcome this check exists to prevent.
+	t.Run("a pasted user@host:port is refused", func(t *testing.T) {
+		t.Parallel()
+
+		for name, tc := range map[string]struct{ host, says string }{
+			"user":      {host: "deploy@bastion", says: "WithUser"},
+			"port":      {host: "bastion:2222", says: "WithPort"},
+			"both":      {host: "deploy@bastion:2222", says: "WithUser"},
+			"ipv6 port": {host: "[2001:db8::1]:2222", says: "WithPort"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+
+				cfg := &Config{Host: "target"}
+				WithJumpHost(tc.host)(cfg)
+
+				err := cfg.validate()
+				require.Error(t, err, "a pasted %q was accepted", tc.host)
+
+				assert.ErrorContains(t, err, tc.says, "the error must say where the part belongs")
+			})
+		}
+	})
+
+	// An address that is only colons is still a host, and must survive a
+	// check written to catch a port.
+	t.Run("a bare IPv6 address is a host", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := &Config{Host: "target"}
-		WithJumpHost("deploy@bastion")(cfg)
+		WithJumpHost("2001:db8::1")(cfg)
 
-		err := cfg.validate()
-		require.Error(t, err)
-
-		assert.ErrorContains(t, err, "must not carry a user")
-		assert.ErrorContains(t, err, "WithUser", "the error must say where the user belongs")
+		assert.NoError(t, cfg.validate(), "an IPv6 jump host was read as carrying a port")
 	})
 
 	t.Run("a chain that loops is refused", func(t *testing.T) {

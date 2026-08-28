@@ -30,8 +30,16 @@ type chain struct {
 // authentication holds open. Agent authentication signs on demand, so the
 // socket lives as long as the connection does.
 type hop struct {
+	// client is what sessions, and any hop beyond this one, are opened on.
 	client *ssh.Client
-	agent  io.Closer
+
+	// closer releases the connection. It is the client, held as an
+	// interface because the order a chain is closed in is the subtlest
+	// thing about it — and a test can only watch that order happen if
+	// there is somewhere to stand that does not need a live connection.
+	closer io.Closer
+
+	agent io.Closer
 }
 
 // Close tears the chain down, outermost first, and releases every agent
@@ -52,7 +60,7 @@ type hop struct {
 func (c *chain) Close() error {
 	c.closeOnce.Do(func() {
 		for i, h := range c.hops {
-			err := h.client.Close()
+			err := h.closer.Close()
 
 			// The outermost close is the one worth reporting: it owns the
 			// socket. An inner one failing afterwards says only that the
@@ -108,8 +116,11 @@ func (c *chain) outermost() *ssh.Client {
 // the chain is what gets closed, before the channel is closed for
 // tidiness. The half-built chain is abandoned either way: establishing it
 // has already failed.
-func (c *chain) abort(conn net.Conn) {
-	if head := c.outermost(); head != nil {
+//
+// head is passed rather than read from the chain, because this runs from a
+// watcher goroutine while the chain it belongs to is still being built.
+func abort(head *ssh.Client, conn net.Conn) {
+	if head != nil {
 		_ = head.Close()
 	}
 
@@ -132,7 +143,7 @@ func establish(ctx context.Context, cfg *Config) (*chain, error) {
 			return nil, err
 		}
 
-		c.hops = append(c.hops, hop{client: client, agent: agentConn})
+		c.hops = append(c.hops, hop{client: client, closer: client, agent: agentConn})
 	}
 
 	return c, nil
@@ -225,6 +236,10 @@ func (c *chain) handshake(
 ) (*ssh.Client, error) {
 	_ = conn.SetDeadline(handshakeDeadline(ctx, spec.cfg.timeout()))
 
+	// Fixed for the length of this handshake: the chain grows as hops are
+	// established, and the watcher must not be reading it while it does.
+	head := c.outermost()
+
 	handshakeDone := make(chan struct{})
 
 	go func() {
@@ -237,7 +252,7 @@ func (c *chain) handshake(
 			select {
 			case <-handshakeDone:
 			default:
-				c.abort(conn)
+				abort(head, conn)
 			}
 		case <-handshakeDone:
 		}
@@ -248,9 +263,22 @@ func (c *chain) handshake(
 	close(handshakeDone)
 
 	if err != nil {
-		c.abort(conn)
+		abort(head, conn)
 
 		return nil, err
+	}
+
+	// The watcher gives up on a hop only while the handshake is still
+	// running, and only once the context has ended. So a context still live
+	// here proves nothing was torn down behind this handshake, and one that
+	// has ended means the bound passed before the handshake landed —
+	// whether or not the watcher reached it first. Answering that question
+	// here, rather than racing the watcher for it, is what stops a
+	// connection being reported as established and closed at once.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		abort(head, conn)
+
+		return nil, ctxErr
 	}
 
 	_ = conn.SetDeadline(time.Time{})
@@ -367,13 +395,22 @@ func (h hopSpec) describe() string {
 // more now that a hop reached through another reports a bare cancellation
 // with nothing else to identify it by.
 func (h hopSpec) setupFailure(ctx context.Context, op string, err error) error {
+	name := h.describe()
+
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		// Named too. A chain cut short by the caller is otherwise the one
+		// failure that says nothing about which of several connections was
+		// the slow one.
+		if name != "" {
+			return fmt.Errorf("ssh: connect: %s: %w", name, ctxErr)
+		}
+
 		return fmt.Errorf("ssh: connect: %w", ctxErr)
 	}
 
 	// The hop is named inside the error rather than around it: the taxonomy
 	// asks for one transport failure per failure, not a nest of them.
-	if name := h.describe(); name != "" {
+	if name != "" {
 		err = fmt.Errorf("%s: %w", name, err)
 	}
 

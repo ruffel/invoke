@@ -241,6 +241,39 @@ func TestConstructionHonoursItsContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// TestCancelledConnectionIsNotATransportFailure pins which family a
+// connection the caller stopped belongs to.
+//
+// The taxonomy puts the context's own error among the terminal ones: the
+// caller stopping the work is not the transport failing, and only one of
+// those is ever retried. The two halves of establishing a connection used
+// to disagree about this — a handshake cut short reported the
+// cancellation, a dial cut short reported a transport failure — so which
+// family a caller landed in depended on how far the connection had got
+// before they stopped it.
+func TestCancelledConnectionIsNotATransportFailure(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := ssh.New(ctx, srv.host(),
+		ssh.WithPort(srv.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
+	)
+	require.Error(t, err, "construction with a canceled context must fail")
+
+	var transportErr *invoke.TransportError
+
+	assert.NotErrorAs(t, err, &transportErr,
+		"a connection the caller stopped must not be retried: nothing about the transport failed")
+	assert.ErrorIs(t, err, context.Canceled, "the underlying cause must stay reachable")
+}
+
 // TestConnectHonorsCancellationMidHandshake pins New's promise that ctx
 // bounds establishing the connection — including the handshake, where a
 // server that accepts the socket and then says nothing would otherwise
