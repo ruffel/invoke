@@ -241,6 +241,43 @@ func TestConstructionHonoursItsContext(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
+// TestTimeoutDoesNotOutliveTheHandshake checks the bound on establishing a
+// connection is lifted once it is established.
+//
+// The handshake is bounded by a deadline on the connection itself, because
+// a server that accepts and then says nothing has no other limit. A
+// deadline is a property of the socket rather than of the operation, so one
+// left in place stops being a bound on connecting and becomes an expiry
+// date on the connection: every session would fail once the configured
+// timeout had passed, however healthy the link.
+//
+// The window is the timeout itself, so nothing shorter than a connection
+// that outlives it can tell the difference.
+func TestTimeoutDoesNotOutliveTheHandshake(t *testing.T) {
+	t.Parallel()
+
+	const timeout = time.Second
+
+	srv := startTestServer(t)
+
+	env, err := ssh.New(t.Context(), srv.host(),
+		ssh.WithPort(srv.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
+		ssh.WithTimeout(timeout),
+	)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	time.Sleep(timeout + 500*time.Millisecond)
+
+	_, err = env.LookPath(t.Context(), "sh")
+	assert.NoError(t, err,
+		"the connection expired at its own connect timeout; the handshake's deadline was never lifted")
+}
+
 // TestCancelledConnectionIsNotATransportFailure pins which family a
 // connection the caller stopped belongs to.
 //

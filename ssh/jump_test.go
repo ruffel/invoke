@@ -2,6 +2,7 @@ package ssh_test
 
 import (
 	"context"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -322,6 +323,43 @@ func TestJumpHostRefusalNamesBothEnds(t *testing.T) {
 	require.ErrorAs(t, err, &openErr,
 		"the server's own reason must stay reachable, so policy is distinguishable from weather")
 	assert.Equal(t, xssh.Prohibited, openErr.Reason)
+}
+
+// TestJumpHostFailureKeepsItsCauseReachable checks naming the hop does not
+// cost the caller the reason.
+//
+// A hop's own misconfiguration is reported with the hop's name inserted
+// after this package's prefix, which means wrapping it in an error of this
+// package's own. Wrapping is only safe if it unwraps: the taxonomy is
+// extracted with errors.Is and errors.As, so an error that stops the walk
+// is worse than one that never said which hop failed.
+func TestJumpHostFailureKeepsItsCauseReachable(t *testing.T) {
+	t.Parallel()
+
+	jump := startTestServer(t)
+	target := startTestServer(t)
+
+	missing := filepath.Join(t.TempDir(), "no-such-key")
+
+	_, err := ssh.New(t.Context(), target.host(),
+		ssh.WithPort(target.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(target.hostKey)),
+		// The hop is given one way to authenticate and it cannot be read.
+		ssh.WithJumpHost(jump.host(),
+			ssh.WithPort(jump.port()),
+			ssh.WithUser("tester"),
+			ssh.WithPrivateKey(missing),
+			ssh.WithHostKeyCallback(xssh.FixedHostKey(jump.hostKey)),
+		),
+	)
+	require.Error(t, err, "a hop with no usable credentials must not connect")
+
+	assert.ErrorContains(t, err, "jump ", "the failing hop must still be named")
+
+	assert.ErrorIs(t, err, fs.ErrNotExist,
+		"naming the hop must not break the chain to the reason it failed")
 }
 
 // TestHandshakeThroughAJumpHostIsBounded is the test the chain's one
