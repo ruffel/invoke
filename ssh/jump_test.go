@@ -143,6 +143,49 @@ func TestJumpHostReachesTheTarget(t *testing.T) {
 	assert.Empty(t, jump.recordedExecs(), "a jump host carries the connection; it runs nothing")
 }
 
+// TestHandBuiltChainConnects checks the escape hatch the Jump field's
+// documentation promises.
+//
+// A Config assembled as a struct cannot express known_hosts verification,
+// whose fields are unexported — the documented answer being that options
+// are ordinary functions and apply to a hop directly. That is only worth
+// documenting if it works, and NewFromConfig is a second entry point that
+// could grow its own idea of what a chain is.
+func TestHandBuiltChainConnects(t *testing.T) {
+	t.Parallel()
+
+	jump := startTestServer(t)
+	target := startTestServer(t)
+
+	cfg := &ssh.Config{
+		Host:     target.host(),
+		Port:     target.port(),
+		User:     "tester",
+		Password: testPassword,
+		Jump: &ssh.Config{
+			Host:     jump.host(),
+			Port:     jump.port(),
+			User:     "tester",
+			Password: testPassword,
+		},
+	}
+
+	// The host-key policy is the part a struct literal cannot state, so
+	// each hop gets its own by application.
+	ssh.WithKnownHosts(writeKnownHosts(t, target, target.hostKey))(cfg)
+	ssh.WithKnownHosts(writeKnownHosts(t, jump, jump.hostKey))(cfg.Jump)
+
+	env, err := ssh.NewFromConfig(t.Context(), cfg)
+	require.NoError(t, err, "a hand-built chain must connect like a configured one")
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	_, err = env.LookPath(t.Context(), "sh")
+	assert.NoError(t, err, "LookPath through a hand-built chain")
+
+	assert.Positive(t, jump.openForwards(), "the hand-built hop must be the one carrying it")
+}
+
 // TestContractSuiteThroughAJumpHost runs the shared behavioral contracts
 // over a jumped connection.
 //
