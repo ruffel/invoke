@@ -257,6 +257,11 @@ func WithKeepAlive(d time.Duration) Option {
 // which says the same thing nested — WithJumpHost("b", WithJumpHost("a"))
 // is that chain.
 //
+// The jump host has to be willing to forward, which is a server-side
+// setting and not every distribution enables it: a host with
+// AllowTcpForwarding no refuses the channel, and the failure says
+// "administratively prohibited" and names the hop that said it.
+//
 // The host is bare: a user belongs in [WithUser] and a port in [WithPort],
 // not in a user@host:port string. Two options do nothing here.
 // [WithCommandLineEnv] has nothing to act on, a hop running no commands.
