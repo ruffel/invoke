@@ -87,6 +87,30 @@ env, err := ssh.New(ctx, "build-3.example.net",
 )
 ```
 
+A host on a private network is reached through one that isn't, the way
+`ssh -J` does it. The jump host is a connection in its own right, with its
+own user, credentials, and host-key check — nothing is inherited in either
+direction, and neither hop will connect without verifying the host it
+reached:
+
+```go
+env, err := ssh.New(ctx, "10.0.17.11",
+	ssh.WithUser("deploy"),
+	ssh.WithPrivateKey(home+"/.ssh/id_ed25519"),
+	ssh.WithKnownHosts(home+"/.ssh/known_hosts"),
+	ssh.WithJumpHost("bastion.example.net",
+		ssh.WithUser("jump"),
+		ssh.WithPrivateKey(home+"/.ssh/id_bastion"),
+		ssh.WithKnownHosts(home+"/.ssh/known_hosts"),
+	),
+)
+```
+
+Options are read as the hops are dialed, so a second `WithJumpHost` adds a
+second hop beyond the first, as `-J a,b` does. Configuration comes from
+these options alone: `ssh_config` is never read, so a `ProxyJump` recorded
+there has no effect here.
+
 A container is named by name or ID, and the daemon is found the way the
 `docker` command finds it — `WithHost`, a named context, `DOCKER_HOST`,
 then the current context:
@@ -131,7 +155,7 @@ transport failures and nothing else; the reasoning is under
 |----------|---------|------------------|
 | Local | `local` | the host, in the unit lane |
 | Fake (for testing) | `fake` | the same suite as the real providers |
-| SSH | `ssh` | an in-process server, and a real OpenSSH server |
+| SSH | `ssh` | an in-process server, and a real OpenSSH server, each reached directly and through a jump host |
 | Docker | `docker` (submodule) | a real container |
 
 ### Capabilities
