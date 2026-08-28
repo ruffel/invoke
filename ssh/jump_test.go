@@ -594,16 +594,81 @@ func TestFailureMidChainNamesTheHopAndCleansUp(t *testing.T) {
 }
 
 // TestEveryHopReleasesItsAgentSocket checks a hop authenticating through
-// the agent opens its own socket, and that every one of them is released
-// when the chain closes.
+// the agent opens its own socket, and that every one of them is released —
+// whether the chain was built and then closed, or never finished at all.
 //
 // The sockets are held open for the life of the connection, agent
-// authentication signing on demand, so one left behind by a hop leaks for
-// the life of the process.
+// authentication signing on demand, so one left behind leaks for the life
+// of the process. The half-built case is the easier one to get wrong: a
+// hop's socket is opened before its transport, so the hop that fails has
+// one to release even though it never connected.
 func TestEveryHopReleasesItsAgentSocket(t *testing.T) {
-	// SSH_AUTH_SOCK is process-global, so this test cannot run alongside
-	// others that set it.
-	//
+	// SSH_AUTH_SOCK is process-global, so these cannot run alongside
+	// anything else that sets it — including each other.
+	for _, tc := range []struct {
+		name      string
+		targetKey func(target, other *testServer) xssh.PublicKey
+		connects  bool
+	}{
+		{
+			name:      "the chain is closed",
+			targetKey: func(target, _ *testServer) xssh.PublicKey { return target.hostKey },
+			connects:  true,
+		},
+		{
+			name: "the chain is never finished",
+			// The jump host is reached and authenticated; the target then
+			// presents a key that is not the one expected, so the chain
+			// fails with two agent sockets open.
+			targetKey: func(_, other *testServer) xssh.PublicKey { return other.hostKey },
+			connects:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			agentPath, released := startCountingAgent(t)
+
+			t.Setenv("SSH_AUTH_SOCK", agentPath)
+
+			jump := startTestServer(t)
+			target := startTestServer(t)
+			other := startTestServer(t)
+
+			env, err := ssh.New(t.Context(), target.host(),
+				ssh.WithPort(target.port()),
+				ssh.WithUser("tester"),
+				ssh.WithPassword(testPassword),
+				ssh.WithAgent(),
+				ssh.WithHostKeyCallback(xssh.FixedHostKey(tc.targetKey(target, other))),
+				jumpOption(jump, ssh.WithAgent()),
+			)
+
+			if tc.connects {
+				require.NoError(t, err)
+				require.NoError(t, env.Close())
+			} else {
+				require.Error(t, err, "a target presenting an unexpected key was accepted")
+			}
+
+			// One for the jump host, one for the target.
+			const hops = 2
+
+			for count := range hops {
+				select {
+				case <-released:
+				case <-time.After(5 * time.Second):
+					require.Failf(t, "an agent socket outlived the chain",
+						"%d of %d hops released theirs", count, hops)
+				}
+			}
+		})
+	}
+}
+
+// startCountingAgent listens on an agent socket that never answers, and
+// reports on the returned channel every time a client lets one go.
+func startCountingAgent(t *testing.T) (string, <-chan struct{}) {
+	t.Helper()
+
 	// A unix socket path is limited to about 100 bytes, which the usual
 	// per-test temp directory can exceed.
 	//nolint:usetesting // t.TempDir can exceed the unix socket path limit.
@@ -612,19 +677,16 @@ func TestEveryHopReleasesItsAgentSocket(t *testing.T) {
 
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 
-	agentPath := filepath.Join(dir, "a.sock")
+	path := filepath.Join(dir, "a.sock")
 
-	listener, err := net.Listen("unix", agentPath) //nolint:noctx // Local test socket; no context to bound.
+	listener, err := net.Listen("unix", path) //nolint:noctx // Local test socket; no context to bound.
 	if err != nil {
 		t.Skipf("unix sockets unavailable: %v", err)
 	}
 
 	t.Cleanup(func() { _ = listener.Close() })
 
-	// One for the jump host, one for the target.
-	const hops = 2
-
-	closed := make(chan struct{}, hops)
+	released := make(chan struct{}, 8)
 
 	go func() {
 		for {
@@ -634,42 +696,18 @@ func TestEveryHopReleasesItsAgentSocket(t *testing.T) {
 			}
 
 			go func() {
-				// The agent never answers; each hop falls back to the
+				// The agent never answers, so each hop falls back to the
 				// password. Reading returns once the client lets go.
 				buf := make([]byte, 1)
 				_, _ = conn.Read(buf)
 				_ = conn.Close()
 
-				closed <- struct{}{}
+				released <- struct{}{}
 			}()
 		}
 	}()
 
-	t.Setenv("SSH_AUTH_SOCK", agentPath)
-
-	jump := startTestServer(t)
-	target := startTestServer(t)
-
-	env, err := ssh.New(t.Context(), target.host(),
-		ssh.WithPort(target.port()),
-		ssh.WithUser("tester"),
-		ssh.WithPassword(testPassword),
-		ssh.WithAgent(),
-		ssh.WithHostKeyCallback(xssh.FixedHostKey(target.hostKey)),
-		jumpOption(jump, ssh.WithAgent()),
-	)
-	require.NoError(t, err)
-
-	require.NoError(t, env.Close())
-
-	for released := range hops {
-		select {
-		case <-closed:
-		case <-time.After(5 * time.Second):
-			require.Failf(t, "an agent socket outlived the chain",
-				"%d of %d hops released theirs", released, hops)
-		}
-	}
+	return path, released
 }
 
 // frozenLink is a TCP relay that can be told to stop carrying traffic
