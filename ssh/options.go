@@ -1,6 +1,9 @@
 package ssh
 
 import (
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -55,7 +58,8 @@ type Config struct {
 	// insecureHostKey disables host-key verification entirely. Tests only.
 	insecureHostKey bool
 
-	// Timeout bounds connection establishment; zero means 30s.
+	// Timeout bounds establishing this connection — its dial and its
+	// handshake — and zero means 30s. Each hop of a chain carries its own.
 	Timeout time.Duration
 
 	// KeepAlive is how often to probe the server so a silently dropped
@@ -66,6 +70,64 @@ type Config struct {
 	// accept out of band to be carried on the command line instead. See
 	// [WithCommandLineEnv] for what that exposes.
 	CommandLineEnv bool
+
+	// Jump, when set, is the host this connection is dialed through: a
+	// connection of its own, with its own credentials and host-key policy.
+	// A hop carrying a Jump of its own extends the chain, which is dialed
+	// from the hop this process can reach inwards to the target.
+	//
+	// Prefer [WithJumpHost] to setting this by hand. A hop assembled as a
+	// struct cannot express known_hosts verification, whose fields are
+	// unexported — but options are ordinary functions and can be applied
+	// to one directly:
+	//
+	//	cfg.Jump = &ssh.Config{Host: "203.0.113.11"}
+	//	ssh.WithUser("jump")(cfg.Jump)
+	//	ssh.WithKnownHosts(path)(cfg.Jump)
+	Jump *Config
+}
+
+// validate checks the whole chain before anything is dialed, so a
+// misconfigured hop is named up front rather than surfacing later as a
+// failure against an address the caller cannot place.
+func (c *Config) validate() error {
+	seen := make(map[*Config]struct{})
+
+	for hop := c; hop != nil; hop = hop.Jump {
+		if _, ok := seen[hop]; ok {
+			return errors.New("ssh: the jump chain loops back on itself")
+		}
+
+		seen[hop] = struct{}{}
+
+		if err := hop.validateHost(hop == c); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateHost checks one hop names a host that can be dialed.
+func (c *Config) validateHost(target bool) error {
+	subject := "jump host"
+	if target {
+		subject = "host"
+	}
+
+	if strings.TrimSpace(c.Host) == "" {
+		return fmt.Errorf("ssh: %s is required", subject)
+	}
+
+	// OpenSSH's ProxyJump takes user@host:port in one string. This API
+	// takes the host alone, with the rest as options, so a value pasted
+	// from ssh_config would otherwise be dialed as a hostname with an @ in
+	// it and fail to resolve for a reason nothing explains.
+	if strings.Contains(c.Host, "@") {
+		return fmt.Errorf("ssh: %s %q must not carry a user; set the login user with WithUser", subject, c.Host)
+	}
+
+	return nil
 }
 
 // Option configures a [Config].
@@ -120,7 +182,11 @@ func WithInsecureIgnoreHostKey() Option {
 	return func(c *Config) { c.insecureHostKey = true }
 }
 
-// WithTimeout sets the connection establishment timeout.
+// WithTimeout sets the connection establishment timeout: the dial and the
+// handshake of one connection, as OpenSSH's ConnectTimeout bounds one.
+// Where [WithJumpHost] builds a chain, each hop is bounded by the timeout
+// it was configured with, and the caller's context bounds the chain as a
+// whole.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Config) { c.Timeout = d }
 }
@@ -136,6 +202,9 @@ func WithTimeout(d time.Duration) Option {
 // this option the refused variables are exported on the command line
 // instead — where they appear in the remote process table and every
 // account on the host can read them. Do not use it to pass secrets.
+//
+// It applies to the target alone. Set on a hop of a chain it does nothing,
+// there being no commands to carry anything for.
 func WithCommandLineEnv() Option {
 	return func(c *Config) { c.CommandLineEnv = true }
 }
@@ -147,8 +216,81 @@ func WithCommandLineEnv() Option {
 // declares the connection dead and closes it, unblocking everything
 // still waiting on it, including Close. Zero means the default; a
 // negative interval disables probing.
+//
+// One probe covers a whole chain: it travels to the target over every hop,
+// so a jump host that dies takes the probe with it and is discovered on
+// the same interval. Setting this on a hop is therefore unnecessary, and
+// does nothing.
 func WithKeepAlive(d time.Duration) Option {
 	return func(c *Config) { c.KeepAlive = d }
+}
+
+// WithJumpHost routes the connection through an intermediate SSH host, as
+// OpenSSH's ProxyJump directive and its -J flag do. The jump host is dialed
+// and authenticated first, and the target is reached through it: the
+// target's handshake is unchanged, only what carries it differs.
+//
+// The jump connection is configured independently of the target, from the
+// same options: its own user, credentials, port, and host-key verification.
+// Nothing is inherited in either direction, and fail-closed host-key
+// verification applies to each hop separately —
+// [WithInsecureIgnoreHostKey] on the target does not extend to the jump.
+//
+//	env, err := ssh.New(ctx, "10.0.17.11",
+//	    ssh.WithUser("root"),
+//	    ssh.WithPrivateKey(keyPath),
+//	    ssh.WithKnownHosts(knownHosts),
+//	    ssh.WithJumpHost("203.0.113.11",
+//	        ssh.WithUser("jump"),
+//	        ssh.WithPrivateKey(jumpKeyPath),
+//	        ssh.WithKnownHosts(knownHosts),
+//	    ),
+//	)
+//
+// Longer chains are written as repeated options, in the order the hops are
+// dialed, so that
+//
+//	ssh.New(ctx, target, ssh.WithJumpHost("a"), ssh.WithJumpHost("b"))
+//
+// means what ssh -J a,b target means: a is reached from here, b through a,
+// and the target through b. A hop may equally carry a jump host of its own,
+// which says the same thing nested — WithJumpHost("b", WithJumpHost("a"))
+// is that chain.
+//
+// The host is bare: a user belongs in [WithUser] and a port in [WithPort],
+// not in a user@host:port string. Two options do nothing here.
+// [WithCommandLineEnv] has nothing to act on, a hop running no commands.
+// [WithKeepAlive] is not needed: probes to the target travel over every
+// hop, so a jump host that dies silently is discovered with it.
+//
+// This package never reads ssh_config. A ProxyJump recorded there has no
+// effect on a connection made here; the chain is the one these options
+// describe.
+func WithJumpHost(host string, opts ...Option) Option {
+	return func(c *Config) {
+		// Built when the option is applied, not when it is created: an
+		// option is a value a caller may keep and use for several
+		// connections, and a hop built once would be shared between all of
+		// them.
+		jump := &Config{Host: host}
+
+		for _, opt := range opts {
+			opt(jump)
+		}
+
+		// Hops accumulate in the order they are named, which is the order
+		// they are dialed. Whatever this connection already reaches
+		// through is therefore reached before this hop, and belongs at the
+		// outer end of the hop's own chain.
+		outermost := jump
+		for outermost.Jump != nil {
+			outermost = outermost.Jump
+		}
+
+		outermost.Jump = c.Jump
+
+		c.Jump = jump
+	}
 }
 
 // keepAlive returns the configured keepalive interval or the default. A

@@ -9,17 +9,19 @@
 // command lines, pre-flight checks, and environment prologues are plain
 // sh, and a csh-family login shell will misread them. Host-key
 // verification is fail-closed: a connection requires known_hosts, an
-// explicit callback, or an explicit insecure override.
+// explicit callback, or an explicit insecure override — and where
+// [WithJumpHost] routes a connection through an intermediate host, each
+// hop is verified and authenticated on its own terms.
+//
+// Configuration comes from the options passed here and nowhere else. This
+// package does not read ssh_config, so aliases, ProxyJump directives, and
+// identity files recorded there have no effect on a connection made with
+// it.
 package ssh
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"net"
-	"os/user"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,13 +32,15 @@ import (
 
 // Environment is a connection to a remote host over SSH.
 type Environment struct {
-	cfg    *Config
-	client *ssh.Client
-	os     invoke.TargetOS
+	cfg *Config
+	os  invoke.TargetOS
 
-	// agentConn is the SSH agent socket, held open for the life of the
-	// connection because agent authentication signs on demand.
-	agentConn io.Closer
+	// chain is every connection the target is reached through, the last of
+	// which is the target itself. A direct connection is a chain of one.
+	chain *chain
+
+	// client is the chain's target, which is what every session runs on.
+	client *ssh.Client
 
 	// stopKeepAlive ends the keepalive loop, and keepAliveDone closes once
 	// it has actually stopped, so Close never outlives its own goroutine.
@@ -52,8 +56,9 @@ var _ invoke.Environment = (*Environment)(nil)
 
 // New connects to host over SSH and returns an Environment for it.
 //
-// ctx bounds establishing the connection only. It does not govern the
-// Environment afterwards, which lives until Close.
+// ctx bounds establishing the connection only — every hop of it, where
+// [WithJumpHost] routes through an intermediate host. It does not govern
+// the Environment afterwards, which lives until Close.
 func New(ctx context.Context, host string, opts ...Option) (*Environment, error) {
 	cfg := &Config{Host: host}
 	for _, opt := range opts {
@@ -66,20 +71,20 @@ func New(ctx context.Context, host string, opts ...Option) (*Environment, error)
 // NewFromConfig connects using a Config assembled directly. ctx bounds
 // establishing the connection, as in [New].
 func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
-	if strings.TrimSpace(cfg.Host) == "" {
-		return nil, errors.New("ssh: host is required")
+	if err := cfg.validate(); err != nil {
+		return nil, err
 	}
 
-	client, agentConn, err := connect(ctx, cfg)
+	chain, err := establish(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	env := &Environment{
-		cfg:       cfg,
-		client:    client,
-		agentConn: agentConn,
-		active:    make(map[*process]struct{}),
+		cfg:    cfg,
+		chain:  chain,
+		client: chain.target(),
+		active: make(map[*process]struct{}),
 	}
 
 	env.os = env.detectOS(ctx)
@@ -92,111 +97,6 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	env.startKeepAlive()
 
 	return env, nil
-}
-
-// connect establishes the SSH client connection, bounding both the TCP
-// dial and the handshake by the configured timeout.
-func connect(ctx context.Context, cfg *Config) (*ssh.Client, io.Closer, error) {
-	auth, agentConn, err := authMethods(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.port()))
-
-	hostKeyCB, algorithms, err := resolveHostKey(cfg, addr)
-	if err != nil {
-		closeAgent(agentConn)
-
-		return nil, nil, err
-	}
-
-	clientCfg := &ssh.ClientConfig{
-		User:              loginUser(cfg.User),
-		Auth:              auth,
-		HostKeyCallback:   hostKeyCB,
-		HostKeyAlgorithms: algorithms,
-		Timeout:           cfg.timeout(),
-	}
-
-	// The configured timeout is an upper bound; the caller's context can
-	// cut setup shorter, and does when it carries the earlier deadline.
-	dialCtx, cancel := context.WithTimeout(ctx, cfg.timeout())
-	defer cancel()
-
-	var dialer net.Dialer
-
-	conn, err := dialer.DialContext(dialCtx, "tcp", addr)
-	if err != nil {
-		closeAgent(agentConn)
-
-		return nil, nil, &invoke.TransportError{Op: "dial", Err: err}
-	}
-
-	// Bound the handshake too: the dial context does not reach it, and a
-	// server that accepts and then says nothing would otherwise hold the
-	// call open indefinitely.
-	_ = conn.SetDeadline(handshakeDeadline(dialCtx, cfg.timeout()))
-
-	// The deadline covers timeouts; a plain cancellation has no deadline
-	// to fire, so a watcher closes the socket — which is what unblocks a
-	// handshake in progress.
-	handshakeDone := make(chan struct{})
-
-	go func() {
-		select {
-		case <-dialCtx.Done():
-			_ = conn.Close()
-		case <-handshakeDone:
-		}
-	}()
-
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, addr, clientCfg)
-
-	close(handshakeDone)
-
-	if err != nil {
-		_ = conn.Close()
-
-		closeAgent(agentConn)
-
-		// When the caller's own context ended the handshake, that is
-		// the cause worth reporting.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, nil, fmt.Errorf("ssh: connect: %w", ctxErr)
-		}
-
-		return nil, nil, &invoke.TransportError{Op: "handshake", Err: err}
-	}
-
-	_ = conn.SetDeadline(time.Time{})
-
-	return ssh.NewClient(sshConn, chans, reqs), agentConn, nil
-}
-
-// handshakeDeadline is the earlier of the context's deadline and the
-// configured timeout, so neither bound is exceeded.
-func handshakeDeadline(ctx context.Context, timeout time.Duration) time.Time {
-	deadline := time.Now().Add(timeout)
-
-	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
-		return ctxDeadline
-	}
-
-	return deadline
-}
-
-// loginUser returns the configured user or the current OS user.
-func loginUser(configured string) string {
-	if configured != "" {
-		return configured
-	}
-
-	if u, err := user.Current(); err == nil {
-		return u.Username
-	}
-
-	return ""
 }
 
 // OS reports the remote operating system, detected once at connect time.
@@ -282,11 +182,7 @@ func (e *Environment) Close() error {
 		_ = p.Close()
 	}
 
-	err := e.client.Close()
-
-	closeAgent(e.agentConn)
-
-	return err
+	return e.chain.Close()
 }
 
 // startKeepAlive probes the server periodically so a connection that dies
@@ -294,11 +190,15 @@ func (e *Environment) Close() error {
 // than leaving the next operation blocked on a socket nobody is serving.
 //
 // A probe the server does not answer within one interval is that
-// discovery. The client is closed on the spot, which is what unblocks
+// discovery. The connection is closed on the spot, which is what unblocks
 // everything still waiting on the dead link: running Waits, transfers,
 // and Close itself. Without the bound, a probe on a black-holed
 // connection would block in its own send until the kernel gave up on
 // the socket — and hold Close hostage with it.
+//
+// One loop covers a whole chain. A probe to the target crosses every hop
+// on the way, so a jump host that dies silently strands the probe exactly
+// as a dead target does, and is discovered on the same interval.
 func (e *Environment) startKeepAlive() {
 	interval := e.cfg.keepAlive()
 	if interval <= 0 {
@@ -326,7 +226,11 @@ func (e *Environment) startKeepAlive() {
 				return
 			case <-ticker.C:
 				if !e.probeAlive(ctx, grace) {
-					_ = e.client.Close()
+					// The whole chain goes, not just the target: a link
+					// that died takes every connection riding on it with
+					// it, and the socket underneath would otherwise be
+					// held until Close.
+					_ = e.chain.Close()
 
 					return
 				}

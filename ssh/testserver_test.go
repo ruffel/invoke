@@ -77,8 +77,14 @@ type testServer struct {
 	// while keeping every connection open — a link that silently died.
 	blackholed atomic.Bool
 
+	// refuseForwarding declines every direct-tcpip channel, as a server
+	// with AllowTcpForwarding no does.
+	refuseForwarding bool
+
 	mu         sync.Mutex
 	sessions   int
+	forwards   int
+	openConns  int
 	keepAlives int
 	execLines  []string
 	conns      []net.Conn
@@ -102,6 +108,46 @@ func (s *testServer) trackConn(conn net.Conn) {
 	defer s.mu.Unlock()
 
 	s.conns = append(s.conns, conn)
+	s.openConns++
+}
+
+func (s *testServer) untrackConn() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.openConns--
+}
+
+// openConnections reports how many accepted connections are still open, so
+// a chain that leaks its transport is visible rather than merely suspected.
+func (s *testServer) openConnections() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.openConns
+}
+
+// openForwards reports how many forwarded channels are currently open —
+// the jump-host equivalent of openSessions.
+func (s *testServer) openForwards() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.forwards
+}
+
+func (s *testServer) forwardOpened() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.forwards++
+}
+
+func (s *testServer) forwardClosed() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.forwards--
 }
 
 // recordExec notes a command line the server was asked to run, so tests
@@ -173,6 +219,12 @@ func withRefusedEnvCommandExec() serverOption {
 
 func withExtraHostKey(signer ssh.Signer) serverOption {
 	return func(s *testServer) { s.extraHostKey = signer }
+}
+
+// withRefusedForwarding declines every direct-tcpip channel, as a jump host
+// with AllowTcpForwarding no does.
+func withRefusedForwarding() serverOption {
+	return func(s *testServer) { s.refuseForwarding = true }
 }
 
 // blackholeNow makes the server stop answering global requests while
@@ -320,6 +372,8 @@ func (s *testServer) acceptLoop() {
 func (s *testServer) handleConn(conn net.Conn) {
 	s.trackConn(conn)
 
+	defer s.untrackConn()
+
 	sshConn, chans, reqs, err := ssh.NewServerConn(conn, s.config)
 	if err != nil {
 		_ = conn.Close()
@@ -332,25 +386,90 @@ func (s *testServer) handleConn(conn net.Conn) {
 	go s.handleGlobalRequests(reqs)
 
 	for newChannel := range chans {
-		if newChannel.ChannelType() != "session" {
-			_ = newChannel.Reject(ssh.UnknownChannelType, "only sessions are supported")
+		switch newChannel.ChannelType() {
+		case "session":
+			channel, requests, err := newChannel.Accept()
+			if err != nil {
+				continue
+			}
 
-			continue
+			s.sessionOpened()
+
+			go func() {
+				defer s.sessionClosed()
+
+				s.handleSession(channel, requests)
+			}()
+		case "direct-tcpip":
+			go s.handleForward(newChannel)
+		default:
+			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
-
-		channel, requests, err := newChannel.Accept()
-		if err != nil {
-			continue
-		}
-
-		s.sessionOpened()
-
-		go func() {
-			defer s.sessionClosed()
-
-			s.handleSession(channel, requests)
-		}()
 	}
+}
+
+// directTCPIP is the payload a client sends to open a forwarded
+// connection, as RFC 4254 section 7.2 defines it. The x/crypto server side
+// exports no type for it, so this mirrors the wire format.
+type directTCPIP struct {
+	DestAddr   string
+	DestPort   uint32
+	OriginAddr string
+	OriginPort uint32
+}
+
+// handleForward answers a direct-tcpip channel — the request a client makes
+// of a jump host — by connecting to the address it names and splicing the
+// two together.
+func (s *testServer) handleForward(newChannel ssh.NewChannel) {
+	if s.refuseForwarding {
+		// What a server with AllowTcpForwarding no answers, which is a
+		// refusal on policy grounds rather than a failure to connect.
+		_ = newChannel.Reject(ssh.Prohibited, "administratively prohibited")
+
+		return
+	}
+
+	var payload directTCPIP
+	if err := ssh.Unmarshal(newChannel.ExtraData(), &payload); err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, "bad direct-tcpip payload")
+
+		return
+	}
+
+	addr := net.JoinHostPort(payload.DestAddr, strconv.Itoa(int(payload.DestPort)))
+
+	target, err := net.Dial("tcp", addr) //nolint:noctx // Test forward; lifetime is the channel.
+	if err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, err.Error())
+
+		return
+	}
+
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		_ = target.Close()
+
+		return
+	}
+
+	s.forwardOpened()
+
+	defer func() {
+		_ = target.Close()
+		_ = channel.Close()
+
+		s.forwardClosed()
+	}()
+
+	go ssh.DiscardRequests(requests)
+
+	done := make(chan struct{}, 2)
+
+	go func() { _, _ = io.Copy(channel, target); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(target, channel); done <- struct{}{} }()
+
+	<-done
 }
 
 // sessionState carries the per-session environment and the running command,
