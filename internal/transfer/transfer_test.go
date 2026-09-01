@@ -2,6 +2,7 @@ package transfer_test
 
 import (
 	"context"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -308,4 +309,85 @@ func TestCopyRejectsCanceledContext(t *testing.T) {
 
 	_, err := os.Stat(dstDir)
 	assert.Error(t, err, "a canceled Copy created the destination")
+}
+
+// sizeCapturingFS is a destination filesystem whose files record the
+// reader the copy offers them, standing in for a destination that
+// schedules its writes by asking that reader for the source's size —
+// which is what pkg/sftp's ReadFrom does.
+type sizeCapturingFS struct {
+	transfer.HostFS
+
+	offered []io.Reader
+}
+
+func (f *sizeCapturingFS) CreateExclusive(p string) (transfer.WriteFile, error) {
+	file, err := f.HostFS.CreateExclusive(p)
+	if err != nil {
+		return nil, err
+	}
+
+	return &sizeCapturingFile{WriteFile: file, offered: &f.offered}, nil
+}
+
+// sizeCapturingFile records the reader io.Copy offers it, then lets the
+// copy proceed.
+type sizeCapturingFile struct {
+	transfer.WriteFile
+
+	offered *[]io.Reader
+}
+
+func (f *sizeCapturingFile) ReadFrom(r io.Reader) (int64, error) {
+	*f.offered = append(*f.offered, r)
+
+	return io.Copy(f.WriteFile, r)
+}
+
+// TestCopyOffersTheSourceSizeToTheDestination pins the size hint the
+// copy hands a destination that schedules by it. The regression this
+// guards is invisible any other way: a wrapper reshuffle that hides the
+// size breaks no behavior — remote uploads just quietly revert to one
+// request per round trip.
+func TestCopyOffersTheSourceSizeToTheDestination(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		opts []invoke.TransferOption
+	}{
+		{name: "bare", opts: nil},
+		{name: "with progress", opts: []invoke.TransferOption{
+			invoke.WithProgress(func(invoke.TransferProgress) {}),
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Larger than one 32 KiB packet, so a hidden size could not
+			// hide behind the small-file path.
+			content := strings.Repeat("x", 100_000)
+
+			src := filepath.Join(t.TempDir(), "payload")
+			require.NoError(t, os.WriteFile(src, []byte(content), 0o600), "writing fixture")
+
+			dst := &sizeCapturingFS{}
+
+			require.NoError(t,
+				transfer.Copy(t.Context(), transfer.HostFS{}, src,
+					dst, filepath.Join(t.TempDir(), "delivered"),
+					invoke.NewTransferConfig(tc.opts...)))
+
+			require.Len(t, dst.offered, 1, "exactly one file was copied")
+
+			sized, ok := dst.offered[0].(interface{ Size() int64 })
+			require.True(t, ok,
+				"the reader offered to the destination does not carry the source's size, "+
+					"so a scheduling destination would fall back to one request per round trip")
+			assert.Equal(t, int64(len(content)), sized.Size(),
+				"the offered size must be the source's stat'ed size")
+		})
+	}
 }

@@ -156,7 +156,13 @@ func (e *Environment) runTransfer(owner *sftpSession, op string, run func(remote
 		return setupFailed(fmt.Errorf("ssh: %s: sftp subsystem: %w", op, invoke.ErrNotSupported))
 	}
 
-	client, err := sftp.NewClientPipe(stdout, stdin)
+	// Concurrent writes pipeline upload requests instead of paying a
+	// round trip per 32 KiB packet. The option's documented hazard — a
+	// file left with holes when a transfer dies mid-flight — never
+	// reaches a destination path here: the engine writes into an
+	// exclusively created temp file and renames over the destination
+	// only on success, so a torn file is discarded, not delivered.
+	client, err := sftp.NewClientPipe(stdout, stdin, sftp.UseConcurrentWrites(true))
 	if err != nil {
 		return setupFailed(&invoke.TransportError{Op: op, Err: err})
 	}
