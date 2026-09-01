@@ -122,6 +122,65 @@ func startCommand(ctx context.Context, t T, env invoke.Environment, cmd invoke.C
 	return proc
 }
 
+// startedCommand runs script through the target's shell and returns once
+// marker has appeared on stdout, so the process is provably running
+// before the contract acts on it.
+//
+// The proof matters for signaling: a signal is fire-and-forget on some
+// transports — SSH's request carries no reply, and a server that
+// receives one before the command has started drops it — so a contract
+// that signals immediately after Start measures the start race rather
+// than delivery.
+//
+// A script that keeps running after its marker must exec its final
+// command. A shell left waiting in front of it can absorb a later
+// signal and die alone, and the orphaned child then holds the session's
+// output open — a Wait that follows the pipes blocks on a process
+// nobody signaled.
+func startedCommand(ctx context.Context, t T, env invoke.Environment, script, marker string) invoke.Process {
+	t.Helper()
+
+	out := &lockedBuffer{}
+	proc := startCommand(ctx, t, env, invoke.Shell(script), invoke.IO{Stdout: out})
+
+	deadline := time.Now().Add(contractTimeout)
+	for time.Now().Before(deadline) {
+		if out.contains(marker) {
+			return proc
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	_ = proc.Close()
+
+	require.Failf(t, "the process never printed its liveness marker",
+		"%q did not appear on stdout within %v", marker, contractTimeout)
+
+	return nil
+}
+
+// lockedBuffer is an output sink safe to read while the provider is
+// still writing to it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) contains(s string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return bytes.Contains(b.buf.Bytes(), []byte(s))
+}
+
 // waitOutcome is one Wait call's result.
 type waitOutcome struct {
 	result invoke.Result
