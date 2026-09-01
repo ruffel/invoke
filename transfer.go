@@ -64,6 +64,11 @@ type TransferConfig struct {
 
 	// Progress, when non-nil, receives per-file progress updates.
 	Progress func(TransferProgress)
+
+	// Concurrency is how many files a tree transfer may copy at once.
+	// 1 forces strictly sequential copying; values below 1 select the
+	// provider's default. See [WithConcurrency].
+	Concurrency int
 }
 
 // TransferOption configures a single Upload or Download call.
@@ -112,6 +117,27 @@ func WithSkipSpecial() TransferOption {
 func WithProgress(fn func(TransferProgress)) TransferOption {
 	return func(c *TransferConfig) {
 		c.Progress = fn
+	}
+}
+
+// WithConcurrency sets how many files a tree transfer may copy at once.
+//
+// 1 is a guarantee: files copy strictly sequentially and progress
+// events never interleave across files. Higher values are advisory —
+// a provider that copies file-by-file overlaps up to n per-file
+// round-trip chains, while one whose transport moves whole trees
+// delivers the same result its own way. Outcomes are identical either
+// way, so this is a scheduling hint rather than a capability; the one
+// observable difference under concurrency is that progress events for
+// different files interleave, and which of several simultaneous
+// failures a transfer reports is not deterministic.
+//
+// Values below 1 are treated as unset: the provider's default applies —
+// remote targets pick a small worker pool, local copies stay
+// sequential.
+func WithConcurrency(n int) TransferOption {
+	return func(c *TransferConfig) {
+		c.Concurrency = n
 	}
 }
 
