@@ -82,20 +82,20 @@ func sshdSetup(extra string) string {
 // The container runtime is driven through its own command line rather
 // than a client library, so this stays free of the daemon-location
 // problem and of any dependency the provider itself does not need.
-func startContainer(t *testing.T, args ...string) string {
-	t.Helper()
+func startContainer(tb testing.TB, args ...string) string {
+	tb.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), containerStartTimeout)
+	ctx, cancel := context.WithTimeout(tb.Context(), containerStartTimeout)
 	defer cancel()
 
 	//nolint:gosec // The arguments are literals and names this test generated.
 	out, err := exec.CommandContext(ctx, "docker",
 		append([]string{"run", "-d", "--rm"}, args...)...).Output()
-	require.NoError(t, err, "starting the container")
+	require.NoError(tb, err, "starting the container")
 
 	id := strings.TrimSpace(string(out))
 
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
 
@@ -108,24 +108,24 @@ func startContainer(t *testing.T, args ...string) string {
 
 // startOpenSSH launches a container running sshd with its stock
 // configuration and returns the port it is reachable on.
-func startOpenSSH(t *testing.T) int {
-	t.Helper()
+func startOpenSSH(tb testing.TB) int {
+	tb.Helper()
 
-	id := startContainer(t, "-p", "127.0.0.1::22", opensshImage, "sh", "-c", sshdSetup(""))
+	id := startContainer(tb, "-p", "127.0.0.1::22", opensshImage, "sh", "-c", sshdSetup(""))
 
-	return waitForSSHD(t, id)
+	return waitForSSHD(tb, id)
 }
 
 // waitForSSHD resolves the container's published port and waits until the
 // server completes a handshake on it.
-func waitForSSHD(t *testing.T, id string) int {
-	t.Helper()
+func waitForSSHD(tb testing.TB, id string) int {
+	tb.Helper()
 
-	port := publishedPort(t, id)
+	port := publishedPort(tb, id)
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		env, err := ssh.New(t.Context(), "127.0.0.1",
+		env, err := ssh.New(tb.Context(), "127.0.0.1",
 			ssh.WithPort(port),
 			ssh.WithUser(opensshUser),
 			ssh.WithPassword(opensshPassword),
@@ -140,19 +140,19 @@ func waitForSSHD(t *testing.T, id string) int {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	require.FailNow(t, "sshd did not become reachable within 90s")
+	require.FailNow(tb, "sshd did not become reachable within 90s")
 
 	return 0
 }
 
 // publishedPort waits for the runtime to publish the container's ssh port
 // and returns it.
-func publishedPort(t *testing.T, id string) int {
-	t.Helper()
+func publishedPort(tb testing.TB, id string) int {
+	tb.Helper()
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		out, err := exec.CommandContext(t.Context(), "docker", "port", id, "22/tcp").Output()
+		out, err := exec.CommandContext(tb.Context(), "docker", "port", id, "22/tcp").Output()
 		if err == nil {
 			mapped := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
 
@@ -166,14 +166,14 @@ func publishedPort(t *testing.T, id string) int {
 		time.Sleep(250 * time.Millisecond)
 	}
 
-	require.FailNow(t, "the container never published its ssh port")
+	require.FailNow(tb, "the container never published its ssh port")
 
 	return 0
 }
 
 // dialOpenSSH connects the provider to the containerized server.
-func dialOpenSSH(t *testing.T, port int, opts ...ssh.Option) *ssh.Environment {
-	t.Helper()
+func dialOpenSSH(tb testing.TB, port int, opts ...ssh.Option) *ssh.Environment {
+	tb.Helper()
 
 	base := []ssh.Option{
 		ssh.WithPort(port),
@@ -182,10 +182,10 @@ func dialOpenSSH(t *testing.T, port int, opts ...ssh.Option) *ssh.Environment {
 		ssh.WithInsecureIgnoreHostKey(),
 	}
 
-	env, err := ssh.New(t.Context(), "127.0.0.1", append(base, opts...)...)
-	require.NoError(t, err, "connecting to the containerized sshd")
+	env, err := ssh.New(tb.Context(), "127.0.0.1", append(base, opts...)...)
+	require.NoError(tb, err, "connecting to the containerized sshd")
 
-	t.Cleanup(func() { _ = env.Close() })
+	tb.Cleanup(func() { _ = env.Close() })
 
 	return env
 }
@@ -253,45 +253,45 @@ func (b bastionTopology) options(extra ...ssh.Option) []ssh.Option {
 // sshd from the package repository when they start, which an internal
 // network would cut them off from; the isolation comes from the target
 // publishing no port rather than from the network refusing egress.
-func startBastionTopology(t *testing.T, jumpExtra string) bastionTopology {
-	t.Helper()
+func startBastionTopology(tb testing.TB, jumpExtra string) bastionTopology {
+	tb.Helper()
 
-	network := createNetwork(t)
+	network := createNetwork(tb)
 
-	targetName := uniqueName(t, "target")
+	targetName := uniqueName(tb, "target")
 
-	startContainer(t,
+	startContainer(tb,
 		"--network", network,
 		"--name", targetName,
 		opensshImage, "sh", "-c", sshdSetup(""))
 
-	jumpID := startContainer(t,
+	jumpID := startContainer(tb,
 		"-p", "127.0.0.1::22",
 		opensshImage, "sh", "-c", sshdSetup(jumpExtra))
 
-	connectNetwork(t, network, jumpID)
+	connectNetwork(tb, network, jumpID)
 
-	return bastionTopology{jumpPort: waitForSSHD(t, jumpID), targetName: targetName}
+	return bastionTopology{jumpPort: waitForSSHD(tb, jumpID), targetName: targetName}
 }
 
 // createNetwork makes a private network for one topology and removes it
 // when the test finishes.
-func createNetwork(t *testing.T) string {
-	t.Helper()
+func createNetwork(tb testing.TB) string {
+	tb.Helper()
 
-	name := uniqueName(t, "net")
+	name := uniqueName(tb, "net")
 
-	ctx, cancel := context.WithTimeout(t.Context(), containerStopTimeout)
+	ctx, cancel := context.WithTimeout(tb.Context(), containerStopTimeout)
 	defer cancel()
 
 	//nolint:gosec // The name was generated by this test.
-	require.NoError(t, exec.CommandContext(ctx, "docker", "network", "create", name).Run(),
+	require.NoError(tb, exec.CommandContext(ctx, "docker", "network", "create", name).Run(),
 		"creating the private network")
 
 	// Registered before any container joins it. Cleanup runs in reverse,
 	// so every container is gone by the time the network is removed —
 	// the only order the runtime accepts.
-	t.Cleanup(func() {
+	tb.Cleanup(func() {
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
 
@@ -307,24 +307,24 @@ func createNetwork(t *testing.T) string {
 // The jump host joins after it has started rather than at run time:
 // attaching several networks in one run needs a newer engine than
 // attaching one and connecting the rest.
-func connectNetwork(t *testing.T, network, id string) {
-	t.Helper()
+func connectNetwork(tb testing.TB, network, id string) {
+	tb.Helper()
 
-	ctx, cancel := context.WithTimeout(t.Context(), containerStopTimeout)
+	ctx, cancel := context.WithTimeout(tb.Context(), containerStopTimeout)
 	defer cancel()
 
-	require.NoError(t, exec.CommandContext(ctx, "docker", "network", "connect", network, id).Run(),
+	require.NoError(tb, exec.CommandContext(ctx, "docker", "network", "connect", network, id).Run(),
 		"attaching the jump host to the private network")
 }
 
 // uniqueName names a runtime object so parallel tests cannot collide.
-func uniqueName(t *testing.T, kind string) string {
-	t.Helper()
+func uniqueName(tb testing.TB, kind string) string {
+	tb.Helper()
 
 	var raw [6]byte
 
 	_, err := rand.Read(raw[:])
-	require.NoError(t, err, "unique name")
+	require.NoError(tb, err, "unique name")
 
 	return fmt.Sprintf("invoke-%s-%x", kind, raw)
 }
@@ -336,22 +336,22 @@ func uniqueName(t *testing.T, kind string) string {
 // jump host is being used if the target cannot be reached without it, and
 // a change that published the target's port for convenience would let a
 // regression to direct dialing pass unnoticed.
-func waitForTargetBehindJump(t *testing.T, topo bastionTopology) {
-	t.Helper()
+func waitForTargetBehindJump(tb testing.TB, topo bastionTopology) {
+	tb.Helper()
 
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		env, err := ssh.New(t.Context(), topo.targetName, topo.options()...)
+		env, err := ssh.New(tb.Context(), topo.targetName, topo.options()...)
 		if err == nil {
 			_ = env.Close()
 
-			_, direct := ssh.New(t.Context(), topo.targetName,
+			_, direct := ssh.New(tb.Context(), topo.targetName,
 				ssh.WithUser(opensshUser),
 				ssh.WithPassword(opensshPassword),
 				ssh.WithInsecureIgnoreHostKey(),
 				ssh.WithTimeout(10*time.Second),
 			)
-			require.Error(t, direct,
+			require.Error(tb, direct,
 				"the target answered a direct dial: it is not actually behind the jump host, "+
 					"so nothing here would notice a regression to dialing it directly")
 
@@ -361,7 +361,7 @@ func waitForTargetBehindJump(t *testing.T, topo bastionTopology) {
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	require.FailNow(t, "the target did not become reachable through the jump host within 90s")
+	require.FailNow(tb, "the target did not become reachable through the jump host within 90s")
 }
 
 // TestOpenSSHJumpContractSuite runs the shared contracts against a real
