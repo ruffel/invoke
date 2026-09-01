@@ -81,6 +81,8 @@ type defects struct {
 	stripSymlinkPreserve     bool // report no symlink preservation, then carry links anyway instead of refusing
 	destroySamePath          bool // truncate the source when a transfer's two paths are identical
 	alwaysSkipSpecial        bool // force WithSkipSpecial regardless of options
+	pruneTreeUpload          bool // silently omit one file from a tree upload
+	replayStaleProgress      bool // re-deliver a finished file's progress after another file's began
 	zeroProgressTotals       bool // report Total as zero in progress callbacks
 	transferIgnoresCancel    bool // detach a transfer from the caller's context
 
@@ -196,34 +198,19 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 
 	cfg := m.mutateTransferConfig(invoke.NewTransferConfig(opts...))
 
-	src := localPath
-
-	if m.d.corruptUploads {
-		corrupted, err := corruptCopyOf(localPath)
-		if err != nil {
-			return err
-		}
-
-		defer func() { _ = os.RemoveAll(filepath.Dir(corrupted)) }()
-
-		src = corrupted
+	src, cleanup, err := m.substituteSource(localPath)
+	if err != nil {
+		return err
 	}
 
-	if m.d.shallowTrees {
-		shallow, err := shallowCopyOf(localPath)
-		if err == nil {
-			defer func() { _ = os.RemoveAll(filepath.Dir(shallow)) }()
-
-			src = shallow
-		}
-	}
+	defer cleanup()
 
 	rebuilt := rebuildOpts(cfg)
 	if m.d.flattenModes {
 		rebuilt = append(rebuilt, invoke.WithMode(0o644))
 	}
 
-	err := m.base.Upload(ctx, src, remotePath, rebuilt...)
+	err = m.base.Upload(ctx, src, remotePath, rebuilt...)
 
 	if err == nil && m.d.modeOverrideOnDirs && cfg.Mode != nil {
 		forceDirModes(remotePath, *cfg.Mode)
@@ -319,7 +306,63 @@ func rebuildOpts(cfg invoke.TransferConfig) []invoke.TransferOption {
 		opts = append(opts, invoke.WithProgress(cfg.Progress))
 	}
 
+	if cfg.Concurrency >= 1 {
+		opts = append(opts, invoke.WithConcurrency(cfg.Concurrency))
+	}
+
 	return opts
+}
+
+// prunedCopyOf copies a directory tree into a fresh temp dir, silently
+// omitting the first regular file it meets — the tree arrives one file
+// short with no error to show for it.
+func prunedCopyOf(path string) (string, error) {
+	dir, err := os.MkdirTemp("", "misbehave-*")
+	if err != nil {
+		return "", err
+	}
+
+	root := filepath.Join(dir, filepath.Base(path))
+	dropped := false
+
+	walkErr := filepath.WalkDir(path, func(p string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		rel, relErr := filepath.Rel(path, p)
+		if relErr != nil {
+			return relErr
+		}
+
+		target := filepath.Join(root, rel)
+
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+
+		if !dropped {
+			dropped = true
+
+			return nil
+		}
+
+		content, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return readErr
+		}
+
+		return os.WriteFile(target, content, 0o600)
+	})
+	if walkErr != nil {
+		return "", walkErr
+	}
+
+	return root, nil
 }
 
 // corruptCopyOf writes a corrupted stand-in for path in a fresh temp dir.
@@ -422,6 +465,38 @@ func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
 
 // mutateTransferConfig applies the option-rewriting transfer defects,
 // separated from Upload so its own branching stays legible.
+// substituteSource returns what Upload should send in place of
+// localPath under the source-mangling defects, with a cleanup for any
+// temp copy made.
+func (m *misbehaveEnv) substituteSource(localPath string) (string, func(), error) {
+	remove := func(path string) func() {
+		return func() { _ = os.RemoveAll(filepath.Dir(path)) }
+	}
+
+	if m.d.corruptUploads {
+		corrupted, err := corruptCopyOf(localPath)
+		if err != nil {
+			return "", func() {}, err
+		}
+
+		return corrupted, remove(corrupted), nil
+	}
+
+	if m.d.shallowTrees {
+		if shallow, err := shallowCopyOf(localPath); err == nil {
+			return shallow, remove(shallow), nil
+		}
+	}
+
+	if m.d.pruneTreeUpload {
+		if pruned, err := prunedCopyOf(localPath); err == nil {
+			return pruned, remove(pruned), nil
+		}
+	}
+
+	return localPath, func() {}, nil
+}
+
 func (m *misbehaveEnv) mutateTransferConfig(cfg invoke.TransferConfig) invoke.TransferConfig {
 	if m.d.dropModeOption {
 		cfg.Mode = nil
@@ -440,6 +515,31 @@ func (m *misbehaveEnv) mutateTransferConfig(cfg invoke.TransferConfig) invoke.Tr
 		cfg.Progress = func(p invoke.TransferProgress) {
 			p.Total = 0
 			forward(p)
+		}
+	}
+
+	if m.d.replayStaleProgress && cfg.Progress != nil {
+		forward := cfg.Progress
+
+		var (
+			lastPath  string
+			lastEvent invoke.TransferProgress
+		)
+
+		cfg.Progress = func(p invoke.TransferProgress) {
+			forward(p)
+
+			if lastPath != "" && lastPath != p.Path {
+				// A finished file's progress resumes after another
+				// file's began — once is violation enough.
+				forward(lastEvent)
+
+				lastPath = ""
+
+				return
+			}
+
+			lastPath, lastEvent = p.Path, p
 		}
 	}
 
@@ -763,6 +863,8 @@ func defectCatalog() []defectCase {
 		{name: "destroy download on cancel", contract: "transfer/download-cancel-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
 		{name: "shallow trees", contract: "transfer/tree-roundtrip-creates-parents", defects: defects{shallowTrees: true}},
 		{name: "shallow empty tree", contract: "transfer/empty-files-and-dirs", defects: defects{shallowTrees: true}},
+		{name: "pruned tree", contract: "transfer/concurrent-copies-deliver-the-tree", defects: defects{pruneTreeUpload: true}},
+		{name: "stale progress replay", contract: "transfer/concurrency-one-is-sequential", defects: defects{replayStaleProgress: true}},
 		{name: "dropped symlinks", contract: "transfer/symlinks-preserve", defects: defects{dropSymlinks: true}},
 		{name: "unpreserved symlink carried silently", contract: "transfer/symlink-unsupported-errors", defects: defects{stripSymlinkPreserve: true}},
 		{name: "same-path truncates source", contract: "transfer/same-path-preserves-source", defects: defects{destroySamePath: true}},
