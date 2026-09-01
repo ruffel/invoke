@@ -559,7 +559,7 @@ func writeFile(ctx context.Context, tmp WriteFile, src io.Reader, rel string, to
 		}
 	}
 
-	if _, err := io.Copy(tmp, reader); err != nil {
+	if _, err := io.Copy(tmp, &sizedReader{inner: reader, size: total}); err != nil {
 		return err
 	}
 
@@ -610,4 +610,27 @@ func (r *progressReader) Read(p []byte) (int, error) {
 	}
 
 	return n, err
+}
+
+// sizedReader restates the source's stat'ed size on the outside of the
+// wrapping above, where the destination can see it: a destination that
+// schedules its writes by the reader's size — pkg/sftp pipelines its
+// requests only for a reader whose size it can discover — would
+// otherwise meet an opaque reader and quietly fall back to one request
+// per round trip.
+//
+// The size is advisory and picks scheduling only; Read still runs to
+// EOF, so a source that grew after its stat is copied whole.
+type sizedReader struct {
+	inner io.Reader
+	size  int64
+}
+
+func (r *sizedReader) Read(p []byte) (int, error) {
+	return r.inner.Read(p)
+}
+
+// Size reports how many bytes Read is expected to deliver.
+func (r *sizedReader) Size() int64 {
+	return r.size
 }
