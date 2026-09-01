@@ -402,8 +402,14 @@ func (p *process) monitorContext(ctx context.Context) {
 // whenever the two raced — and a caller who retries on cancellation would
 // then run it again.
 //
-// What remains after that is a death this side could have caused: a kill
-// signal, or no status at all. Those are the flags' to claim.
+// A death by signal is the flags' to claim first, whichever signal it
+// was. Teardown kills with SIGKILL but also closes the session, and the
+// close itself can be what ends the command — the server hangs up the
+// session, and the death it reports is then a HUP or PIPE that outran
+// the kill. Which signal landed first is a race the teardown started
+// either way, so while a Close or cancellation is in flight no signal
+// death is the command's own doing. Only with no teardown in flight
+// does a signal belong to the command.
 func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, error) {
 	sig, signaled := waitSignal(err)
 
@@ -425,13 +431,6 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 		}
 	}
 
-	// A signal this side never sends belongs to the command: the session
-	// is killed with SIGKILL and nothing else, so anything else is the
-	// remote end's own doing and outlives any local bookkeeping.
-	if signaled && sig != invoke.SIGKILL {
-		return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
-	}
-
 	if p.closedByUser.Load() {
 		return invoke.Result{ExitCode: -1, Duration: duration},
 			fmt.Errorf("ssh: wait: process terminated by Close: %w", invoke.ErrClosed)
@@ -441,7 +440,9 @@ func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, 
 		return invoke.Result{ExitCode: -1, Duration: duration}, fmt.Errorf("ssh: wait: %w", ctxErr)
 	}
 
-	// A kill nobody here asked for is still the command's own death.
+	// With no teardown in flight, a death by signal — SIGKILL included,
+	// since nobody here asked for one — is the remote end's own doing,
+	// and outlives any local bookkeeping.
 	if signaled {
 		return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
 	}

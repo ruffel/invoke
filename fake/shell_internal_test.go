@@ -24,6 +24,7 @@ func TestSupportedScriptsAreAccepted(t *testing.T) {
 		`printf '%s|%s' "$HOME" "$INVOKE_DUP"`,
 		`test -n "$(find /x -maxdepth 0 -perm 0644)"`,
 		"sleep 1 && touch /marker",
+		"echo ready && exec sleep 1",
 		"cd /tmp",
 		"echo $HOME",
 		"exit 3",

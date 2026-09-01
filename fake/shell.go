@@ -340,6 +340,19 @@ func execScript(ctx context.Context, s *session, script string) (int, bool) {
 			continue
 		}
 
+		// exec replaces the shell with its command: the command runs and
+		// the script ends with its status, whatever follows. The
+		// replacement itself has nothing to simulate — a fake process is
+		// the whole script either way — but ending the script is what
+		// keeps `exec` scripts faithful: nothing after it may run.
+		if fields := strings.Fields(trimmed); len(fields) > 1 && fields[0] == "exec" {
+			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "exec"))
+
+			execStatus, _, interrupted := execSimple(ctx, shellSession, rest)
+
+			return execStatus, interrupted
+		}
+
 		var (
 			exited      bool
 			interrupted bool

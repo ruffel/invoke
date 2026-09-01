@@ -454,7 +454,7 @@ func lifecycleSignalTerminatesProcess() TestCase {
 			return caps.Signals, "target does not declare signal delivery; lifecycle/unsupported-signal-normalized covers it"
 		},
 		Run: func(t T, env invoke.Environment) {
-			proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
+			proc := startedCommand(t.Context(), t, env, "echo ready && exec sleep 30", "ready")
 
 			defer func() { _ = proc.Close() }()
 
@@ -485,7 +485,7 @@ func lifecycleSignalAttributionRoundTrips() TestCase {
 			// each of these signals default-terminates an untrapped
 			// process. SIGTERM is covered by signal-terminates-process.
 			for _, sig := range []invoke.Signal{invoke.SIGINT, invoke.SIGQUIT, invoke.SIGUSR1, invoke.SIGUSR2} {
-				proc := startCommand(t.Context(), t, env, invoke.New("sleep", "30"), invoke.IO{})
+				proc := startedCommand(t.Context(), t, env, "echo ready && exec sleep 30", "ready")
 
 				if err := proc.Signal(sig); err != nil {
 					_ = proc.Close()

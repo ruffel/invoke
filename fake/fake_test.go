@@ -591,6 +591,17 @@ func TestBuiltinsAnswerTruthfullyOrRefuse(t *testing.T) {
 			wantExit: 1,
 			inStderr: "HOME not set",
 		},
+		{
+			name:       "exec replaces the script with its command",
+			script:     `echo one && exec echo two; echo three`,
+			wantExit:   0,
+			wantStdout: "one\ntwo\n",
+		},
+		{
+			name:     "exec carries its command's failure",
+			script:   `exec false; echo rescued`,
+			wantExit: 1,
+		},
 	}
 
 	for _, tt := range tests {
