@@ -32,7 +32,11 @@ const (
 // TransferProgress reports the progress of one file within a transfer.
 //
 // Callbacks may be invoked from a different goroutine than the caller's,
-// depending on the provider's transport.
+// depending on the provider's transport — and when a transfer copies
+// files concurrently (see [WithConcurrency]), from several goroutines at
+// once. Events for one file arrive in order with Current monotonic;
+// events for different files interleave. [WithConcurrency] with 1 is
+// the opt-out for callers that need strictly sequential progress.
 type TransferProgress struct {
 	// Path is the file being transferred, relative to the transfer root.
 	Path string

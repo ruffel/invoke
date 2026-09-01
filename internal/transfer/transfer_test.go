@@ -2,6 +2,7 @@ package transfer_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -501,4 +502,170 @@ func TestHostFilesDoNotStream(t *testing.T) {
 	assert.False(t, streams,
 		"HostFS.Open returned a file advertising io.WriterTo; uploads would let the "+
 			"host side drive the copy and defeat the destination's request pipelining")
+}
+
+// rendezvousFS proves two file copies are inside their writes at the
+// same moment: each destination file's first Write reports arrival and
+// blocks until released — a rendezvous a copier moving one file at a
+// time can never complete.
+type rendezvousFS struct {
+	transfer.HostFS
+
+	arrivals chan struct{}
+	release  chan struct{}
+}
+
+func (f *rendezvousFS) CreateExclusive(p string) (transfer.WriteFile, error) {
+	file, err := f.HostFS.CreateExclusive(p)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rendezvousFile{WriteFile: file, fs: f}, nil
+}
+
+type rendezvousFile struct {
+	transfer.WriteFile
+
+	fs   *rendezvousFS
+	held bool
+}
+
+func (f *rendezvousFile) Write(p []byte) (int, error) {
+	if !f.held {
+		f.held = true
+		f.fs.arrivals <- struct{}{}
+
+		<-f.fs.release
+	}
+
+	return f.WriteFile.Write(p)
+}
+
+// TestTreeCopyRunsFilesConcurrently pins that WithConcurrency actually
+// engages the worker pool: two files must be mid-write at once.
+func TestTreeCopyRunsFilesConcurrently(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	for i := range 4 {
+		name := filepath.Join(srcDir, "f"+strconv.Itoa(i))
+		require.NoError(t, os.WriteFile(name, []byte(strings.Repeat("x", 64)), 0o600), "writing fixture")
+	}
+
+	dst := &rendezvousFS{arrivals: make(chan struct{}, 4), release: make(chan struct{})}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- transfer.Copy(t.Context(), transfer.HostFS{}, srcDir,
+			dst, filepath.Join(t.TempDir(), "out"),
+			invoke.NewTransferConfig(invoke.WithConcurrency(2)))
+	}()
+
+	for arrived := 0; arrived < 2; {
+		select {
+		case <-dst.arrivals:
+			arrived++
+
+		case err := <-done:
+			require.Failf(t, "the copy finished before two files were in flight", "copy returned early: %v", err)
+
+		case <-time.After(5 * time.Second):
+			close(dst.release)
+			require.FailNow(t, "two files never wrote concurrently; the worker pool did not engage")
+		}
+	}
+
+	close(dst.release)
+	require.NoError(t, <-done, "the concurrent copy must still deliver")
+}
+
+// failingOpenFS fails to open one specific source file, standing in for
+// any mid-tree per-file failure.
+type failingOpenFS struct {
+	transfer.HostFS
+
+	failPath string
+}
+
+var errPlanted = errors.New("planted per-file failure")
+
+func (f failingOpenFS) Open(p string) (transfer.ReadFile, error) {
+	if p == f.failPath {
+		return nil, errPlanted
+	}
+
+	return f.HostFS.Open(p)
+}
+
+// TestTreeCopyReportsTheCauseNotTheCancellation pins the pool's error
+// discipline: the planted failure is what the transfer reports — never
+// the context error the other workers were stopped with — and no
+// half-written temp files survive at the destination.
+func TestTreeCopyReportsTheCauseNotTheCancellation(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	for i := range 12 {
+		name := filepath.Join(srcDir, "f"+strconv.Itoa(i))
+		require.NoError(t, os.WriteFile(name, []byte(strings.Repeat("y", 4096)), 0o600), "writing fixture")
+	}
+
+	src := failingOpenFS{failPath: filepath.Join(srcDir, "f6")}
+	dstDir := filepath.Join(t.TempDir(), "out")
+
+	err := transfer.Copy(t.Context(), src, srcDir, transfer.HostFS{}, dstDir,
+		invoke.NewTransferConfig(invoke.WithConcurrency(4)))
+
+	require.ErrorIs(t, err, errPlanted,
+		"the transfer must report the failure's cause, not the cancellation that spread it")
+	require.NotErrorIs(t, err, context.Canceled,
+		"a cancellation echo must never outrank the failure that caused it")
+
+	entries, readErr := os.ReadDir(dstDir)
+	require.NoError(t, readErr, "reading the destination")
+
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".invoke-",
+			"a canceled in-flight copy left its temp file behind")
+	}
+}
+
+// TestTreeCopyRestoresModesAfterTheCopies pins the ordering between the
+// worker pool and the deferred directory-mode pass: a read-only source
+// directory must get its mode back only after every file inside it has
+// landed, or the copies would be writing into a directory they cannot
+// create files in.
+func TestTreeCopyRestoresModesAfterTheCopies(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	sub := filepath.Join(srcDir, "locked")
+	require.NoError(t, os.Mkdir(sub, 0o755), "mkdir")
+
+	for i := range 6 {
+		name := filepath.Join(sub, "f"+strconv.Itoa(i))
+		require.NoError(t, os.WriteFile(name, []byte("payload"), 0o600), "writing fixture")
+	}
+
+	require.NoError(t, os.Chmod(sub, 0o500), "locking the source directory")
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+
+	dstDir := filepath.Join(t.TempDir(), "out")
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dstDir, "locked"), 0o700) })
+
+	require.NoError(t,
+		transfer.Copy(t.Context(), transfer.HostFS{}, srcDir, transfer.HostFS{}, dstDir,
+			invoke.NewTransferConfig(invoke.WithConcurrency(4))),
+		"a read-only directory's files must land before its mode is restored")
+
+	info, err := os.Stat(filepath.Join(dstDir, "locked"))
+	require.NoError(t, err, "stat the delivered directory")
+	assert.Equal(t, fs.FileMode(0o500), info.Mode().Perm(), "the source directory's mode must be restored")
+
+	for i := range 6 {
+		got, err := os.ReadFile(filepath.Join(dstDir, "locked", "f"+strconv.Itoa(i)))
+		require.NoErrorf(t, err, "reading delivered file %d", i)
+		assert.Equal(t, "payload", string(got))
+	}
 }

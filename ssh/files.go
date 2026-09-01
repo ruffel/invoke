@@ -319,6 +319,22 @@ func (f sftpFS) Contains(root, p string) bool {
 	return p == root || strings.HasPrefix(p, root+"/")
 }
 
+// sftpCopyConcurrency is how many files a tree transfer copies at once
+// over SFTP unless the caller chose otherwise.
+const sftpCopyConcurrency = 8
+
+// CopyConcurrency prefers overlapping per-file round-trip chains: every
+// file in a tree pays a serialized run of metadata round trips — open,
+// chmod, write, fsync, close, rename — and between two files the server
+// otherwise sits idle for the latency of each. Eight keeps it busy
+// without deep queues, because the other resources are already spoken
+// for: OpenSSH's sftp-server executes requests serially in one process,
+// and every file shares the one SSH channel's flow-control window, so
+// wider pools stop paying once the idle gaps are gone.
+func (f sftpFS) CopyConcurrency() int {
+	return sftpCopyConcurrency
+}
+
 // Lstat stats p without following a trailing symlink.
 func (f sftpFS) Lstat(p string) (fs.FileInfo, error) {
 	return f.client.Lstat(p)
