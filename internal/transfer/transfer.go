@@ -548,18 +548,7 @@ func randomSuffix() (string, error) {
 
 // writeFile streams src into the temporary file and finalizes its mode.
 func writeFile(ctx context.Context, tmp WriteFile, src io.Reader, rel string, total int64, srcMode fs.FileMode, cfg invoke.TransferConfig) error {
-	reader := io.Reader(&ctxReader{ctx: ctx, inner: src})
-
-	if cfg.Progress != nil {
-		reader = &progressReader{
-			inner: reader,
-			path:  rel,
-			total: total,
-			fn:    cfg.Progress,
-		}
-	}
-
-	if _, err := io.Copy(tmp, &sizedReader{inner: reader, size: total}); err != nil {
+	if err := copyContent(ctx, tmp, src, rel, total, cfg); err != nil {
 		return err
 	}
 
@@ -576,6 +565,52 @@ func writeFile(ctx context.Context, tmp WriteFile, src io.Reader, rel string, to
 	}
 
 	return tmp.Close()
+}
+
+// copyContent moves the bytes, keeping the side that can schedule its
+// own transfer in charge of it.
+//
+// A source that implements io.WriterTo is the transport side — host
+// files deliberately do not advertise it — and is handed the
+// destination directly, so its own delivery stays engaged: pkg/sftp's
+// WriteTo pipelines read requests, where reading it from here would pay
+// one request per round trip. Cancellation and progress attach to the
+// writer, which WriteTo calls strictly in order, so both keep their
+// per-chunk granularity. Every other source is read from here, and the
+// reader chain restates the source's size where a destination that
+// schedules its writes looks for it.
+func copyContent(ctx context.Context, tmp WriteFile, src io.Reader, rel string, total int64, cfg invoke.TransferConfig) error {
+	if streaming, ok := src.(io.WriterTo); ok {
+		writer := io.Writer(&ctxWriter{ctx: ctx, inner: tmp})
+
+		if cfg.Progress != nil {
+			writer = &progressWriter{
+				inner: writer,
+				path:  rel,
+				total: total,
+				fn:    cfg.Progress,
+			}
+		}
+
+		_, err := streaming.WriteTo(writer)
+
+		return err
+	}
+
+	reader := io.Reader(&ctxReader{ctx: ctx, inner: src})
+
+	if cfg.Progress != nil {
+		reader = &progressReader{
+			inner: reader,
+			path:  rel,
+			total: total,
+			fn:    cfg.Progress,
+		}
+	}
+
+	_, err := io.Copy(tmp, &sizedReader{inner: reader, size: total})
+
+	return err
 }
 
 // ctxReader fails the next Read once the context is done, so a transfer
@@ -607,6 +642,40 @@ func (r *progressReader) Read(p []byte) (int, error) {
 	if n > 0 {
 		r.current += int64(n)
 		r.fn(invoke.TransferProgress{Path: r.path, Current: r.current, Total: r.total})
+	}
+
+	return n, err
+}
+
+// ctxWriter fails the next Write once the context is done, so a
+// transfer driven from the source side stops promptly on cancellation.
+type ctxWriter struct {
+	ctx   context.Context //nolint:containedctx // Adapter binding one copy loop to its call's context.
+	inner io.Writer
+}
+
+func (w *ctxWriter) Write(p []byte) (int, error) {
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
+
+	return w.inner.Write(p)
+}
+
+// progressWriter reports per-file transfer progress as bytes land.
+type progressWriter struct {
+	inner   io.Writer
+	path    string
+	current int64
+	total   int64
+	fn      func(invoke.TransferProgress)
+}
+
+func (w *progressWriter) Write(p []byte) (int, error) {
+	n, err := w.inner.Write(p)
+	if n > 0 {
+		w.current += int64(n)
+		w.fn(invoke.TransferProgress{Path: w.path, Current: w.current, Total: w.total})
 	}
 
 	return n, err

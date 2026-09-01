@@ -91,15 +91,32 @@ func (HostFS) SameFile(a, b fs.FileInfo) bool {
 	return os.SameFile(a, b)
 }
 
-// Open opens path for reading.
+// Open opens path for reading, behind a wrapper that exposes the
+// ReadFile surface and nothing else.
+//
+// Narrowed deliberately: *os.File implements io.WriterTo with a generic
+// copy loop, and a copy that honored it would let the host side drive
+// the transfer — over a destination that schedules its own writes, like
+// the SFTP client, that replaces pipelined requests with one write per
+// round trip. Driving the copy stays the transport side's claim.
 func (HostFS) Open(path string) (ReadFile, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return f, nil
+	return hostReadFile{file: f}, nil
 }
+
+// hostReadFile narrows *os.File to the ReadFile surface. See Open for
+// why the narrowing is load-bearing.
+type hostReadFile struct {
+	file *os.File
+}
+
+func (h hostReadFile) Read(p []byte) (int, error) { return h.file.Read(p) }
+func (h hostReadFile) Close() error               { return h.file.Close() }
+func (h hostReadFile) Stat() (fs.FileInfo, error) { return h.file.Stat() }
 
 // CreateExclusive creates path for writing, failing if it exists.
 func (HostFS) CreateExclusive(path string) (WriteFile, error) {

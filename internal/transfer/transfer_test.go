@@ -391,3 +391,114 @@ func TestCopyOffersTheSourceSizeToTheDestination(t *testing.T) {
 		})
 	}
 }
+
+// streamingFS is a source filesystem whose files deliver themselves via
+// WriteTo, standing in for the transport side (pkg/sftp's File), whose
+// own delivery pipelines only when the copy lets it drive.
+type streamingFS struct {
+	transfer.HostFS
+
+	streamed []io.Writer
+}
+
+func (f *streamingFS) Open(p string) (transfer.ReadFile, error) {
+	file, err := f.HostFS.Open(p)
+	if err != nil {
+		return nil, err
+	}
+
+	return &streamingFile{ReadFile: file, streamed: &f.streamed}, nil
+}
+
+// streamingFile records the writer WriteTo is handed, then delivers.
+type streamingFile struct {
+	transfer.ReadFile
+
+	streamed *[]io.Writer
+}
+
+func (f *streamingFile) WriteTo(w io.Writer) (int64, error) {
+	*f.streamed = append(*f.streamed, w)
+
+	return io.Copy(w, f.ReadFile)
+}
+
+// TestCopyLetsAStreamingSourceDrive pins that a source advertising
+// WriteTo is handed the destination and drives the copy itself — the
+// path where pkg/sftp pipelines a download's read requests — and that
+// cancellation checks and progress survive the handoff on the writer
+// side.
+func TestCopyLetsAStreamingSourceDrive(t *testing.T) {
+	t.Parallel()
+
+	content := strings.Repeat("y", 100_000)
+
+	streamCopy := func(t *testing.T, opts ...invoke.TransferOption) *streamingFS {
+		t.Helper()
+
+		src := filepath.Join(t.TempDir(), "payload")
+		require.NoError(t, os.WriteFile(src, []byte(content), 0o600), "writing fixture")
+
+		source := &streamingFS{}
+		delivered := filepath.Join(t.TempDir(), "delivered")
+
+		require.NoError(t,
+			transfer.Copy(t.Context(), source, src,
+				transfer.HostFS{}, delivered,
+				invoke.NewTransferConfig(opts...)))
+
+		require.Len(t, source.streamed, 1,
+			"a WriterTo source must drive the copy; reading it from the engine "+
+				"costs a pipelining transport one request per round trip")
+
+		got, err := os.ReadFile(delivered)
+		require.NoError(t, err, "reading the delivered file")
+		assert.Equal(t, content, string(got), "the streamed copy must deliver the full content")
+
+		return source
+	}
+
+	t.Run("bare", func(t *testing.T) {
+		t.Parallel()
+
+		streamCopy(t)
+	})
+
+	t.Run("with progress", func(t *testing.T) {
+		t.Parallel()
+
+		var events []invoke.TransferProgress
+
+		streamCopy(t, invoke.WithProgress(func(p invoke.TransferProgress) {
+			events = append(events, p)
+		}))
+
+		require.NotEmpty(t, events, "progress must still be reported when the source drives")
+
+		last := events[len(events)-1]
+		assert.Equal(t, int64(len(content)), last.Current, "progress must reach the full size")
+		assert.Equal(t, int64(len(content)), last.Total, "progress must carry the stat'ed total")
+	})
+}
+
+// TestHostFilesDoNotStream pins the other half of the routing: a host
+// file must not advertise io.WriterTo. *os.File implements it with a
+// generic loop, and honoring that on an upload would take the copy away
+// from a destination that schedules its writes — silently trading
+// pipelined requests for one write per round trip.
+func TestHostFilesDoNotStream(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "f")
+	require.NoError(t, os.WriteFile(path, []byte("x"), 0o600), "writing fixture")
+
+	file, err := transfer.HostFS{}.Open(path)
+	require.NoError(t, err)
+
+	defer func() { _ = file.Close() }()
+
+	_, streams := file.(io.WriterTo)
+	assert.False(t, streams,
+		"HostFS.Open returned a file advertising io.WriterTo; uploads would let the "+
+			"host side drive the copy and defeat the destination's request pipelining")
+}
