@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -513,6 +514,11 @@ type rendezvousFS struct {
 
 	arrivals chan struct{}
 	release  chan struct{}
+
+	// cutOff, when set, is what a released write returns instead of
+	// proceeding: the copy was interrupted, and this is the error the
+	// interruption surfaced as.
+	cutOff error
 }
 
 func (f *rendezvousFS) CreateExclusive(p string) (transfer.WriteFile, error) {
@@ -537,6 +543,10 @@ func (f *rendezvousFile) Write(p []byte) (int, error) {
 		f.fs.arrivals <- struct{}{}
 
 		<-f.fs.release
+
+		if f.fs.cutOff != nil {
+			return 0, f.fs.cutOff
+		}
 	}
 
 	return f.WriteFile.Write(p)
@@ -668,4 +678,154 @@ func TestTreeCopyRestoresModesAfterTheCopies(t *testing.T) {
 		require.NoErrorf(t, err, "reading delivered file %d", i)
 		assert.Equal(t, "payload", string(got))
 	}
+}
+
+// hintingFS is a destination that advertises a preferred concurrency, as
+// the SFTP side does.
+type hintingFS struct {
+	*rendezvousFS
+}
+
+func (hintingFS) CopyConcurrency() int { return 2 }
+
+// TestTreeCopyHonorsTheSideHint pins that a side's advertised
+// concurrency engages the pool with no option from the caller. The
+// rendezvous can only complete when two files are mid-write at once, so
+// a hint that stopped being consulted fails here instead of quietly
+// costing every remote tree transfer its overlap.
+func TestTreeCopyHonorsTheSideHint(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	for i := range 4 {
+		name := filepath.Join(srcDir, "f"+strconv.Itoa(i))
+		require.NoError(t, os.WriteFile(name, []byte(strings.Repeat("x", 64)), 0o600), "writing fixture")
+	}
+
+	dst := hintingFS{&rendezvousFS{arrivals: make(chan struct{}, 4), release: make(chan struct{})}}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- transfer.Copy(t.Context(), transfer.HostFS{}, srcDir,
+			dst, filepath.Join(t.TempDir(), "out"), invoke.TransferConfig{})
+	}()
+
+	for arrived := 0; arrived < 2; {
+		select {
+		case <-dst.arrivals:
+			arrived++
+
+		case err := <-done:
+			require.Failf(t, "the copy finished before two files were in flight", "copy returned early: %v", err)
+
+		case <-time.After(5 * time.Second):
+			close(dst.release)
+			require.FailNow(t, "two files never wrote concurrently; the side's hint was not honored")
+		}
+	}
+
+	close(dst.release)
+	require.NoError(t, <-done, "the hinted copy must still deliver")
+}
+
+// lateHostileFS lists the transfer root's real entries and then one
+// attacker-chosen name that sorts after them, so the walk fails only
+// after it has dispatched a real copy — and not before that copy is
+// provably mid-write: the containment check that rejects the hostile
+// name waits on gate first.
+type lateHostileFS struct {
+	transfer.HostFS
+
+	root     string
+	inFlight <-chan struct{}
+	reached  chan struct{}
+	once     *sync.Once
+}
+
+func (h lateHostileFS) ReadDir(p string) ([]fs.FileInfo, error) {
+	entries, err := h.HostFS.ReadDir(p)
+	if err != nil || p != h.root {
+		return entries, err
+	}
+
+	return append(entries, stubInfo{name: "zz/../../escape"}), nil
+}
+
+// Contains holds the walk at the escaping entry until the real copy is
+// provably in flight (inFlight), then signals that the walk's failure is
+// now being decided (reached). The two gates settle both orderings the
+// production code must survive: the copy must be past the pool's
+// drain-on-cancel guard before the walk fails, or it would be discarded
+// unrun; and the walk's error must lock in before the copy's
+// cancellation reaches the shared context, or the echo would outrank it.
+func (h lateHostileFS) Contains(root, p string) bool {
+	if strings.HasSuffix(p, "escape") {
+		<-h.inFlight
+		h.once.Do(func() { close(h.reached) })
+	}
+
+	return h.HostFS.Contains(root, p)
+}
+
+// TestTreeCopyReportsTheWalkFailureOverInFlightCancellations pins the
+// pool's error discipline from the other side: when the walk itself
+// fails while a copy is mid-write, the cancellation that stops the copy
+// echoes back as a context error, and that echo must never outrank the
+// walk's own failure in what the transfer reports.
+//
+// The in-flight write is cut off with the context error itself rather
+// than left to meet the canceled context on its next read, so the echo
+// is produced every run. The copy's cancellation is held until the walk
+// has provably reached its failure, so the walk's error — not the echo,
+// and not the pool-context cancellation the echo triggers — is what the
+// walk returns.
+func TestTreeCopyReportsTheWalkFailureOverInFlightCancellations(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "f0"), []byte(strings.Repeat("x", 64)), 0o600),
+		"writing fixture")
+
+	dst := &rendezvousFS{
+		arrivals: make(chan struct{}, 2),
+		release:  make(chan struct{}),
+		cutOff:   context.Canceled,
+	}
+	inFlight := make(chan struct{})
+	src := lateHostileFS{root: srcDir, inFlight: inFlight, reached: make(chan struct{}), once: &sync.Once{}}
+	done := make(chan error, 1)
+
+	go func() {
+		done <- transfer.Copy(t.Context(), src, srcDir,
+			dst, filepath.Join(t.TempDir(), "out"),
+			invoke.NewTransferConfig(invoke.WithConcurrency(2)))
+	}()
+
+	// f0 is mid-write, so it is past the pool's drain-on-cancel guard...
+	select {
+	case <-dst.arrivals:
+	case <-time.After(5 * time.Second):
+		close(inFlight)
+		close(dst.release)
+		require.FailNow(t, "the real file never started copying")
+	}
+
+	close(inFlight) // ...so the walk may now proceed to fail at the escaping entry.
+
+	// The walk's failure is now decided. Only then release the in-flight
+	// copy, so its cancellation cannot race ahead of the walk's error.
+	select {
+	case <-src.reached:
+	case <-time.After(5 * time.Second):
+		close(dst.release)
+		require.FailNow(t, "the walk never reached the escaping entry")
+	}
+
+	close(dst.release)
+
+	err := <-done
+	require.Error(t, err, "a walk that met an escaping entry reported success")
+	assert.ErrorContains(t, err, "escapes", "the transfer must report the walk's own failure")
+	assert.NotErrorIs(t, err, context.Canceled,
+		"a cancellation echo from the in-flight copy outranked the failure that caused it")
 }

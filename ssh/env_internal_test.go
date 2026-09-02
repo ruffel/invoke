@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -123,4 +124,77 @@ func TestWaitFailureWithoutAStatusIsTerminal(t *testing.T) {
 			assert.Equal(t, -1, result.ExitCode, "an unknown outcome must not carry a real-looking exit code")
 		})
 	}
+}
+
+// TestSignalDeathDuringTeardownIsTheCallers pins the attribution the #67
+// fix turns on: teardown kills with SIGKILL but also closes the session,
+// and the close can be what ends the command — the server hangs it up
+// and reports a HUP or PIPE that outran the kill. While a Close or
+// cancellation is in flight, that signal death is the teardown's, not
+// the command's.
+//
+// It exercises attribute directly, with the signal it could never
+// otherwise see: a real *ssh.ExitError carrying a signal cannot be
+// constructed outside golang.org/x/crypto/ssh, and end to end the death
+// only wins the race against the client's own Close on a slow link —
+// which is why the bug reached CI as an intermittent failure and passed
+// every fast local run. Here the race is settled by construction.
+func TestSignalDeathDuringTeardownIsTheCallers(t *testing.T) {
+	t.Parallel()
+
+	// A signal the teardown's channel close inflicts (SIGHUP) and the
+	// SIGKILL the teardown also sends: both must read as the caller's.
+	for _, sig := range []invoke.Signal{invoke.SIGHUP, invoke.SIGKILL} {
+		t.Run("closed/"+string(sig), func(t *testing.T) {
+			t.Parallel()
+
+			proc := &process{ctxErr: func() error { return nil }}
+			proc.closedByUser.Store(true)
+
+			_, err := proc.attribute(nil, sig, true, time.Second)
+
+			require.ErrorIs(t, err, invoke.ErrClosed,
+				"a signal death while Close is in flight belongs to the caller, not the command")
+
+			var exitErr *invoke.ExitError
+
+			require.NotErrorAs(t, err, &exitErr,
+				"reporting the teardown's signal as the command's outcome is the #67 regression")
+		})
+
+		t.Run("canceled/"+string(sig), func(t *testing.T) {
+			t.Parallel()
+
+			proc := &process{ctxErr: func() error { return context.Canceled }}
+
+			_, err := proc.attribute(nil, sig, true, time.Second)
+
+			require.ErrorIs(t, err, context.Canceled,
+				"a signal death while the context is canceled belongs to the cancellation")
+
+			var exitErr *invoke.ExitError
+
+			require.NotErrorAs(t, err, &exitErr,
+				"reporting the teardown's signal as the command's outcome is the #67 regression")
+		})
+	}
+}
+
+// TestSignalDeathWithoutTeardownIsTheCommands pins the other side of the
+// same boundary, so the fix is not later widened into swallowing a real
+// signal death: with no Close or cancellation in flight, a signal is the
+// command's own outcome and must surface as an ExitError naming it.
+func TestSignalDeathWithoutTeardownIsTheCommands(t *testing.T) {
+	t.Parallel()
+
+	proc := &process{ctxErr: func() error { return nil }}
+
+	_, err := proc.attribute(nil, invoke.SIGKILL, true, time.Second)
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, err, &exitErr,
+		"a signal with no teardown in flight is the command's own death")
+	assert.Equal(t, invoke.SIGKILL, exitErr.Signal, "the reported signal must be the one that landed")
+	assert.Equal(t, -1, exitErr.Code, "a signal death reports Code -1")
 }

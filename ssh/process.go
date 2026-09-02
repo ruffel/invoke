@@ -413,6 +413,14 @@ func (p *process) monitorContext(ctx context.Context) {
 func (p *process) mapOutcome(err error, duration time.Duration) (invoke.Result, error) {
 	sig, signaled := waitSignal(err)
 
+	return p.attribute(err, sig, signaled, duration)
+}
+
+// attribute is mapOutcome's decision once the wait error has been read
+// for a signal. It is separated so the teardown-versus-signal race — the
+// one a real server produces only intermittently, and which no
+// constructed *ssh.ExitError can reproduce — can be pinned directly.
+func (p *process) attribute(err error, sig invoke.Signal, signaled bool, duration time.Duration) (invoke.Result, error) {
 	if !signaled {
 		// The guard's status is reserved on the file route: it says the
 		// environment file could not be read, so the command was never
