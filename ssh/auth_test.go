@@ -260,3 +260,44 @@ func TestAgentProblemsAreNamed(t *testing.T) {
 		assert.Contains(t, err.Error(), "agent holds no keys")
 	})
 }
+
+// TestPublicKeysAreOfferedBeforeThePassword pins the order, which is
+// OpenSSH's: a caller who sets both has the key tried first, and the
+// password is sent only when no key was accepted — never to a host that
+// would have taken the key.
+func TestPublicKeysAreOfferedBeforeThePassword(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an accepted key keeps the password off the wire", func(t *testing.T) {
+		t.Parallel()
+
+		priv, pub := newClientKey(t)
+		srv := startTestServer(t, withAuthorizedKey(pub))
+
+		// The password is given first to show that option order does not
+		// decide.
+		env := dialWithAuth(t, srv,
+			ssh.WithPassword(testPassword),
+			ssh.WithPrivateKey(writeKeyFile(t, priv, "")))
+		runEcho(t, env)
+
+		assert.Equal(t, []string{"publickey " + xssh.FingerprintSHA256(pub)}, srv.authSeen(),
+			"a valid password was configured and never sent: the key logged in first")
+	})
+
+	t.Run("a refused key falls through to the password", func(t *testing.T) {
+		t.Parallel()
+
+		priv, pub := newClientKey(t)
+		_, other := newClientKey(t)
+		srv := startTestServer(t, withAuthorizedKey(other))
+
+		env := dialWithAuth(t, srv,
+			ssh.WithPrivateKey(writeKeyFile(t, priv, "")),
+			ssh.WithPassword(testPassword))
+		runEcho(t, env)
+
+		assert.Equal(t, []string{"publickey " + xssh.FingerprintSHA256(pub), "password"}, srv.authSeen(),
+			"the password is the fallback, tried only once the key was refused")
+	})
+}

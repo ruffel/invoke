@@ -12,8 +12,13 @@ import (
 )
 
 // authMethods builds the ordered list of authentication methods from the
-// config. A single unusable method (an unreadable key, an absent agent)
-// is skipped with its reason collected, rather than aborting the whole
+// config: public keys first, the password last, the order OpenSSH uses.
+// A key proves itself without leaving the client; a password is a secret
+// the server gets to keep. So the keys go first, and the password is sent
+// only when none of them was accepted.
+//
+// A single unusable method (an unreadable key, an absent agent) is
+// skipped with its reason collected, rather than aborting the whole
 // connection, so long as some method remains. If none can be assembled,
 // the collected reasons are returned.
 //
@@ -31,10 +36,6 @@ func authMethods(cfg *Config) ([]ssh.AuthMethod, io.Closer, error) {
 		skipped   []error
 		agentConn io.Closer
 	)
-
-	if cfg.Password != "" {
-		methods = append(methods, ssh.Password(cfg.Password))
-	}
 
 	if cfg.PrivateKeyPath != "" {
 		if s, err := keySigner(cfg); err != nil {
@@ -56,6 +57,10 @@ func authMethods(cfg *Config) ([]ssh.AuthMethod, io.Closer, error) {
 
 	if len(signers) > 0 {
 		methods = append(methods, ssh.PublicKeys(signers...))
+	}
+
+	if cfg.Password != "" {
+		methods = append(methods, ssh.Password(cfg.Password))
 	}
 
 	if len(methods) == 0 {
