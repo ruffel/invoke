@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -735,8 +736,10 @@ func TestTreeCopyHonorsTheSideHint(t *testing.T) {
 type lateHostileFS struct {
 	transfer.HostFS
 
-	root string
-	gate <-chan struct{}
+	root     string
+	inFlight <-chan struct{}
+	reached  chan struct{}
+	once     *sync.Once
 }
 
 func (h lateHostileFS) ReadDir(p string) ([]fs.FileInfo, error) {
@@ -748,9 +751,17 @@ func (h lateHostileFS) ReadDir(p string) ([]fs.FileInfo, error) {
 	return append(entries, stubInfo{name: "zz/../../escape"}), nil
 }
 
+// Contains holds the walk at the escaping entry until the real copy is
+// provably in flight (inFlight), then signals that the walk's failure is
+// now being decided (reached). The two gates settle both orderings the
+// production code must survive: the copy must be past the pool's
+// drain-on-cancel guard before the walk fails, or it would be discarded
+// unrun; and the walk's error must lock in before the copy's
+// cancellation reaches the shared context, or the echo would outrank it.
 func (h lateHostileFS) Contains(root, p string) bool {
 	if strings.HasSuffix(p, "escape") {
-		<-h.gate
+		<-h.inFlight
+		h.once.Do(func() { close(h.reached) })
 	}
 
 	return h.HostFS.Contains(root, p)
@@ -764,8 +775,10 @@ func (h lateHostileFS) Contains(root, p string) bool {
 //
 // The in-flight write is cut off with the context error itself rather
 // than left to meet the canceled context on its next read, so the echo
-// is produced every run instead of only when the cancellation wins the
-// race against the copy's last read.
+// is produced every run. The copy's cancellation is held until the walk
+// has provably reached its failure, so the walk's error — not the echo,
+// and not the pool-context cancellation the echo triggers — is what the
+// walk returns.
 func TestTreeCopyReportsTheWalkFailureOverInFlightCancellations(t *testing.T) {
 	t.Parallel()
 
@@ -778,27 +791,36 @@ func TestTreeCopyReportsTheWalkFailureOverInFlightCancellations(t *testing.T) {
 		release:  make(chan struct{}),
 		cutOff:   context.Canceled,
 	}
-	gate := make(chan struct{})
+	inFlight := make(chan struct{})
+	src := lateHostileFS{root: srcDir, inFlight: inFlight, reached: make(chan struct{}), once: &sync.Once{}}
 	done := make(chan error, 1)
 
 	go func() {
-		done <- transfer.Copy(t.Context(), lateHostileFS{root: srcDir, gate: gate}, srcDir,
+		done <- transfer.Copy(t.Context(), src, srcDir,
 			dst, filepath.Join(t.TempDir(), "out"),
 			invoke.NewTransferConfig(invoke.WithConcurrency(2)))
 	}()
 
+	// f0 is mid-write, so it is past the pool's drain-on-cancel guard...
 	select {
 	case <-dst.arrivals:
 	case <-time.After(5 * time.Second):
-		close(gate)
+		close(inFlight)
 		close(dst.release)
 		require.FailNow(t, "the real file never started copying")
 	}
 
-	// f0 is mid-write. Let the walk meet the hostile entry and fail,
-	// then release the write so the in-flight copy unwinds with the
-	// cancellation that failure triggered.
-	close(gate)
+	close(inFlight) // ...so the walk may now proceed to fail at the escaping entry.
+
+	// The walk's failure is now decided. Only then release the in-flight
+	// copy, so its cancellation cannot race ahead of the walk's error.
+	select {
+	case <-src.reached:
+	case <-time.After(5 * time.Second):
+		close(dst.release)
+		require.FailNow(t, "the walk never reached the escaping entry")
+	}
+
 	close(dst.release)
 
 	err := <-done
