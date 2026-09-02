@@ -63,6 +63,14 @@ type testServer struct {
 	// authentication alongside the password.
 	authorizedKey ssh.PublicKey
 
+	// authMu guards authAttempts.
+	authMu sync.Mutex
+
+	// authAttempts records each credential the client presented, in the
+	// order the server saw them: "password", or "publickey " followed by
+	// the key's fingerprint. authSeen reads it.
+	authAttempts []string
+
 	// sabotageEnvFile deletes any delivery file a command line names
 	// before running it, standing in for a tmp cleaner that got there
 	// first.
@@ -268,6 +276,22 @@ func (s *testServer) openSessions() int {
 	return s.sessions
 }
 
+// recordAuth notes one credential the client presented.
+func (s *testServer) recordAuth(attempt string) {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	s.authAttempts = append(s.authAttempts, attempt)
+}
+
+// authSeen returns every credential presented so far, in order.
+func (s *testServer) authSeen() []string {
+	s.authMu.Lock()
+	defer s.authMu.Unlock()
+
+	return append([]string(nil), s.authAttempts...)
+}
+
 func (s *testServer) sessionOpened() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,8 +319,23 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	signer, err := ssh.NewSignerFromKey(priv)
 	require.NoError(t, err, "host signer")
 
+	listener, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // Test listener.
+	require.NoError(t, err, "listen")
+
+	srv := &testServer{
+		addr:     listener.Addr().String(),
+		hostKey:  signer.PublicKey(),
+		listener: listener,
+	}
+
+	for _, opt := range opts {
+		opt(srv)
+	}
+
 	config := &ssh.ServerConfig{
 		PasswordCallback: func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			srv.recordAuth("password")
+
 			if string(password) == testPassword {
 				return &ssh.Permissions{}, nil
 			}
@@ -306,26 +345,14 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 	}
 	config.AddHostKey(signer)
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0") //nolint:noctx // Test listener.
-	require.NoError(t, err, "listen")
-
-	srv := &testServer{
-		addr:     listener.Addr().String(),
-		hostKey:  signer.PublicKey(),
-		config:   config,
-		listener: listener,
-	}
-
-	for _, opt := range opts {
-		opt(srv)
-	}
-
 	if srv.extraHostKey != nil {
 		config.AddHostKey(srv.extraHostKey)
 	}
 
 	if srv.authorizedKey != nil {
 		config.PublicKeyCallback = func(_ ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			srv.recordAuth("publickey " + ssh.FingerprintSHA256(key))
+
 			if bytes.Equal(key.Marshal(), srv.authorizedKey.Marshal()) {
 				return &ssh.Permissions{}, nil
 			}
@@ -333,6 +360,8 @@ func startTestServer(t *testing.T, opts ...serverOption) *testServer {
 			return nil, errors.New("unknown public key")
 		}
 	}
+
+	srv.config = config
 
 	go srv.acceptLoop()
 

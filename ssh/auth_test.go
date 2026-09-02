@@ -154,16 +154,17 @@ func TestPrivateKeyProblemsAreNamed(t *testing.T) {
 	})
 }
 
-// TestAgentAuthentication runs a real signing round-trip: a keyring
-// agent served over a unix socket, the provider connecting through
-// SSH_AUTH_SOCK, and the server accepting the agent-held key. It stays
-// serial: t.Setenv, which SSH_AUTH_SOCK needs, forbids t.Parallel.
-func TestAgentAuthentication(t *testing.T) {
-	priv, pub := newClientKey(t)
-	srv := startTestServer(t, withAuthorizedKey(pub))
+// startAgent serves a keyring holding the given keys over a unix socket
+// and returns the socket path for SSH_AUTH_SOCK. Pointing that variable
+// at it takes t.Setenv, which forbids t.Parallel, so every test using it
+// stays serial.
+func startAgent(t *testing.T, keys ...ed25519.PrivateKey) string {
+	t.Helper()
 
 	keyring := agent.NewKeyring()
-	require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: priv}), "seed agent")
+	for _, key := range keys {
+		require.NoError(t, keyring.Add(agent.AddedKey{PrivateKey: key}), "seed agent")
+	}
 
 	// A dedicated short temp dir: unix socket paths have a low length
 	// limit, and t.TempDir carries the whole test name.
@@ -190,8 +191,113 @@ func TestAgentAuthentication(t *testing.T) {
 		}
 	}()
 
-	t.Setenv("SSH_AUTH_SOCK", socket)
+	return socket
+}
+
+// TestAgentAuthentication runs a real signing round-trip: a keyring
+// agent served over a unix socket, the provider connecting through
+// SSH_AUTH_SOCK, and the server accepting the agent-held key.
+func TestAgentAuthentication(t *testing.T) {
+	priv, pub := newClientKey(t)
+	srv := startTestServer(t, withAuthorizedKey(pub))
+
+	t.Setenv("SSH_AUTH_SOCK", startAgent(t, priv))
 
 	env := dialWithAuth(t, srv, ssh.WithAgent())
 	runEcho(t, env)
+}
+
+// TestAgentKeysAreOfferedAlongsideAKeyFile pins that naming a key file
+// does not silence the agent. The protocol calls both "publickey", and a
+// client offers each method name once, so were the two registered
+// separately the agent would go unasked whenever the file key was
+// refused — the everyday case of a stale key on disk and the current
+// one in the agent.
+func TestAgentKeysAreOfferedAlongsideAKeyFile(t *testing.T) {
+	stalePriv, stalePub := newClientKey(t)
+	currentPriv, currentPub := newClientKey(t)
+	srv := startTestServer(t, withAuthorizedKey(currentPub))
+
+	t.Setenv("SSH_AUTH_SOCK", startAgent(t, currentPriv))
+
+	env := dialWithAuth(t, srv,
+		ssh.WithPrivateKey(writeKeyFile(t, stalePriv, "")),
+		ssh.WithAgent())
+	runEcho(t, env)
+
+	assert.Equal(t, []string{
+		"publickey " + xssh.FingerprintSHA256(stalePub),
+		"publickey " + xssh.FingerprintSHA256(currentPub),
+	}, srv.authSeen(), "one connection offered the file key, was refused, and went on to the agent's key")
+}
+
+// TestAgentProblemsAreNamed pins what a caller hears when the agent is
+// their only configured method and it cannot supply a key.
+func TestAgentProblemsAreNamed(t *testing.T) {
+	t.Run("SSH_AUTH_SOCK unset", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+
+		_, err := ssh.New(t.Context(), "127.0.0.1",
+			ssh.WithUser("tester"),
+			ssh.WithAgent(),
+			ssh.WithInsecureIgnoreHostKey())
+		require.Error(t, err, "an unreachable only-method cannot connect")
+
+		assert.Contains(t, err.Error(), "no usable authentication method")
+		assert.Contains(t, err.Error(), "SSH_AUTH_SOCK is unset")
+	})
+
+	t.Run("agent holds no keys", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", startAgent(t))
+
+		_, err := ssh.New(t.Context(), "127.0.0.1",
+			ssh.WithUser("tester"),
+			ssh.WithAgent(),
+			ssh.WithInsecureIgnoreHostKey())
+		require.Error(t, err, "an empty only-method cannot connect")
+
+		assert.Contains(t, err.Error(), "no usable authentication method")
+		assert.Contains(t, err.Error(), "agent holds no keys")
+	})
+}
+
+// TestPublicKeysAreOfferedBeforeThePassword pins the order, which is
+// OpenSSH's: a caller who sets both has the key tried first, and the
+// password is sent only when no key was accepted — never to a host that
+// would have taken the key.
+func TestPublicKeysAreOfferedBeforeThePassword(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an accepted key keeps the password off the wire", func(t *testing.T) {
+		t.Parallel()
+
+		priv, pub := newClientKey(t)
+		srv := startTestServer(t, withAuthorizedKey(pub))
+
+		// The password is given first to show that option order does not
+		// decide.
+		env := dialWithAuth(t, srv,
+			ssh.WithPassword(testPassword),
+			ssh.WithPrivateKey(writeKeyFile(t, priv, "")))
+		runEcho(t, env)
+
+		assert.Equal(t, []string{"publickey " + xssh.FingerprintSHA256(pub)}, srv.authSeen(),
+			"a valid password was configured and never sent: the key logged in first")
+	})
+
+	t.Run("a refused key falls through to the password", func(t *testing.T) {
+		t.Parallel()
+
+		priv, pub := newClientKey(t)
+		_, other := newClientKey(t)
+		srv := startTestServer(t, withAuthorizedKey(other))
+
+		env := dialWithAuth(t, srv,
+			ssh.WithPrivateKey(writeKeyFile(t, priv, "")),
+			ssh.WithPassword(testPassword))
+		runEcho(t, env)
+
+		assert.Equal(t, []string{"publickey " + xssh.FingerprintSHA256(pub), "password"}, srv.authSeen(),
+			"the password is the fallback, tried only once the key was refused")
+	})
 }

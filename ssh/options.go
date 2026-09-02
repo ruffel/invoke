@@ -30,6 +30,11 @@ const defaultKeepAlive = 30 * time.Second
 // Config holds the settings for connecting to an SSH target. Callers
 // normally build it with [New] and the With options rather than by hand;
 // [NewFromConfig] accepts one directly.
+//
+// When more than one credential is set, they are offered in a fixed
+// order, the one OpenSSH uses: the public keys first — the key file, then
+// each key the agent holds — and the password last, sent only when no key
+// was accepted. The order the With options are given does not change it.
 type Config struct {
 	// Host is the target hostname or address. Required.
 	Host string
@@ -156,7 +161,9 @@ func WithUser(user string) Option {
 	return func(c *Config) { c.User = user }
 }
 
-// WithPassword enables password authentication.
+// WithPassword enables password authentication. It is offered after any
+// configured key or agent, so the password is sent only when no key was
+// accepted.
 func WithPassword(password string) Option {
 	return func(c *Config) { c.Password = password }
 }
