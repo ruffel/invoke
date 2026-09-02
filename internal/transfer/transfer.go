@@ -156,6 +156,35 @@ type treeContext struct {
 	// realRoot is the symlink-resolved transfer root, the containment
 	// boundary for SymlinkFollow.
 	realRoot string
+
+	// pool, when non-nil, runs file copies concurrently; nil keeps the
+	// walk strictly sequential.
+	pool *copyPool
+}
+
+// walkContext is the context the walk runs under: the pool's when
+// copies are concurrent — so the first failed copy also stops the walk —
+// and the caller's own otherwise.
+func (t treeContext) walkContext(ctx context.Context) context.Context {
+	if t.pool == nil {
+		return ctx
+	}
+
+	return t.pool.ctx
+}
+
+// dispatch runs one file copy: inline when the transfer is sequential,
+// on the worker pool when it is not. A pooled copy's failure surfaces
+// through the walk's context and the pool's own error, not through this
+// return value.
+func (t treeContext) dispatch(ctx context.Context, task func(context.Context) error) error {
+	if t.pool == nil {
+		return task(ctx)
+	}
+
+	t.pool.submit(task)
+
+	return nil
 }
 
 // dirMode records a created directory's source mode for deferred
@@ -254,8 +283,28 @@ func (e endpoints) copyTree(ctx context.Context, absSrc, absDst string, cfg invo
 	tctx := treeContext{cfg: cfg, realRoot: realRoot}
 	dirModes := []dirMode{{path: absDst, mode: rootInfo.Mode().Perm()}}
 
-	if err := e.walk(ctx, absSrc, absDst, "", &dirModes, tctx); err != nil {
-		return err
+	if workers := treeWorkers(cfg, e.src, e.dst); workers > 1 {
+		tctx.pool = newCopyPool(ctx, workers)
+	}
+
+	walkErr := e.walk(tctx.walkContext(ctx), absSrc, absDst, "", &dirModes, tctx)
+
+	if tctx.pool != nil {
+		if walkErr != nil {
+			// The transfer is already failed; stop in-flight copies
+			// rather than letting them finish for nothing.
+			tctx.pool.cancel()
+		}
+
+		// Every copy has finished or unwound past this point, which is
+		// what makes the mode restoration below safe.
+		if poolErr := tctx.pool.wait(); poolErr != nil {
+			return poolErr
+		}
+	}
+
+	if walkErr != nil {
+		return walkErr
 	}
 
 	// Deepest entries first, so restoring a read-only mode on a parent
@@ -406,7 +455,11 @@ func (e endpoints) copyEntry(ctx context.Context, src, dst, rel string, info fs.
 
 	switch action {
 	case invoke.CopyContent:
-		return e.copyFile(ctx, src, dst, rel, info.Mode().Perm(), tctx.cfg)
+		mode := info.Mode().Perm()
+
+		return tctx.dispatch(ctx, func(taskCtx context.Context) error {
+			return e.copyFile(taskCtx, src, dst, rel, mode, tctx.cfg)
+		})
 
 	case invoke.PreserveLink:
 		linkTarget, err := e.src.Readlink(src)
@@ -417,7 +470,9 @@ func (e endpoints) copyEntry(ctx context.Context, src, dst, rel string, info fs.
 		return e.replaceWithSymlink(linkTarget, dst)
 
 	case invoke.FollowLink:
-		return e.followSymlink(ctx, src, dst, rel, tctx)
+		return tctx.dispatch(ctx, func(taskCtx context.Context) error {
+			return e.followSymlink(taskCtx, src, dst, rel, tctx)
+		})
 
 	case invoke.SkipEntry:
 		return nil

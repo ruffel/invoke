@@ -2,11 +2,13 @@ package invoketest
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
@@ -16,6 +18,21 @@ import (
 const (
 	fixtureMode  = fs.FileMode(0o640)
 	overrideMode = fs.FileMode(0o600)
+
+	// concurrentCopyWorkers is the worker count the concurrency
+	// contracts request: enough that interleaving has room to happen.
+	concurrentCopyWorkers = 4
+
+	// concurrentTreeDirs and concurrentTreeFiles shape the concurrency
+	// contract's source tree; concurrentSizeStep spreads the file sizes
+	// so every file's content and length are distinct.
+	concurrentTreeDirs  = 3
+	concurrentTreeFiles = 8
+	concurrentSizeStep  = 128
+
+	// sequentialFileBytes makes each file big enough to report progress
+	// more than once, so interleaving has room to show if it happens.
+	sequentialFileBytes = 96 << 10
 
 	// bigFileBytes is large enough that a canceled transfer is provably
 	// mid-flight when its progress callback fires.
@@ -46,6 +63,8 @@ func transferContracts() []TestCase {
 		transferFollowRejectsEscapes(),
 		transferSpecialFiles(),
 		transferProgressTotals(),
+		transferConcurrentCopiesDeliverTheTree(),
+		transferConcurrencyOneIsSequential(),
 		transferSamePathPreservesSource(),
 		transferCanceledBeforeStartDoesNothing(),
 	}
@@ -604,10 +623,17 @@ func transferProgressTotals() TestCase {
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
+			// Guarded: progress callbacks may arrive concurrently when a
+			// provider copies files in parallel.
+			var mu sync.Mutex
+
 			finals := make(map[string]invoke.TransferProgress)
 
 			err := env.Upload(t.Context(), srcDir, remote,
 				invoke.WithProgress(func(p invoke.TransferProgress) {
+					mu.Lock()
+					defer mu.Unlock()
+
 					finals[p.Path] = p
 				}))
 			require.NoError(t, err, "Upload")
@@ -624,6 +650,148 @@ func transferProgressTotals() TestCase {
 
 				assert.Equalf(t, want, final.Total, "%q: Total must be the file's real size", path)
 				assert.Equalf(t, want, final.Current, "%q: Current must reach the total", path)
+			}
+		},
+	}
+}
+
+// transferConcurrentCopiesDeliverTheTree pins what WithConcurrency may
+// never change: every file arrives intact, and each file's own progress
+// stays ordered and complete. The option is a scheduling hint — a
+// provider that copies files in parallel and one that streams the tree
+// whole must be indistinguishable here.
+func transferConcurrentCopiesDeliverTheTree() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "concurrent-copies-deliver-the-tree",
+		Description: "WithConcurrency(4) delivers every file intact with per-file progress ordered and complete",
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			want := map[string]string{}
+
+			for dir := range concurrentTreeDirs {
+				sub := fmt.Sprintf("d%d", dir)
+				require.NoError(t, os.Mkdir(filepath.Join(srcDir, sub), 0o755), "building the source tree")
+
+				for file := range concurrentTreeFiles {
+					rel := sub + "/" + fmt.Sprintf("f%d.txt", file)
+					content := strings.Repeat(fmt.Sprintf("%d:%d;", dir, file), concurrentSizeStep*(dir*concurrentTreeFiles+file))
+
+					writeHostFixture(t, srcDir, filepath.FromSlash(rel), content)
+
+					want[rel] = content
+				}
+			}
+
+			var (
+				mu     sync.Mutex
+				events []invoke.TransferProgress
+			)
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			require.NoError(t,
+				env.Upload(t.Context(), srcDir, remote,
+					invoke.WithConcurrency(concurrentCopyWorkers),
+					invoke.WithProgress(func(p invoke.TransferProgress) {
+						mu.Lock()
+						defer mu.Unlock()
+
+						events = append(events, p)
+					})),
+				"concurrent Upload")
+
+			// Per-file progress must stay ordered and reach the file's
+			// size, however the events of different files interleave.
+			current := map[string]int64{}
+
+			for _, p := range events {
+				assert.GreaterOrEqualf(t, p.Current, current[p.Path],
+					"%q: Current went backwards; one file's events must stay ordered", p.Path)
+
+				current[p.Path] = p.Current
+			}
+
+			for rel, content := range want {
+				if content == "" {
+					continue // An empty file may legitimately report no progress.
+				}
+
+				assert.Equalf(t, int64(len(content)), current[rel],
+					"%q: progress must reach the file's full size", rel)
+			}
+
+			back := filepath.Join(t.TempDir(), "back")
+
+			require.NoError(t,
+				env.Download(t.Context(), remote, back, invoke.WithConcurrency(concurrentCopyWorkers)),
+				"concurrent Download")
+
+			for rel, content := range want {
+				got, err := os.ReadFile(filepath.Join(back, filepath.FromSlash(rel)))
+				require.NoErrorf(t, err, "reading %q after the round trip", rel)
+				assert.Equalf(t, content, string(got), "%q: content must survive the concurrent round trip", rel)
+			}
+		},
+	}
+}
+
+// transferConcurrencyOneIsSequential pins the option's one hard
+// guarantee: WithConcurrency(1) copies strictly sequentially, so
+// progress for one file never interleaves with another's. This is the
+// documented opt-out for callers whose progress consumers need ordering,
+// and it must hold on every provider — the ones that never parallelize
+// satisfy it by standing still.
+func transferConcurrencyOneIsSequential() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "concurrency-one-is-sequential",
+		Description: "WithConcurrency(1) never interleaves progress across files",
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+
+			// Several files big enough to report progress more than once
+			// each, so interleaving has room to show if it happens.
+			for file := range 6 {
+				writeHostFixture(t, srcDir, fmt.Sprintf("f%d.bin", file), strings.Repeat("x", sequentialFileBytes))
+			}
+
+			var (
+				mu    sync.Mutex
+				order []string
+			)
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			require.NoError(t,
+				env.Upload(t.Context(), srcDir, remote,
+					invoke.WithConcurrency(1),
+					invoke.WithProgress(func(p invoke.TransferProgress) {
+						mu.Lock()
+						defer mu.Unlock()
+
+						order = append(order, p.Path)
+					})),
+				"sequential Upload")
+
+			require.NotEmpty(t, order, "the transfer reported no progress at all")
+
+			seen := map[string]bool{}
+			last := ""
+
+			for _, path := range order {
+				if path == last {
+					continue
+				}
+
+				assert.Falsef(t, seen[path],
+					"progress for %q resumed after another file's began; WithConcurrency(1) must be strictly sequential",
+					path)
+
+				seen[path] = true
+				last = path
 			}
 		},
 	}
