@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/pkg/sftp"
 	"github.com/ruffel/invoke"
@@ -39,6 +40,11 @@ var (
 	errCanceled = errors.New("transfer canceled during setup")
 )
 
+// cancelGrace bounds how long a canceled transfer may take to unwind by
+// itself before its session is torn down under it. Over a live link the
+// copy needs a round trip or two; a stalled one is what the bound is for.
+const cancelGrace = 2 * time.Second
+
 // Upload copies a local file or directory tree to the remote host over
 // SFTP, with the transfer semantics shared by every provider: atomic
 // temp-and-rename delivery, mode preservation, and the configured symlink
@@ -64,7 +70,8 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 // honored throughout: pkg/sftp offers no per-operation context and its
 // version handshake is itself a blocking round trip, so a stalled
 // connection would otherwise pin the call until TCP gave up. Tearing the
-// session down from here is what unblocks it.
+// session down from here is what unblocks it, after a grace in which a
+// live link is left to unwind on its own.
 func (e *Environment) transfer(ctx context.Context, op string, run func(remote transfer.FS) error) error {
 	if err := e.checkOpen(op); err != nil {
 		return err
@@ -96,11 +103,18 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(remote t
 		return classifyTransfer(op, result.err)
 
 	case <-ctx.Done():
-		// Tear the session down to fail whatever round trip is in
-		// flight, then wait for the copy to unwind so its own cleanup
-		// completes before returning.
-		session.close()
-		<-done
+		// Over a live link the copy unwinds on its own: the engine
+		// checks the context on every read and write, and the cleanup
+		// it does on the way out, removing the temp file it was
+		// writing, needs the session it is unwinding over. Only a
+		// stalled round trip needs the session pulled from under it,
+		// so that waits for the grace to run out.
+		select {
+		case <-done:
+		case <-time.After(cancelGrace):
+			session.close()
+			<-done
+		}
 
 		return fmt.Errorf("ssh: %s: %w", op, ctx.Err())
 	}
