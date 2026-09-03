@@ -54,6 +54,7 @@ func transferContracts() []TestCase {
 		transferModeOverrideIsFilesOnly(),
 		transferFailurePreservesDestination(),
 		transferCancelPreservesDestination(),
+		transferCancelPreservesTreeDestination(),
 		transferDownloadCancelPreservesDestination(),
 		transferTreeCreatesParents(),
 		transferEmptyFilesAndDirs(),
@@ -494,6 +495,70 @@ func transferCancelPreservesDestination() TestCase {
 			for _, entry := range entries {
 				assert.Equalf(t, "dst.bin", entry.Name(),
 					"%q: a canceled transfer left a file beside its destination; a temp file, most likely", entry.Name())
+			}
+		},
+	}
+}
+
+// transferCancelPreservesTreeDestination is the tree-shaped twin of
+// cancel-preserves-destination, run on a worker pool: several files are
+// in flight when the cancel lands, and the transfer must report it even
+// though the walk itself had already finished.
+func transferCancelPreservesTreeDestination() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "cancel-preserves-tree-destination",
+		Description: "A concurrent tree upload canceled mid-flight errors with ctx.Err() and leaves only whole files behind",
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			want := map[string]string{}
+
+			for i := range concurrentCopyWorkers {
+				name := fmt.Sprintf("f%d.bin", i)
+				content := strings.Repeat(string(rune('a'+i)), bigFileBytes)
+
+				writeHostFixture(t, srcDir, name, content)
+
+				want[name] = content
+			}
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			err := env.Upload(ctx, srcDir, remote,
+				invoke.WithConcurrency(concurrentCopyWorkers),
+				invoke.WithProgress(func(_ invoke.TransferProgress) {
+					cancel()
+				}))
+			require.Error(t, err, "canceled tree Upload reported success")
+
+			assert.ErrorIs(t, err, context.Canceled)
+
+			// A provider may land a whole file before it observes the
+			// cancel, so the destination need not be empty; but nothing
+			// there may be torn, and no temp file may be left behind.
+			if !targetProbe(t, env, "test -d "+shellQuote(remote)) {
+				return
+			}
+
+			back := filepath.Join(t.TempDir(), "back")
+			require.NoError(t, env.Download(t.Context(), remote, back), "reading the destination back")
+
+			entries, err := os.ReadDir(back)
+			require.NoError(t, err, "listing the destination")
+
+			for _, entry := range entries {
+				name := entry.Name()
+
+				content, known := want[name]
+				require.Truef(t, known,
+					"%q: a canceled transfer left a file the source does not have; a temp file, most likely", name)
+
+				assert.Equalf(t, content, readHostFile(t, filepath.Join(back, name)),
+					"%q: a file at the destination must be whole, not torn", name)
 			}
 		},
 	}

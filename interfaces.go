@@ -31,7 +31,9 @@ type Environment interface {
 	// Upload copies a local file or directory tree to the target.
 	// Writes are atomic per file (a failed transfer never corrupts an
 	// existing destination), and missing parent directories at the
-	// destination are created.
+	// destination are created. Canceling ctx stops the transfer and
+	// returns an error matching ctx.Err(): files already delivered stay
+	// whole, and no partial file is left behind.
 	Upload(ctx context.Context, localPath, remotePath string, opts ...TransferOption) error
 
 	// Download copies a file or directory tree from the target to the

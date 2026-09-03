@@ -85,6 +85,7 @@ type defects struct {
 	replayStaleProgress      bool // re-deliver a finished file's progress after another file's began
 	zeroProgressTotals       bool // report Total as zero in progress callbacks
 	transferIgnoresCancel    bool // detach a transfer from the caller's context
+	swallowTreeCancel        bool // report a canceled tree upload as delivered
 	leaveTempOnCancel        bool // abandon a temp file beside the destination when a transfer is canceled
 
 	// TTY defects.
@@ -211,12 +212,7 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 		rebuilt = append(rebuilt, invoke.WithMode(0o644))
 	}
 
-	err = m.base.Upload(ctx, src, remotePath, rebuilt...)
-
-	if m.d.leaveTempOnCancel && errors.Is(err, context.Canceled) {
-		leftover := filepath.Join(filepath.Dir(remotePath), ".invoke-leftover.tmp")
-		_ = os.WriteFile(leftover, []byte("abandoned mid-write"), fixtureMode)
-	}
+	err = m.misreportCanceledUpload(localPath, remotePath, m.base.Upload(ctx, src, remotePath, rebuilt...))
 
 	if err == nil && m.d.modeOverrideOnDirs && cfg.Mode != nil {
 		forceDirModes(remotePath, *cfg.Mode)
@@ -501,6 +497,28 @@ func (m *misbehaveEnv) substituteSource(localPath string) (string, func(), error
 	}
 
 	return localPath, func() {}, nil
+}
+
+// misreportCanceledUpload applies the defects that act on a canceled
+// upload: abandoning a temp file beside the destination, and reporting a
+// tree cut short as delivered.
+func (m *misbehaveEnv) misreportCanceledUpload(localPath, remotePath string, err error) error {
+	if !errors.Is(err, context.Canceled) {
+		return err
+	}
+
+	if m.d.leaveTempOnCancel {
+		leftover := filepath.Join(filepath.Dir(remotePath), ".invoke-leftover.tmp")
+		_ = os.WriteFile(leftover, []byte("abandoned mid-write"), fixtureMode)
+	}
+
+	if m.d.swallowTreeCancel {
+		if info, statErr := os.Stat(localPath); statErr == nil && info.IsDir() {
+			return nil
+		}
+	}
+
+	return err
 }
 
 func (m *misbehaveEnv) mutateTransferConfig(cfg invoke.TransferConfig) invoke.TransferConfig {
@@ -866,6 +884,7 @@ func defectCatalog() []defectCase {
 		{name: "dropped mode option", contract: "transfer/mode-override-applies-on-overwrite", defects: defects{dropModeOption: true}},
 		{name: "destroy on failure", contract: "transfer/failure-preserves-destination", defects: defects{destroyOnFailure: true}},
 		{name: "destroy on cancel", contract: "transfer/cancel-preserves-destination", defects: defects{destroyOnFailure: true}},
+		{name: "canceled tree reported as delivered", contract: "transfer/cancel-preserves-tree-destination", defects: defects{swallowTreeCancel: true}},
 		{name: "temp file left on cancel", contract: "transfer/cancel-preserves-destination", defects: defects{leaveTempOnCancel: true}},
 		{name: "destroy download on cancel", contract: "transfer/download-cancel-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
 		{name: "shallow trees", contract: "transfer/tree-roundtrip-creates-parents", defects: defects{shallowTrees: true}},

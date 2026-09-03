@@ -829,3 +829,63 @@ func TestTreeCopyReportsTheWalkFailureOverInFlightCancellations(t *testing.T) {
 	assert.NotErrorIs(t, err, context.Canceled,
 		"a cancellation echo from the in-flight copy outranked the failure that caused it")
 }
+
+// TestTreeCopyReportsTheCallersCancellation pins the one interruption
+// the pool's echo discipline must not swallow: a cancel from the caller
+// that lands after the walk has submitted its last file. The in-flight
+// copies fail with the cancellation, the pool drops those as echoes, and
+// no walk error carries it either, so the transfer has to report the
+// caller's context itself rather than success over missing files.
+func TestTreeCopyReportsTheCallersCancellation(t *testing.T) {
+	t.Parallel()
+
+	srcDir := t.TempDir()
+	for i := range 2 {
+		name := filepath.Join(srcDir, "f"+strconv.Itoa(i))
+		require.NoError(t, os.WriteFile(name, []byte(strings.Repeat("x", 64)), 0o600), "writing fixture")
+	}
+
+	dst := &rendezvousFS{
+		arrivals: make(chan struct{}, 2),
+		release:  make(chan struct{}),
+		cutOff:   context.Canceled,
+	}
+	out := filepath.Join(t.TempDir(), "out")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- transfer.Copy(ctx, transfer.HostFS{}, srcDir, dst, out,
+			invoke.NewTransferConfig(invoke.WithConcurrency(2)))
+	}()
+
+	for arrived := 0; arrived < 2; {
+		select {
+		case <-dst.arrivals:
+			arrived++
+
+		case err := <-done:
+			require.Failf(t, "the copy finished before both files were in flight", "copy returned early: %v", err)
+
+		case <-time.After(5 * time.Second):
+			close(dst.release)
+			require.FailNow(t, "two files never wrote concurrently; the worker pool did not engage")
+		}
+	}
+
+	// Both copies are parked in their first write and the walk has
+	// nothing left to submit. Cancel now; the released writes fail with
+	// the cancellation, as an interrupted write does.
+	cancel()
+	close(dst.release)
+
+	require.ErrorIs(t, <-done, context.Canceled,
+		"a tree copy the caller cut short must report the cancellation, not success")
+
+	entries, err := os.ReadDir(out)
+	require.NoError(t, err, "listing the destination")
+	assert.Empty(t, entries, "no file completed, so a canceled copy must leave nothing behind")
+}
