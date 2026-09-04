@@ -307,6 +307,15 @@ func (e endpoints) copyTree(ctx context.Context, absSrc, absDst string, cfg invo
 		return walkErr
 	}
 
+	// The caller's own cancellation is the one failure nothing above
+	// carries: a copy it interrupts fails with a context error, which
+	// the pool discards as an echo, and once the walk has submitted its
+	// last file there is no walk error either. Report it here, or a
+	// transfer with files cut short returns nil.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Deepest entries first, so restoring a read-only mode on a parent
 	// cannot break a child's chmod.
 	for i := len(dirModes) - 1; i >= 0; i-- {
