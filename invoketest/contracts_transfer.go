@@ -528,10 +528,32 @@ func transferCancelPreservesTreeDestination() TestCase {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
+			// Cancel only once every file has reported progress. On a
+			// provider that copies files concurrently that means the
+			// last one has been handed to a worker, so the walk has
+			// nothing left to submit and cannot report the
+			// cancellation on the transfer's behalf: reporting it is
+			// left to the machinery that owns the in-flight copies,
+			// which is what this contract is here to check. Canceling
+			// on the first event instead leaves that to timing.
+			var (
+				mu    sync.Mutex
+				begun = map[string]bool{}
+			)
+
 			err := env.Upload(ctx, srcDir, remote,
 				invoke.WithConcurrency(concurrentCopyWorkers),
-				invoke.WithProgress(func(_ invoke.TransferProgress) {
-					cancel()
+				invoke.WithProgress(func(p invoke.TransferProgress) {
+					mu.Lock()
+
+					begun[p.Path] = true
+					all := len(begun) == len(want)
+
+					mu.Unlock()
+
+					if all {
+						cancel()
+					}
 				}))
 			require.Error(t, err, "canceled tree Upload reported success")
 
