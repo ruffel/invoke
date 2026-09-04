@@ -47,6 +47,13 @@ const (
 	// containerStopTimeout bounds tearing it down again.
 	containerStopTimeout = time.Minute
 
+	// containerLogTimeout bounds each attempt to read a failed lane's
+	// log. Separate from the teardown budget on purpose: the container
+	// this is asked about has just failed a test, so it is exactly the
+	// one that might not answer, and evidence that cannot be collected
+	// must not cost the removal that follows it.
+	containerLogTimeout = 15 * time.Second
+
 	// containerLogLines is how much of a failing lane's server log is
 	// worth reading: enough to cover one contract's exchange, not the
 	// whole suite's.
@@ -110,10 +117,10 @@ func startContainer(tb testing.TB, args ...string) string {
 	id := strings.TrimSpace(string(out))
 
 	tb.Cleanup(func() {
+		reportContainerLog(tb, id)
+
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
-
-		reportContainerLog(removeCtx, tb, id)
 
 		//nolint:gosec // The argument is a container id this function just created.
 		_ = exec.CommandContext(removeCtx, "docker", "rm", "-f", id).Run()
@@ -130,7 +137,11 @@ func startContainer(tb testing.TB, args ...string) string {
 // of the exchange is the evidence that is otherwise lost: the client side
 // alone cannot say whether a request arrived and was refused or never
 // arrived at all.
-func reportContainerLog(ctx context.Context, tb testing.TB, id string) {
+// It owns its budget rather than taking one, so that a container which
+// will not answer cannot spend the teardown that follows: an expired
+// context makes exec skip the command entirely, and the container would
+// outlive the run and hold the private network with it.
+func reportContainerLog(tb testing.TB, id string) {
 	tb.Helper()
 
 	if !tb.Failed() {
@@ -139,14 +150,13 @@ func reportContainerLog(ctx context.Context, tb testing.TB, id string) {
 
 	tail := strconv.Itoa(containerLogLines)
 
-	//nolint:gosec // The arguments are literals and a container id this function just created.
-	out, err := exec.CommandContext(ctx, "docker", "exec", id, "tail", "-n", tail, sshdLogPath).CombinedOutput()
+	out, err := runBounded(tb, "docker", "exec", id, "tail", "-n", tail, sshdLogPath)
 	if err != nil {
 		// Not an sshd container, or it never got far enough to write a
 		// log: whatever it put on its own output is the next best
-		// account.
-		//nolint:gosec // The arguments are literals and a container id this function just created.
-		out, err = exec.CommandContext(ctx, "docker", "logs", "--tail", tail, id).CombinedOutput()
+		// account. Its own budget, so the attempt above cannot have
+		// spent this one.
+		out, err = runBounded(tb, "docker", "logs", "--tail", tail, id)
 	}
 
 	if err != nil {
@@ -156,6 +166,16 @@ func reportContainerLog(ctx context.Context, tb testing.TB, id string) {
 	}
 
 	tb.Logf("last %s lines of the log of container %s:\n%s", tail, id, out)
+}
+
+// runBounded runs one diagnostic command under its own deadline.
+func runBounded(tb testing.TB, name string, args ...string) ([]byte, error) {
+	tb.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), containerLogTimeout)
+	defer cancel()
+
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // startOpenSSH launches a container running sshd with its stock
