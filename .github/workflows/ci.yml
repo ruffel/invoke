@@ -44,15 +44,19 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+      # The test timeout is below the job's, so a hung test is ended by
+      # Go, which prints every goroutine's stack, rather than by the
+      # runner, which prints nothing. Both bounds are for the same
+      # accident; only one of them explains it.
       - name: Run tests with race detector
-        run: go test -race ./...
+        run: go test -race -timeout 5m ./...
       # The contracts that need a daemon are behind the docker build tag
       # and run in the integration lane. What is left is ordinary unit
       # tests — tar building, path classification, context resolution —
       # which need nothing and were the only part of this module never
       # run on macOS.
       - name: Run the docker module's tests with race detector
-        run: cd docker && go test -race ./...
+        run: cd docker && go test -race -timeout 5m ./...
 
   lint:
     name: Lint
