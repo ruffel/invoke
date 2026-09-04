@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -9,10 +10,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// terminationGrace is how long the termination contract waits after
-// cancellation before checking that the marker command never ran. It must
-// comfortably exceed the marker script's own sleep.
-const terminationGrace = 2 * time.Second
+const (
+	// terminationGrace is the margin the termination contract waits
+	// beyond the marker script's own sleep before checking the marker
+	// never appeared, so a process that survived has provably had time
+	// to create it.
+	terminationGrace = 2 * time.Second
+
+	// markerWindow is the floor for how long that script sleeps before
+	// creating the marker: the window the cancellation has to land in.
+	// It scales with the target (see roundTrip), because the kill is a
+	// round trip of its own on a remote one.
+	markerWindow       = 1500 * time.Millisecond
+	markerWindowFactor = 6
+
+	// deadlineBudget is the floor for the deadline in
+	// deadline-unblocks-wait, which bounds Start as well as the wait it
+	// is about. It scales for the same reason.
+	deadlineBudget       = 500 * time.Millisecond
+	deadlineBudgetFactor = 8
+
+	// exitSettleFactor scales exitSettle for the target in hand.
+	exitSettleFactor = 4
+)
 
 func lifecycleContracts() []TestCase {
 	return []TestCase{
@@ -84,7 +104,14 @@ func lifecycleDeadlineUnblocksWait() TestCase {
 		Name:        "deadline-unblocks-wait",
 		Description: "A context deadline unblocks Wait with an error matching DeadlineExceeded, distinct from a plain cancel",
 		Run: func(t T, env invoke.Environment) {
-			ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+			// The deadline bounds Start as well as the wait it is
+			// about, and Start is not free on every target: a container
+			// provider runs a pre-flight exec of its own before the
+			// command exists. Sized from what a command actually costs
+			// here, so the deadline cannot expire inside the start.
+			budget := max(deadlineBudget, deadlineBudgetFactor*roundTrip(t, env))
+
+			ctx, cancel := context.WithTimeout(t.Context(), budget)
 			defer cancel()
 
 			proc := startCommand(ctx, t, env, invoke.New("sleep", "30"), invoke.IO{})
@@ -157,6 +184,8 @@ func lifecycleCancelDuringDrainKeepsOutcome() TestCase {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
+			settle := max(exitSettle, exitSettleFactor*roundTrip(t, env))
+
 			drain := newBlockingWriter()
 
 			// The script's last act is the write, so once the bytes arrive
@@ -173,13 +202,13 @@ func lifecycleCancelDuringDrainKeepsOutcome() TestCase {
 
 			// The write has landed and the drain is held, so the provider
 			// cannot finish Wait while the process finishes exiting.
-			time.Sleep(exitSettle)
+			time.Sleep(settle)
 
 			cancel()
 
 			// Still held for a moment after the cancel, so a provider that
 			// consults the context on its way out has every chance to.
-			time.Sleep(exitSettle)
+			time.Sleep(settle)
 
 			drain.release()
 
@@ -326,10 +355,18 @@ func lifecycleCancelTerminatesProcess() TestCase {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 
-			// The command creates the marker after a short sleep; a
-			// real kill means the marker never appears.
-			proc := startCommand(ctx, t, env,
-				invoke.Shell("sleep 0.5 && touch "+shellQuote(marker)), invoke.IO{})
+			// The command creates the marker after a sleep; a real kill
+			// means the marker never appears. The window is sized for
+			// the target, since on a remote one the kill is a round
+			// trip of its own.
+			window := max(markerWindow, markerWindowFactor*roundTrip(t, env))
+
+			// Started through the marker helper: cancelling a process
+			// the target has not begun running measures the start race
+			// rather than the kill.
+			proc := startedCommand(ctx, t, env,
+				fmt.Sprintf("echo ready && sleep %.1f && touch %s", window.Seconds(), shellQuote(marker)),
+				"ready")
 
 			defer func() { _ = proc.Close() }()
 
@@ -338,9 +375,9 @@ func lifecycleCancelTerminatesProcess() TestCase {
 			outcome := waitOrTimeout(t, proc)
 			require.Error(t, outcome.err, "Wait after cancel returned nil error")
 
-			// Give a surviving process ample time to prove itself,
-			// then check through the environment's own shell.
-			time.Sleep(terminationGrace)
+			// Past the window and then some: a surviving process has
+			// provably had time to create the marker by now.
+			time.Sleep(window + terminationGrace)
 
 			assert.Truef(t, targetProbe(t, env, "test ! -e "+shellQuote(marker)),
 				"marker %q exists on the target; cancellation did not terminate the process", marker)
