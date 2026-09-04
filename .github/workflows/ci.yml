@@ -8,13 +8,20 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # So the suite can be re-run against an unchanged tree, which is the
+  # first thing anyone reaches for when a failure looks intermittent.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a run is right on a pull request and wrong on main, where
+  # every merge shares one ref: cancelling there leaves commits with no
+  # completed run, and that record is what says whether a failure is
+  # unusual or the norm.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -47,6 +54,20 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+      # The same check `just check` runs first, which CI otherwise
+      # skipped. `go work init` and `go work sync` stamp the running
+      # toolchain's exact patch version into go.work, and a stamp newer
+      # than the modules declare makes the tree unbuildable for everyone
+      # whose toolchain matches go.mod.
+      - name: Fail if the workspace demands a newer toolchain than the modules
+        run: |
+          workspace=$(awk '/^go /{print $2; exit}' go.work)
+          module=$(awk '/^go /{print $2; exit}' go.mod)
+          if [ "$workspace" != "$module" ]; then
+            echo "go.work declares go $workspace but go.mod declares go $module" >&2
+            echo "run: go work edit -go=$module" >&2
+            exit 1
+          fi
       # The test timeout is below the job's, so a hung test is ended by
       # Go, which prints every goroutine's stack, rather than by the
       # runner, which prints nothing. Both bounds are for the same
