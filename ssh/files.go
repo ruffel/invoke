@@ -13,6 +13,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -40,10 +41,21 @@ var (
 	errCanceled = errors.New("transfer canceled during setup")
 )
 
-// cancelGrace bounds how long a canceled transfer may take to unwind by
-// itself before its session is torn down under it. Over a live link the
-// copy needs a round trip or two; a stalled one is what the bound is for.
-const cancelGrace = 2 * time.Second
+// sftpIdleGrace is how long a canceled transfer's session may go without
+// a byte from the server before it is torn down under the copy that is
+// unwinding over it.
+//
+// It bounds silence rather than the unwind itself. How long cleanup takes
+// is a property of the link and of how many files were in flight; how
+// long a server may say nothing at all is not, so a slow link gets the
+// round trips it needs and only one that has stopped answering is cut
+// off.
+const sftpIdleGrace = 2 * time.Second
+
+// idleChecks is how many times the unwind samples the session's silence
+// before the grace is up, trading a little polling for not overshooting
+// the bound by a whole grace.
+const idleChecks = 4
 
 // Upload copies a local file or directory tree to the remote host over
 // SFTP, with the transfer semantics shared by every provider: atomic
@@ -70,8 +82,8 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 // honored throughout: pkg/sftp offers no per-operation context and its
 // version handshake is itself a blocking round trip, so a stalled
 // connection would otherwise pin the call until TCP gave up. Tearing the
-// session down from here is what unblocks it, after a grace in which a
-// live link is left to unwind on its own.
+// session down from here is what unblocks it, once the copy has had the
+// chance to unwind over it.
 func (e *Environment) transfer(ctx context.Context, op string, run func(remote transfer.FS) error) error {
 	if err := e.checkOpen(op); err != nil {
 		return err
@@ -103,18 +115,7 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(remote t
 		return classifyTransfer(op, result.err)
 
 	case <-ctx.Done():
-		// Over a live link the copy unwinds on its own: the engine
-		// checks the context on every read and write, and the cleanup
-		// it does on the way out, removing the temp file it was
-		// writing, needs the session it is unwinding over. Only a
-		// stalled round trip needs the session pulled from under it,
-		// so that waits for the grace to run out.
-		select {
-		case <-done:
-		case <-time.After(cancelGrace):
-			session.close()
-			<-done
-		}
+		session.unwind(done, sftpIdleGrace)
 
 		return fmt.Errorf("ssh: %s: %w", op, ctx.Err())
 	}
@@ -176,7 +177,7 @@ func (e *Environment) runTransfer(owner *sftpSession, op string, run func(remote
 	// reaches a destination path here: the engine writes into an
 	// exclusively created temp file and renames over the destination
 	// only on success, so a torn file is discarded, not delivered.
-	client, err := sftp.NewClientPipe(stdout, stdin, sftp.UseConcurrentWrites(true))
+	client, err := sftp.NewClientPipe(owner.watch(stdout), stdin, sftp.UseConcurrentWrites(true))
 	if err != nil {
 		return setupFailed(&invoke.TransportError{Op: op, Err: err})
 	}
@@ -198,6 +199,94 @@ type sftpSession struct {
 	closed  bool
 	session *ssh.Session
 	client  *sftp.Client
+
+	// lastAnswer is when the server last sent a byte, in Unix
+	// nanoseconds. A canceled transfer reads it to tell a session that
+	// is still working from one that has stopped answering.
+	lastAnswer atomic.Int64
+}
+
+// watch wraps the SFTP transport's read side so every answer from the
+// server is timestamped. Installed before the client is built, so the
+// version handshake counts as an answer like any other.
+func (s *sftpSession) watch(r io.Reader) io.Reader {
+	s.touch()
+
+	return &activityReader{inner: r, session: s}
+}
+
+// touch records that the server has just answered.
+func (s *sftpSession) touch() {
+	s.lastAnswer.Store(time.Now().UnixNano())
+}
+
+// idleFor reports how long the server has said nothing.
+func (s *sftpSession) idleFor() time.Duration {
+	return time.Since(time.Unix(0, s.lastAnswer.Load()))
+}
+
+// started reports whether the copy has a client to unwind over.
+func (s *sftpSession) started() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.client != nil
+}
+
+// unwind waits for a canceled copy to finish and tears the session down
+// if it cannot.
+//
+// A copy that notices the cancellation removes the temp file it was
+// writing on the way out, and needs this session to do it: closing the
+// session first is what left those files on the target. So the copy is
+// waited for, and the session is pulled from under it only once the
+// server has been silent for idle, which is the one state waiting cannot
+// resolve.
+func (s *sftpSession) unwind(done <-chan transferResult, idle time.Duration) {
+	// Before the client exists there is no copy holding the session and
+	// no temp file to remove: the round trip in flight is the subsystem
+	// handshake, which only teardown can end.
+	if s.started() && !wentSilent(done, s.idleFor, idle) {
+		return
+	}
+
+	s.close()
+	<-done
+}
+
+// wentSilent waits for the copy to finish, reporting true instead if the
+// session first goes idle for the given duration. idleFor is passed in so
+// the decision can be tested without a live session.
+func wentSilent(done <-chan transferResult, idleFor func() time.Duration, idle time.Duration) bool {
+	ticker := time.NewTicker(max(idle/idleChecks, time.Millisecond))
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-done:
+			return false
+
+		case <-ticker.C:
+			if idleFor() >= idle {
+				return true
+			}
+		}
+	}
+}
+
+// activityReader timestamps the session on every answer that arrives.
+type activityReader struct {
+	inner   io.Reader
+	session *sftpSession
+}
+
+func (r *activityReader) Read(p []byte) (int, error) {
+	n, err := r.inner.Read(p)
+	if n > 0 {
+		r.session.touch()
+	}
+
+	return n, err
 }
 
 // adoptSession takes ownership of session, reporting false if the
