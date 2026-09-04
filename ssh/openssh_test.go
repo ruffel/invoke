@@ -46,6 +46,15 @@ const (
 
 	// containerStopTimeout bounds tearing it down again.
 	containerStopTimeout = time.Minute
+
+	// containerLogLines is how much of a failing lane's server log is
+	// worth reading: enough to cover one contract's exchange, not the
+	// whole suite's.
+	containerLogLines = 200
+
+	// sshdLogPath is where the server writes that log inside the
+	// container.
+	sshdLogPath = "/tmp/sshd.log"
 )
 
 // allowForwarding and refuseForwarding are a jump host's forwarding
@@ -73,7 +82,12 @@ func sshdSetup(extra string) string {
 		"echo '" + opensshUser + ":" + opensshPassword + "' | chpasswd && " +
 		"sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && " +
 		extra +
-		"/usr/sbin/sshd -D"
+		// The log goes to a file, not stderr: a session's stderr is the
+		// caller's own stream, so -e puts the server's debug output in
+		// the output of every command the contracts run. DEBUG makes it
+		// say what it did with each channel request; a failing test
+		// dumps the tail of it, and nothing reads it otherwise.
+		"/usr/sbin/sshd -D -E " + sshdLogPath + " -o LogLevel=DEBUG"
 }
 
 // startContainer runs a container with the given arguments and removes it
@@ -99,11 +113,49 @@ func startContainer(tb testing.TB, args ...string) string {
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
 
+		reportContainerLog(removeCtx, tb, id)
+
 		//nolint:gosec // The argument is a container id this function just created.
 		_ = exec.CommandContext(removeCtx, "docker", "rm", "-f", id).Run()
 	})
 
 	return id
+}
+
+// reportContainerLog writes the container's own log into the test output
+// when the test has failed.
+//
+// These lanes exist to catch what only a real server does, and when one
+// of them fails on a machine nobody can attach to, the server's account
+// of the exchange is the evidence that is otherwise lost: the client side
+// alone cannot say whether a request arrived and was refused or never
+// arrived at all.
+func reportContainerLog(ctx context.Context, tb testing.TB, id string) {
+	tb.Helper()
+
+	if !tb.Failed() {
+		return
+	}
+
+	tail := strconv.Itoa(containerLogLines)
+
+	//nolint:gosec // The arguments are literals and a container id this function just created.
+	out, err := exec.CommandContext(ctx, "docker", "exec", id, "tail", "-n", tail, sshdLogPath).CombinedOutput()
+	if err != nil {
+		// Not an sshd container, or it never got far enough to write a
+		// log: whatever it put on its own output is the next best
+		// account.
+		//nolint:gosec // The arguments are literals and a container id this function just created.
+		out, err = exec.CommandContext(ctx, "docker", "logs", "--tail", tail, id).CombinedOutput()
+	}
+
+	if err != nil {
+		tb.Logf("could not read the log of container %s: %v", id, err)
+
+		return
+	}
+
+	tb.Logf("last %s lines of the log of container %s:\n%s", tail, id, out)
 }
 
 // startOpenSSH launches a container running sshd with its stock
