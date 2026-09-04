@@ -1,0 +1,77 @@
+# Runs the suites repeatedly on a schedule, so an intermittent failure is
+# a rate this repository knows rather than a surprise in someone's pull
+# request.
+#
+# Nothing here is a gate: it runs on its own schedule, never on a pull
+# request, and a red morning means there is a number to start from — which
+# iteration, with its output — rather than a bisect from nothing.
+name: Flake watch
+
+on:
+  schedule:
+    # Nightly, at an unremarkable minute: on the hour is when everyone
+    # else's jobs queue.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Override the iteration count for every lane
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stress:
+    name: Stress (${{ matrix.lane }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The untagged lane is cheap, so it gets the iterations: it is
+          # also the one whose failures reach every push.
+          - lane: unit
+            iterations: 20
+            run: go test -race -count=1 -shuffle=on -timeout 5m ./... && cd docker && go test -race -count=1 -shuffle=on -timeout 5m ./...
+          - lane: openssh
+            iterations: 3
+            run: go test -tags openssh -race -count=1 -timeout 15m ./ssh/
+          - lane: docker
+            iterations: 3
+            run: cd docker && go test -tags docker -race -count=1 -timeout 15m ./...
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Run the ${{ matrix.lane }} lane repeatedly
+        env:
+          ITERATIONS: ${{ inputs.iterations || matrix.iterations }}
+          # One race report rather than several interleaved ones: this job
+          # exists to produce a readable account of a rare failure.
+          GORACE: halt_on_error=1
+        run: |
+          mkdir -p stress-logs
+          passed=0
+
+          for i in $(seq 1 "$ITERATIONS"); do
+            log="stress-logs/${{ matrix.lane }}-$i.log"
+
+            # -count=1 on every command above, because a cached success is
+            # not an iteration. The subshell keeps a lane's `cd` out of the
+            # next iteration.
+            if ( ${{ matrix.run }} ) > "$log" 2>&1; then
+              passed=$((passed + 1))
+            else
+              echo "::group::${{ matrix.lane }} iteration $i failed"
+              tail -n 120 "$log"
+              echo "::endgroup::"
+            fi
+          done
+
+          printf '%s: %d/%d iterations passed\n' '${{ matrix.lane }}' "$passed" "$ITERATIONS" >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$passed" -eq "$ITERATIONS" ]
