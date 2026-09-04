@@ -20,7 +20,10 @@ jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Two test binaries run here, each bounded below; the job's own bound
+    # has to clear their sum with room for the build, or it is the one
+    # that fires and it explains nothing.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
