@@ -122,6 +122,8 @@ func startContainer(tb testing.TB, args ...string) string {
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
 
+		reportContainerLog(removeCtx, tb, id)
+
 		//nolint:gosec // The argument is a container id this function just created.
 		_ = exec.CommandContext(removeCtx, "docker", "rm", "-f", id).Run()
 	})
