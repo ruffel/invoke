@@ -46,6 +46,22 @@ const (
 
 	// containerStopTimeout bounds tearing it down again.
 	containerStopTimeout = time.Minute
+
+	// containerLogTimeout bounds each attempt to read a failed lane's
+	// log. Separate from the teardown budget on purpose: the container
+	// this is asked about has just failed a test, so it is exactly the
+	// one that might not answer, and evidence that cannot be collected
+	// must not cost the removal that follows it.
+	containerLogTimeout = 15 * time.Second
+
+	// containerLogLines is how much of a failing lane's server log is
+	// worth reading: enough to cover one contract's exchange, not the
+	// whole suite's.
+	containerLogLines = 200
+
+	// sshdLogPath is where the server writes that log inside the
+	// container.
+	sshdLogPath = "/tmp/sshd.log"
 )
 
 // allowForwarding and refuseForwarding are a jump host's forwarding
@@ -73,7 +89,12 @@ func sshdSetup(extra string) string {
 		"echo '" + opensshUser + ":" + opensshPassword + "' | chpasswd && " +
 		"sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && " +
 		extra +
-		"/usr/sbin/sshd -D"
+		// The log goes to a file, not stderr: a session's stderr is the
+		// caller's own stream, so -e puts the server's debug output in
+		// the output of every command the contracts run. DEBUG makes it
+		// say what it did with each channel request; a failing test
+		// dumps the tail of it, and nothing reads it otherwise.
+		"/usr/sbin/sshd -D -E " + sshdLogPath + " -o LogLevel=DEBUG"
 }
 
 // startContainer runs a container with the given arguments and removes it
@@ -96,6 +117,8 @@ func startContainer(tb testing.TB, args ...string) string {
 	id := strings.TrimSpace(string(out))
 
 	tb.Cleanup(func() {
+		reportContainerLog(tb, id)
+
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), containerStopTimeout)
 		defer removeCancel()
 
@@ -104,6 +127,55 @@ func startContainer(tb testing.TB, args ...string) string {
 	})
 
 	return id
+}
+
+// reportContainerLog writes the container's own log into the test output
+// when the test has failed.
+//
+// These lanes exist to catch what only a real server does, and when one
+// of them fails on a machine nobody can attach to, the server's account
+// of the exchange is the evidence that is otherwise lost: the client side
+// alone cannot say whether a request arrived and was refused or never
+// arrived at all.
+// It owns its budget rather than taking one, so that a container which
+// will not answer cannot spend the teardown that follows: an expired
+// context makes exec skip the command entirely, and the container would
+// outlive the run and hold the private network with it.
+func reportContainerLog(tb testing.TB, id string) {
+	tb.Helper()
+
+	if !tb.Failed() {
+		return
+	}
+
+	tail := strconv.Itoa(containerLogLines)
+
+	out, err := runBounded(tb, "docker", "exec", id, "tail", "-n", tail, sshdLogPath)
+	if err != nil {
+		// Not an sshd container, or it never got far enough to write a
+		// log: whatever it put on its own output is the next best
+		// account. Its own budget, so the attempt above cannot have
+		// spent this one.
+		out, err = runBounded(tb, "docker", "logs", "--tail", tail, id)
+	}
+
+	if err != nil {
+		tb.Logf("could not read the log of container %s: %v", id, err)
+
+		return
+	}
+
+	tb.Logf("last %s lines of the log of container %s:\n%s", tail, id, out)
+}
+
+// runBounded runs one diagnostic command under its own deadline.
+func runBounded(tb testing.TB, name string, args ...string) ([]byte, error) {
+	tb.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), containerLogTimeout)
+	defer cancel()
+
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
 // startOpenSSH launches a container running sshd with its stock

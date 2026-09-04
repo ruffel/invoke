@@ -89,13 +89,31 @@ type testServer struct {
 	// with AllowTcpForwarding no does.
 	refuseForwarding bool
 
-	mu         sync.Mutex
-	sessions   int
-	forwards   int
-	openConns  int
-	keepAlives int
-	execLines  []string
-	conns      []net.Conn
+	mu          sync.Mutex
+	sessions    int
+	forwards    int
+	openConns   int
+	keepAlives  int
+	exitReports int
+	execLines   []string
+	conns       []net.Conn
+}
+
+// exitsReported is how many commands this server has sent an exit status
+// for. A test that has to act after a command's status is on the wire
+// waits on this rather than on a clock.
+func (s *testServer) exitsReported() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.exitReports
+}
+
+func (s *testServer) noteExitReported() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.exitReports++
 }
 
 // sever drops every accepted connection, standing in for a link that
@@ -575,7 +593,7 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 			// what this server exists to imitate.
 			reply(req, true)
 
-			go runExec(channel, state, line)
+			go s.runExec(channel, state, line)
 		case "pty-req":
 			if s.refusePTY {
 				reply(req, false)
@@ -645,13 +663,13 @@ func (s *sessionState) forwardSignal(name string) {
 
 // runExec runs the requested command through the host shell, wiring the
 // channel to its streams, then reports the exit status or signal.
-func runExec(channel ssh.Channel, state *sessionState, command string) {
+func (s *testServer) runExec(channel ssh.Channel, state *sessionState, command string) {
 	cmd := exec.Command("/bin/sh", "-c", command) //nolint:noctx // Test server runs the requested command; lifetime is the session.
 
 	cmd.Env = append(os.Environ(), state.env...)
 
 	if state.pty {
-		runExecWithPTY(channel, state, cmd)
+		s.runExecWithPTY(channel, state, cmd)
 
 		return
 	}
@@ -679,7 +697,7 @@ func runExec(channel ssh.Channel, state *sessionState, command string) {
 		_ = stdin.Close()
 	}()
 
-	reportExit(channel, cmd.Wait())
+	s.reportExit(channel, cmd.Wait())
 }
 
 // ptyDrainGrace bounds the wait for a terminal's output to reach the
@@ -689,7 +707,7 @@ const ptyDrainGrace = 2 * time.Second
 
 // runExecWithPTY runs the command attached to a real pseudo-terminal, so
 // a command asking whether it has one gets a truthful answer.
-func runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
+func (s *testServer) runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
 	master, err := pty.Start(cmd)
 	if err != nil {
 		exitWith(channel, 1)
@@ -722,13 +740,17 @@ func runExecWithPTY(channel ssh.Channel, state *sessionState, cmd *exec.Cmd) {
 	case <-time.After(ptyDrainGrace):
 	}
 
-	reportExit(channel, waitErr)
+	s.reportExit(channel, waitErr)
 }
 
 // reportExit sends the SSH exit-status or exit-signal for a finished
 // command, mirroring what a real sshd does.
-func reportExit(channel ssh.Channel, waitErr error) {
+func (s *testServer) reportExit(channel ssh.Channel, waitErr error) {
 	defer func() { _ = channel.Close() }()
+
+	// Recorded after the status is written, so a test waiting on this
+	// knows the status is on the wire and not merely decided.
+	defer s.noteExitReported()
 
 	if waitErr == nil {
 		exitWith(channel, 0)

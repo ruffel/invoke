@@ -8,19 +8,29 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # So the suite can be re-run against an unchanged tree, which is the
+  # first thing anyone reaches for when a failure looks intermittent.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseding a run is right on a pull request and wrong on main, where
+  # every merge shares one ref: cancelling there leaves commits with no
+  # completed run, and that record is what says whether a failure is
+  # unusual or the norm.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     name: Test (${{ matrix.os }}, Go ${{ matrix.go }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    # Two test binaries run here, each bounded below; the job's own bound
+    # has to clear their sum with room for the build, or it is the one
+    # that fires and it explains nothing.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -44,15 +54,33 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+      # The same check `just check` runs first, which CI otherwise
+      # skipped. `go work init` and `go work sync` stamp the running
+      # toolchain's exact patch version into go.work, and a stamp newer
+      # than the modules declare makes the tree unbuildable for everyone
+      # whose toolchain matches go.mod.
+      - name: Fail if the workspace demands a newer toolchain than the modules
+        run: |
+          workspace=$(awk '/^go /{print $2; exit}' go.work)
+          module=$(awk '/^go /{print $2; exit}' go.mod)
+          if [ "$workspace" != "$module" ]; then
+            echo "go.work declares go $workspace but go.mod declares go $module" >&2
+            echo "run: go work edit -go=$module" >&2
+            exit 1
+          fi
+      # The test timeout is below the job's, so a hung test is ended by
+      # Go, which prints every goroutine's stack, rather than by the
+      # runner, which prints nothing. Both bounds are for the same
+      # accident; only one of them explains it.
       - name: Run tests with race detector
-        run: go test -race ./...
+        run: go test -race -timeout 5m ./...
       # The contracts that need a daemon are behind the docker build tag
       # and run in the integration lane. What is left is ordinary unit
       # tests — tar building, path classification, context resolution —
       # which need nothing and were the only part of this module never
       # run on macOS.
       - name: Run the docker module's tests with race detector
-        run: cd docker && go test -race ./...
+        run: cd docker && go test -race -timeout 5m ./...
 
   lint:
     name: Lint

@@ -31,12 +31,38 @@ func token(t T) string {
 	return hex.EncodeToString(raw[:])
 }
 
-// exitSettle is how long a contract waits for a process to finish exiting
-// once its last output has been observed. It is a margin around an event
-// already witnessed rather than a substitute for witnessing one: the
-// output says the command reached its final act, and this covers the
-// short walk from there to the process being gone.
+// exitSettle is the floor for how long a contract waits for a process to
+// finish exiting once its last output has been observed. It is a margin
+// around an event already witnessed rather than a substitute for
+// witnessing one: the output says the command reached its final act, and
+// this covers the short walk from there to the process being gone.
+//
+// A floor, because the walk is not the same length on every target.
+// Contracts scale it with roundTrip.
 const exitSettle = 250 * time.Millisecond
+
+// roundTrip measures what one trivial command costs on this target, from
+// Start to a settled Wait.
+//
+// Contracts that need a margin scale it from this rather than from a
+// literal. The targets differ by orders of magnitude — an in-memory fake
+// against a container the other side of a daemon, on a machine running
+// several suites at once — so a margin that is generous against one is
+// the flake against another.
+func roundTrip(t T, env invoke.Environment) time.Duration {
+	t.Helper()
+
+	begun := time.Now()
+
+	proc := startCommand(t.Context(), t, env, invoke.New("true"), invoke.IO{})
+
+	_, err := proc.Wait()
+	require.NoError(t, err, "measuring what one command costs on this target")
+
+	_ = proc.Close()
+
+	return time.Since(begun)
+}
 
 // blockingReader is a stdin whose first Read reports it began and then
 // holds — the caller-supplied reader no provider can interrupt: an
