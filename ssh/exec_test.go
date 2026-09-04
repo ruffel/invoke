@@ -202,13 +202,23 @@ func TestRelativePathResolvesAgainstWorkdir(t *testing.T) {
 	assert.Equal(t, "ran", strings.TrimSpace(out))
 }
 
+// exitReportBound and exitReportPoll bound the wait for the server to put
+// a command's exit status on the wire; cancelObservationMargin is how long
+// the drain is then held so the provider can notice the cancellation.
+const (
+	exitReportBound         = 5 * time.Second
+	exitReportPoll          = 5 * time.Millisecond
+	cancelObservationMargin = 250 * time.Millisecond
+)
+
 // TestNonZeroExitSurvivesConcurrentCancel covers the half of cancellation
 // attribution the contract cannot reach: the contract pins a clean exit,
 // and a status the server reported is authoritative whatever it says.
 func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
 	t.Parallel()
 
-	env := dialServer(t, startTestServer(t))
+	srv := startTestServer(t)
+	env := dialServer(t, srv)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -228,11 +238,21 @@ func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
 
 	<-written
 
-	// The command has produced its output and is exiting; cancel while the
-	// provider is still held inside the drain.
-	time.Sleep(250 * time.Millisecond)
+	// The status has to be on the wire before the cancellation, or the
+	// test measures which of the two won the race rather than what the
+	// provider does with a status it already has. The server says when,
+	// so nothing here has to guess.
+	require.Eventually(t, func() bool { return srv.exitsReported() > 0 },
+		exitReportBound, exitReportPoll,
+		"the server never reported the command's exit status")
+
 	cancel()
-	time.Sleep(250 * time.Millisecond)
+
+	// A margin rather than a rendezvous: the provider offers no moment
+	// at which it has observably noticed the cancellation, and the point
+	// is that it had every chance to before the drain let go.
+	time.Sleep(cancelObservationMargin)
+
 	close(release)
 
 	result, waitErr := proc.Wait()
