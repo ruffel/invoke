@@ -202,13 +202,28 @@ func TestRelativePathResolvesAgainstWorkdir(t *testing.T) {
 	assert.Equal(t, "ran", strings.TrimSpace(out))
 }
 
+// exitReportBound and exitReportPoll bound the wait for the server to put
+// a command's exit status on the wire. The two margins cover the steps
+// either side of the cancellation that nothing here can observe:
+// statusDeliveryMargin is the client reading that status off the wire,
+// and cancelObservationMargin is the provider noticing the cancellation
+// before the drain lets go. Both are one in-process hop, so they are
+// orders of magnitude wider than the step they cover.
+const (
+	exitReportBound         = 5 * time.Second
+	exitReportPoll          = 5 * time.Millisecond
+	statusDeliveryMargin    = 250 * time.Millisecond
+	cancelObservationMargin = 250 * time.Millisecond
+)
+
 // TestNonZeroExitSurvivesConcurrentCancel covers the half of cancellation
 // attribution the contract cannot reach: the contract pins a clean exit,
 // and a status the server reported is authoritative whatever it says.
 func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
 	t.Parallel()
 
-	env := dialServer(t, startTestServer(t))
+	srv := startTestServer(t)
+	env := dialServer(t, srv)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -228,11 +243,28 @@ func TestNonZeroExitSurvivesConcurrentCancel(t *testing.T) {
 
 	<-written
 
-	// The command has produced its output and is exiting; cancel while the
-	// provider is still held inside the drain.
-	time.Sleep(250 * time.Millisecond)
+	// The status has to reach the client before the cancellation, or the
+	// test measures which of the two won the race rather than what the
+	// provider does with a status it already holds.
+	//
+	// That is two steps, and only the first can be watched: the server
+	// says when it has sent the status, and the client's reading of it
+	// happens inside the ssh package where no test can see it. So the
+	// send is waited for, and the read is given a margin — which is what
+	// keeps the wait for the command to exit from being a margin too.
+	require.Eventually(t, func() bool { return srv.exitsReported() > 0 },
+		exitReportBound, exitReportPoll,
+		"the server never reported the command's exit status")
+
+	time.Sleep(statusDeliveryMargin)
+
 	cancel()
-	time.Sleep(250 * time.Millisecond)
+
+	// A margin rather than a rendezvous: the provider offers no moment
+	// at which it has observably noticed the cancellation, and the point
+	// is that it had every chance to before the drain let go.
+	time.Sleep(cancelObservationMargin)
+
 	close(release)
 
 	result, waitErr := proc.Wait()
