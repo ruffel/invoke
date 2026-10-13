@@ -8,6 +8,11 @@
 // current context — which is where installations that do not use the
 // conventional socket, such as Colima and Rancher Desktop, put theirs.
 //
+// The daemon must serve Engine API version 1.40 or newer, which Docker
+// 19.03 was the first to do. That is the oldest version Docker's client
+// library speaks, and an older daemon is refused when the Environment is
+// created.
+//
 // Commands are delivered to the daemon as a real argument vector, so
 // nothing is reinterpreted by a shell, and environment variables travel
 // over the API rather than on a command line. Signal delivery needs a
@@ -24,7 +29,7 @@ import (
 	"sync"
 
 	cerrdefs "github.com/containerd/errdefs"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	"github.com/ruffel/invoke"
 )
 
@@ -73,12 +78,12 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		return nil, err
 	}
 
-	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
+	opts := []client.Opt{client.FromEnv}
 	if host != "" {
 		opts = append(opts, client.WithHost(host))
 	}
 
-	cli, err := client.NewClientWithOpts(opts...)
+	cli, err := client.New(opts...)
 	if err != nil {
 		return nil, &invoke.TransportError{Op: "connect", Err: err}
 	}
@@ -178,7 +183,7 @@ func (e *Environment) inspectContainer(ctx context.Context) error {
 	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	info, err := e.client.ContainerInspect(probeCtx, e.cfg.Container)
+	info, err := e.client.ContainerInspect(probeCtx, e.cfg.Container, client.ContainerInspectOptions{})
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
 			return fmt.Errorf("docker: container %q: %w", e.cfg.Container, invoke.ErrNotFound)
@@ -187,11 +192,11 @@ func (e *Environment) inspectContainer(ctx context.Context) error {
 		return &invoke.TransportError{Op: "inspect", Err: err}
 	}
 
-	if info.State == nil || !info.State.Running {
+	if info.Container.State == nil || !info.Container.State.Running {
 		return fmt.Errorf("docker: container %q is not running", e.cfg.Container)
 	}
 
-	e.id = info.ID
+	e.id = info.Container.ID
 
 	return nil
 }

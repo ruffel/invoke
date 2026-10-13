@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/ruffel/invoke"
 )
 
@@ -165,7 +165,7 @@ func (e *Environment) sendArchive(
 		built <- err
 	}()
 
-	copyErr := e.client.CopyToContainer(ctx, e.id, dstDir, reader, container.CopyToContainerOptions{})
+	_, copyErr := e.client.CopyToContainer(ctx, e.id, client.CopyToContainerOptions{DestinationPath: dstDir, Content: reader})
 
 	// Unblock the builder if the daemon stopped reading early.
 	_ = reader.CloseWithError(errClosedEarly)
@@ -197,14 +197,14 @@ var errClosedEarly = errors.New("archive no longer needed")
 
 // receiveArchive streams a path out of the container and unpacks it.
 func (e *Environment) receiveArchive(ctx context.Context, src, dst string, cfg invoke.TransferConfig) error {
-	body, _, err := e.client.CopyFromContainer(ctx, e.id, src)
+	res, err := e.client.CopyFromContainer(ctx, e.id, client.CopyFromContainerOptions{SourcePath: src})
 	if err != nil {
 		return classifyTransfer(err)
 	}
 
-	defer func() { _ = body.Close() }()
+	defer func() { _ = res.Content.Close() }()
 
-	return extractTree(ctx, tar.NewReader(body), dst, cfg)
+	return extractTree(ctx, tar.NewReader(res.Content), dst, cfg)
 }
 
 // normalizeRemote renders a container path in a single form.
