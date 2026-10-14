@@ -185,10 +185,14 @@ func errorsFailedOutputWriteKeepsOutcome() TestCase {
 			assert.Equal(t, status, exitErr.Code, "the command's own exit status")
 
 			// A success is not the whole story: the caller did not get the
-			// output, which has to be said, but not as a reason to retry.
-			succeeded := runIntoFailingWriter(t, env, output)
+			// output, which has to be said, but not as a reason to retry,
+			// and not by rewriting what the command did.
+			succeeded := runIntoFailingWriter(t, env, output+"; exit 0")
 
 			requireNotTransport(t, succeeded.err, "a successful command whose output the caller could not take")
+			assert.NotErrorAsf(t, succeeded.err, &exitErr,
+				"the command exited 0; the write failure must not be reported as its exit")
+			assert.Equal(t, 0, succeeded.result.ExitCode, "the command's own exit status")
 		},
 	}
 }

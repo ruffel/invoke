@@ -45,6 +45,10 @@ type process struct {
 	cancelRun context.CancelFunc
 	done      chan struct{}
 
+	// guard is the session's output guard, which also remembers whether
+	// the caller's writers refused anything.
+	guard *outputGuard
+
 	// Set through finish or abandon before done is closed.
 	finishOnce  sync.Once
 	exitCode    int
@@ -83,6 +87,7 @@ func (e *Environment) spawn(ctx context.Context, guard *outputGuard, fn func(run
 		started:     time.Now(),
 		cancelRun:   cancel,
 		done:        make(chan struct{}),
+		guard:       guard,
 		startCtxErr: ctx.Err,
 	}
 
@@ -182,6 +187,14 @@ func (p *process) mapOutcome(duration time.Duration) (invoke.Result, error) {
 				&invoke.ExitError{Code: p.exitCode}
 		}
 
+		// The script can carry on past a write the caller refused, as a
+		// real shell does, so a clean exit does not mean the output
+		// arrived. Saying so is not a transport failure.
+		if err := p.guard.writeErr(); err != nil {
+			return invoke.Result{ExitCode: 0, Duration: duration},
+				fmt.Errorf("fake: wait: writing the command's output: %w", err)
+		}
+
 		return invoke.Result{ExitCode: 0, Duration: duration}, nil
 	}
 
@@ -253,6 +266,9 @@ func (emptyReader) Read(_ []byte) (int, error) { return 0, io.EOF }
 type outputGuard struct {
 	mu       sync.Mutex
 	silenced bool
+
+	// err is the first error a caller's writer returned.
+	err error
 }
 
 // wrap guards w; a nil writer is the usual discard.
@@ -262,6 +278,14 @@ func (g *outputGuard) wrap(w io.Writer) io.Writer {
 	}
 
 	return &guardedWriter{guard: g, w: w}
+}
+
+// writeErr reports the first error a caller's writer returned.
+func (g *outputGuard) writeErr() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	return g.err
 }
 
 func (g *outputGuard) silence() {
@@ -284,7 +308,12 @@ func (w *guardedWriter) Write(b []byte) (int, error) {
 		return len(b), nil
 	}
 
-	return w.w.Write(b)
+	n, err := w.w.Write(b)
+	if err != nil && w.guard.err == nil {
+		w.guard.err = err
+	}
+
+	return n, err
 }
 
 // newSession materializes the execution state for one invocation. The

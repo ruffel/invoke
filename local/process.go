@@ -344,6 +344,14 @@ func (p *process) finishedOutcome(err error, exitCode int, sig invoke.Signal, si
 		return p.exitOutcome(exitCode, sig, signaled, duration)
 	}
 
+	// os/exec reports a failed output copy only for a process that
+	// exited cleanly, so the error is about the output, not the command,
+	// and the command's own exit still stands.
+	if state := p.execCmd.ProcessState; state != nil && state.Exited() {
+		return invoke.Result{ExitCode: state.ExitCode(), Duration: duration},
+			fmt.Errorf("local: wait: writing the command's output: %w", err)
+	}
+
 	return invoke.Result{ExitCode: -1, Duration: duration}, fmt.Errorf("local: wait: %w", err)
 }
 

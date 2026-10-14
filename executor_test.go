@@ -96,6 +96,36 @@ func transportErr() error {
 	return &invoke.TransportError{Op: "start", Err: errors.New("connection reset")}
 }
 
+// transportWriter refuses every write with a TransportError of its own,
+// as a writer that is itself a transfer somewhere else may.
+type transportWriter struct{}
+
+func (transportWriter) Write([]byte) (int, error) { return 0, transportErr() }
+
+func TestRunDoesNotRetryAnAttemptWhoseOutputWasRefused(t *testing.T) {
+	t.Parallel()
+
+	// The command exited 0, and the provider reports the caller's own
+	// writer failing, wrapped as providers do. The chain holds a
+	// TransportError, but nothing between here and the target failed.
+	refused := fmt.Errorf("provider: writing the command's output: %w", transportErr())
+
+	env := &scriptEnv{outcome: []scriptOutcome{
+		{onStdout: "out", err: refused},
+		{onStdout: "out", err: refused},
+		{onStdout: "out", err: refused},
+	}}
+
+	exec := invoke.NewExecutor(env, invoke.WithRetry(3, nil))
+
+	_, err := exec.Run(t.Context(), invoke.New("x"), invoke.IO{Stdout: transportWriter{}})
+	require.Error(t, err)
+
+	assert.Equal(t, 1, env.startCount(), "a command whose output the caller refused has run, and must not run again")
+	require.ErrorAs(t, err, new(*invoke.TransportError), "the writer's own error must still be in the chain")
+	assert.Equal(t, refused.Error(), err.Error(), "the marking must not change the message")
+}
+
 func TestRunNoRetryByDefault(t *testing.T) {
 	t.Parallel()
 

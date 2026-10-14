@@ -29,10 +29,11 @@ type IO struct {
 	// unconditionally. Ignored when TTY is set: a pseudo-terminal merges
 	// standard error into standard output.
 	//
-	// A writer that fails cannot hang Wait or make the command look like
-	// a transport failure: a command that failed still reports its
-	// [ExitError], and one that succeeded reports the write error, which
-	// is not a [TransportError] and so is never retried.
+	// A writer that fails does not hang Wait or rewrite the command's
+	// outcome: a command that failed still reports its [ExitError], and
+	// one that succeeded reports exit 0 with the writer's error. The
+	// [Executor] never retries an attempt whose output a writer refused,
+	// even when the writer's own error is a [TransportError].
 	Stderr io.Writer
 
 	// TTY, when non-nil, allocates a pseudo-terminal for the process.

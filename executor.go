@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -93,8 +95,19 @@ func (e *Executor) Run(ctx context.Context, cmd Command, stdio IO, opts ...Optio
 			attemptIO.Stderr = tw
 		}
 
+		var watch *refusalWatch
+		if cfg.attempts > 1 {
+			watch = &refusalWatch{}
+			attemptIO.Stdout = watch.wrap(attemptIO.Stdout)
+			attemptIO.Stderr = watch.wrap(attemptIO.Stderr)
+		}
+
 		res, err := e.once(ctx, cmd, attemptIO)
 		attachStderrTail(err, tw)
+
+		if err != nil && watch.refused() {
+			err = &refusedOutputError{err: err}
+		}
 
 		return res, err
 	})
@@ -372,9 +385,12 @@ func retryable(err error) bool {
 // before the next attempt returns the context's error, so the command is
 // never started again regardless of how this reads.
 func terminal(err error) bool {
-	var exitErr *ExitError
+	var (
+		exitErr *ExitError
+		refused *refusedOutputError
+	)
 
-	if errors.As(err, &exitErr) {
+	if errors.As(err, &exitErr) || errors.As(err, &refused) {
 		return true
 	}
 
@@ -429,6 +445,63 @@ func attachStderrTail(err error, tw *tailWriter) {
 		exitErr.Stderr = tw.buf
 	}
 }
+
+// refusalWatch notes whether any of an attempt's writers refused output.
+//
+// An attempt whose output the caller could not take is never retried. The
+// command has run, and a provider reporting that the caller's writer
+// failed passes on the writer's own error, which the executor cannot
+// classify on the caller's behalf: a writer that is itself, say, an
+// upload may well fail with a TransportError, though no transport to
+// this command's target failed.
+type refusalWatch struct {
+	hit atomic.Bool
+}
+
+// wrap returns w reporting its failures here. A nil writer has nothing to
+// refuse, and an *os.File is left alone: a provider may hand it to the
+// command directly, and wrapping it would put a copy in the way.
+func (r *refusalWatch) wrap(w io.Writer) io.Writer {
+	if w == nil {
+		return nil
+	}
+
+	if _, ok := w.(*os.File); ok {
+		return w
+	}
+
+	return &watchedWriter{w: w, watch: r}
+}
+
+// refused reports whether a wrapped writer failed. A nil watch, for an
+// attempt that cannot be retried, never did.
+func (r *refusalWatch) refused() bool {
+	return r != nil && r.hit.Load()
+}
+
+type watchedWriter struct {
+	w     io.Writer
+	watch *refusalWatch
+}
+
+func (w *watchedWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if err != nil {
+		w.watch.hit.Store(true)
+	}
+
+	return n, err
+}
+
+// refusedOutputError marks an attempt's error as terminal because the
+// caller's writer failed during it. It adds nothing to the message and
+// unwraps to the provider's error unchanged.
+type refusedOutputError struct {
+	err error
+}
+
+func (e *refusedOutputError) Error() string { return e.err.Error() }
+func (e *refusedOutputError) Unwrap() error { return e.err }
 
 // tailWriter retains the last max bytes written through it, so a failing
 // command's stderr can travel on its [ExitError] without unbounded
