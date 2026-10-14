@@ -44,6 +44,11 @@ type testServer struct {
 	// half-open connection does.
 	stallSFTP bool
 
+	// muteSFTP completes the version handshake and then stops answering,
+	// so the client exists and a copy is under way when the server goes
+	// quiet.
+	muteSFTP bool
+
 	// extraHostKey is offered alongside the primary key, so a client
 	// whose known_hosts records only one of them must ask for that one.
 	extraHostKey ssh.Signer
@@ -212,6 +217,12 @@ func withoutSFTP() serverOption {
 // withStalledSFTP builds a server whose sftp subsystem never answers.
 func withStalledSFTP() serverOption {
 	return func(s *testServer) { s.stallSFTP = true }
+}
+
+// withMutedSFTP builds a server whose sftp subsystem answers the version
+// handshake and nothing after it.
+func withMutedSFTP() serverOption {
+	return func(s *testServer) { s.muteSFTP = true }
 }
 
 // withExtraHostKey offers a second host key of a different type, which
@@ -661,8 +672,43 @@ func (s *testServer) startSubsystem(channel ssh.Channel, req *ssh.Request) {
 		return
 	}
 
+	if s.muteSFTP {
+		go serveSFTP(&mutedChannel{Channel: channel})
+
+		return
+	}
+
 	go serveSFTP(channel)
 }
+
+// mutedChannel delivers the first answer written to it and silently drops
+// the rest. The first is the version reply, so the client finishes its
+// handshake and then waits on answers that never come, while the server
+// goes on reading.
+type mutedChannel struct {
+	ssh.Channel
+
+	mu       sync.Mutex
+	answered bool
+}
+
+func (c *mutedChannel) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.answered {
+		return len(p), nil
+	}
+
+	c.answered = true
+
+	return c.Channel.Write(p)
+}
+
+// Close and CloseWrite do nothing: a server that has gone quiet does not
+// answer the end of its input either.
+func (c *mutedChannel) Close() error      { return nil }
+func (c *mutedChannel) CloseWrite() error { return nil }
 
 func (s *sessionState) addEnv(payload []byte) {
 	name, rest := readString(payload)
