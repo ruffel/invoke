@@ -28,6 +28,11 @@ type IO struct {
 	// standard error for its [ExitError]; pass [io.Discard] to discard
 	// unconditionally. Ignored when TTY is set: a pseudo-terminal merges
 	// standard error into standard output.
+	//
+	// A writer that fails cannot hang Wait or make the command look like
+	// a transport failure: a command that failed still reports its
+	// [ExitError], and one that succeeded reports the write error, which
+	// is not a [TransportError] and so is never retried.
 	Stderr io.Writer
 
 	// TTY, when non-nil, allocates a pseudo-terminal for the process.

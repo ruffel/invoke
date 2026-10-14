@@ -1,6 +1,8 @@
 package invoketest
 
 import (
+	"fmt"
+
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +16,7 @@ func errorsContracts() []TestCase {
 		errorsLookPathClassifies(),
 		errorsClosedEnvRefusesAll(),
 		errorsTerminalOutcomesAreNotTransport(),
+		errorsFailedOutputWriteKeepsOutcome(),
 	}
 }
 
@@ -147,6 +150,61 @@ func errorsTerminalOutcomesAreNotTransport() TestCase {
 			requireNotTransport(t, closed, "a closed environment")
 		},
 	}
+}
+
+// errorsFailedOutputWriteKeepsOutcome pins what a provider reports when
+// the caller's own writer fails while the command is still writing.
+//
+// The command ran, and nothing about the target or the transport went
+// wrong, so the command's exit is the outcome and a retryable
+// TransportError is the one wrong answer: a caller retrying on it runs
+// the command again. The output is well past a pipe's buffer, so a
+// provider that stops reading the command's output when the writer fails
+// leaves the command blocked on its next write, and Wait with it.
+func errorsFailedOutputWriteKeepsOutcome() TestCase {
+	return TestCase{
+		Category: CategoryErrors,
+		Name:     "failed-output-write-keeps-outcome",
+		Description: "A caller's writer failing mid-output must neither hang Wait nor turn the " +
+			"command's exit into a retryable TransportError",
+		Run: func(t T, env invoke.Environment) {
+			const (
+				output = "dd if=/dev/zero bs=1024 count=4096 2>/dev/null"
+				status = 3
+			)
+
+			// A failure is the command's own verdict, and survives.
+			failed := runIntoFailingWriter(t, env, fmt.Sprintf("%s; exit %d", output, status))
+
+			requireNotTransport(t, failed.err, "a failed command whose output the caller could not take")
+
+			var exitErr *invoke.ExitError
+
+			require.ErrorAsf(t, failed.err, &exitErr,
+				"the command exited %d whatever became of its output; got %v", status, failed.err)
+			assert.Equal(t, status, exitErr.Code, "the command's own exit status")
+
+			// A success is not the whole story: the caller did not get the
+			// output, which has to be said, but not as a reason to retry.
+			succeeded := runIntoFailingWriter(t, env, output)
+
+			requireNotTransport(t, succeeded.err, "a successful command whose output the caller could not take")
+		},
+	}
+}
+
+// runIntoFailingWriter runs script with a stdout that refuses every write.
+func runIntoFailingWriter(t T, env invoke.Environment, script string) waitOutcome {
+	t.Helper()
+
+	proc := startCommand(t.Context(), t, env, invoke.Shell(script), invoke.IO{Stdout: failingWriter{}})
+
+	// Bounded, because a provider that hangs Wait here tends to hang Close
+	// with it, and the contract should report that rather than take the
+	// suite down.
+	defer func() { _ = closeOrTimeout(t, proc) }()
+
+	return waitOrTimeout(t, proc)
 }
 
 func errorsClosedEnvRefusesAll() TestCase {
