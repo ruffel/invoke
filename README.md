@@ -265,7 +265,7 @@ Pre-1.0: breaking changes land as minor releases and every one is called
 out in the [release notes](https://github.com/ruffel/invoke/releases).
 POSIX targets this cycle — Linux and macOS hosts, Linux containers.
 Everything compiles on Windows, but execution semantics are out of scope
-for now. Go 1.25 or newer.
+for now. Go 1.26 or newer.
 
 ## Contributing
 

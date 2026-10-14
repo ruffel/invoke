@@ -2,7 +2,7 @@
 
 ## Building and testing
 
-Go 1.25 or newer. The repository is two modules — the root and
+Go 1.26 or newer. The repository is two modules — the root and
 `docker/` — joined by a committed `go.work`, so a plain clone builds and
 tests with no setup.
 
@@ -18,6 +18,12 @@ just tools              # installs the pinned golangci-lint
 The pin matters. `.golangci.yml` is a version 2 configuration, so a
 version 1 binary — still what several distributions package — reports
 errors that are not there. `just tools` installs the version CI uses.
+
+So does the toolchain it is built with. A golangci-lint built with an
+older Go than the modules require refuses to lint them at all, which is
+what a packaged binary does the day the floor moves past it. `just tools`
+run from the repository builds it with the toolchain the modules ask
+for, so re-run it whenever that changes.
 
 ```sh
 just check              # format, lint, tidy, cross-build, race tests
