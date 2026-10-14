@@ -408,3 +408,44 @@ func TestFileEnvIsRemovedWhenTheCommandCannotStart(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr),
 		"values the caller deemed too sensitive for an argv must not persist in /tmp")
 }
+
+// TestTeardownKillSurvivesADroppedSignal checks that Close and
+// cancellation still end the remote command when the server drops the
+// first kill. OpenSSH does that to a kill that arrives before the
+// session's child has made itself a process group, and then holds the
+// channel open until the command exits on its own.
+func TestTeardownKillSurvivesADroppedSignal(t *testing.T) {
+	t.Parallel()
+
+	teardowns := map[string]func(proc invoke.Process, cancel context.CancelFunc){
+		"close":  func(proc invoke.Process, _ context.CancelFunc) { _ = proc.Close() },
+		"cancel": func(_ invoke.Process, cancel context.CancelFunc) { cancel() },
+	}
+
+	for name, teardown := range teardowns {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := startTestServer(t, withDroppedSignals(1))
+			env := dialServer(t, srv)
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			proc, err := env.Start(ctx, invoke.New("sleep", "30"), invoke.IO{})
+			require.NoError(t, err)
+
+			before := srv.exitsReported()
+
+			teardown(proc, cancel)
+
+			require.Eventually(t, func() bool { return srv.exitsReported() > before },
+				exitReportBound, exitReportPoll,
+				"the command outlived its teardown; the dropped kill was never repeated")
+
+			assert.Equal(t, int32(1), srv.signalsDropped.Load(), "the server must have dropped the first kill")
+
+			_ = proc.Close()
+		})
+	}
+}
