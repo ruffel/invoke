@@ -27,6 +27,11 @@ type process struct {
 	copied  chan struct{}
 	copyErr error
 
+	// stdout and stderr deliver to the caller's writers. A failure of
+	// theirs is kept apart from copyErr because it says nothing about
+	// the transport: the stream was fine, the destination was not.
+	stdout, stderr *outputSink
+
 	// tty records that a terminal was allocated, which changes both the
 	// framing of the daemon's stream and where stderr goes.
 	tty bool
@@ -340,34 +345,58 @@ func (p *process) pumpStdin(stdin io.Reader) {
 // pumpOutput demultiplexes the attached stream into the caller's writers.
 // Without a terminal the daemon frames stdout and stderr on one
 // connection; stdcopy separates them.
+//
+// The stream is read to its end even once a caller's writer has failed.
+// It ends only when the command exits, and a command whose output nobody
+// reads blocks on its next write instead.
 func (p *process) pumpOutput(stdio invoke.IO) {
 	defer close(p.copied)
 
-	stdout := stdio.Stdout
-	if stdout == nil {
-		stdout = io.Discard
-	}
+	p.stdout = &outputSink{w: stdio.Stdout}
+	p.stderr = &outputSink{w: stdio.Stderr}
 
 	// Under a terminal the daemon sends the command's bytes as they are,
 	// with stderr already merged into them; without one it frames the two
 	// streams together and stdcopy separates them again.
 	if p.tty {
-		if _, err := io.Copy(stdout, p.attach.Reader); err != nil && !errors.Is(err, io.EOF) {
+		if _, err := io.Copy(p.stdout, p.attach.Reader); err != nil && !errors.Is(err, io.EOF) {
 			p.copyErr = err
 		}
 
 		return
 	}
 
-	stderr := stdio.Stderr
-	if stderr == nil {
-		stderr = io.Discard
-	}
-
-	_, err := stdcopy.StdCopy(stdout, stderr, p.attach.Reader)
+	_, err := stdcopy.StdCopy(p.stdout, p.stderr, p.attach.Reader)
 	if err != nil && !errors.Is(err, io.EOF) {
 		p.copyErr = err
 	}
+}
+
+// outputSink hands the command's output to a caller's writer until that
+// writer fails, then discards the rest, so the stream can still be read to
+// its end. A nil writer discards everything.
+type outputSink struct {
+	w   io.Writer
+	err error
+}
+
+func (s *outputSink) Write(b []byte) (int, error) {
+	if s.w != nil && s.err == nil {
+		if _, err := s.w.Write(b); err != nil {
+			s.err = err
+		}
+	}
+
+	return len(b), nil
+}
+
+// writeErr is the first failure of the caller's writers, stdout's first.
+func (p *process) writeErr() error {
+	if p.stdout.err != nil {
+		return p.stdout.err
+	}
+
+	return p.stderr.err
 }
 
 // doWait collects the outcome once the output stream has ended, which is
@@ -437,21 +466,29 @@ func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
 // An exit matching a signal sent from here is not: this side may have
 // ended the command, so who ended it is decided by the attribution flags
 // rather than here.
+//
+// A status settles the command even when its output did not all arrive.
+// The daemon saw it run to an exit, so a failure to deliver the output is
+// reported, but never as a transport failure: that is the one family a
+// retry acts on, and running a command again because its output went
+// astray is what retrying must not do.
 func (p *process) reportedExit(exitCode int, duration time.Duration) (invoke.Result, error, bool) { //nolint:revive // The flag distinguishes "not settled here" from a nil outcome.
 	if _, ok := p.signalDeath(exitCode); ok {
 		return invoke.Result{}, nil, false
 	}
 
-	if p.copyErr != nil {
-		return invoke.Result{ExitCode: -1, Duration: duration},
-			&invoke.TransportError{Op: "wait", Err: p.copyErr}, true
-	}
+	res := invoke.Result{ExitCode: exitCode, Duration: duration}
 
-	if exitCode == 0 {
-		return invoke.Result{ExitCode: 0, Duration: duration}, nil, true
+	switch {
+	case exitCode != 0:
+		return res, &invoke.ExitError{Code: exitCode}, true
+	case p.writeErr() != nil:
+		return res, fmt.Errorf("docker: wait: writing the command's output: %w", p.writeErr()), true
+	case p.copyErr != nil:
+		return res, fmt.Errorf("docker: wait: reading the command's output: %w", p.copyErr), true
+	default:
+		return res, nil, true
 	}
-
-	return invoke.Result{ExitCode: exitCode, Duration: duration}, &invoke.ExitError{Code: exitCode}, true
 }
 
 // inspect reports the finished command's status, allowing for the daemon

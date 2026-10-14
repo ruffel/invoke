@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +24,10 @@ type process struct {
 	// envFile is the delivery file the command's prologue sources, when
 	// the file route is in use; empty otherwise.
 	envFile string
+
+	// stdout and stderr deliver to the caller's writers, and remember
+	// whether they stopped taking output.
+	stdout, stderr *outputSink
 
 	closedByUser atomic.Bool
 	ctxErr       func() error
@@ -72,23 +77,26 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
-	session.Stdin = stdio.Stdin
-	session.Stdout = stdio.Stdout
-
-	// A terminal merges the command's two output streams into one, so
-	// there is nothing left for stderr to carry.
-	if stdio.TTY == nil {
-		session.Stderr = stdio.Stderr
-	}
-
 	p := &process{
 		env:     e,
 		session: session,
 		started: time.Now(),
 		envFile: envFile,
+		stdout:  &outputSink{w: stdio.Stdout},
+		stderr:  &outputSink{},
 		ctxErr:  ctx.Err,
 		done:    make(chan struct{}),
 	}
+
+	// A terminal merges the command's two output streams into one, so
+	// there is nothing left for stderr to carry.
+	if stdio.TTY == nil {
+		p.stderr.w = stdio.Stderr
+	}
+
+	session.Stdin = stdio.Stdin
+	session.Stdout = p.stdout
+	session.Stderr = p.stderr
 
 	if err := session.Start(commandLine(cmd, prologue)); err != nil {
 		_ = session.Close()
@@ -354,9 +362,52 @@ func (p *process) doWait() {
 	duration := time.Since(p.started)
 	p.result, p.waitErr = p.mapOutcome(err, duration)
 
+	// The command ran to a clean exit, but the caller did not get all
+	// of what it wrote. That is still an error, though not a transport
+	// one: nothing about the connection failed, and a retry would run
+	// the command again.
+	if p.waitErr == nil {
+		if werr := p.writeErr(); werr != nil {
+			p.waitErr = fmt.Errorf("ssh: wait: writing the command's output: %w", werr)
+		}
+	}
+
 	_ = p.session.Close()
 
 	p.sweepEnvFile()
+}
+
+// outputSink hands the command's output to a caller's writer until that
+// writer fails, then discards the rest.
+//
+// The session's copy stops at the first write error, and once nothing
+// reads the channel its window fills, the remote command blocks on its
+// next write, and Wait never returns. Draining keeps the command able to
+// finish, so its exit status is still there to report. A nil writer
+// discards everything.
+type outputSink struct {
+	w   io.Writer
+	err error
+}
+
+func (s *outputSink) Write(b []byte) (int, error) {
+	if s.w != nil && s.err == nil {
+		if _, err := s.w.Write(b); err != nil {
+			s.err = err
+		}
+	}
+
+	return len(b), nil
+}
+
+// writeErr is the first failure of the caller's writers, stdout's first.
+// It is read only once the session's copies have finished.
+func (p *process) writeErr() error {
+	if p.stdout.err != nil {
+		return p.stdout.err
+	}
+
+	return p.stderr.err
 }
 
 // sweepEnvFile removes the delivery file after an ending that may have

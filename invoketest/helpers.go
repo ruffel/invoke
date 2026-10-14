@@ -137,6 +137,16 @@ func (w *blockingWriter) release() {
 	close(w.held)
 }
 
+// errOutputRefused is what a failingWriter answers every write with.
+var errOutputRefused = errors.New("invoketest: the caller's writer refused the output")
+
+// failingWriter is a destination for a process's output that refuses all
+// of it, as a caller's writer does when its own sink has gone: a closed
+// file, a full disk, a dropped client.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errOutputRefused }
+
 // startCommand starts cmd and fails the contract on error.
 func startCommand(ctx context.Context, t T, env invoke.Environment, cmd invoke.Command, stdio invoke.IO) invoke.Process {
 	t.Helper()

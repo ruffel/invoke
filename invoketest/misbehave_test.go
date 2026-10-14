@@ -63,10 +63,11 @@ type defects struct {
 	waitJoinsStdin       bool // hold Wait until the caller's stdin reader returns
 
 	// Classification defects.
-	plainMissingBinary bool // strip ErrNotFound from missing-binary failures
-	plainWorkdirError  bool // strip ErrInvalidWorkdir from workdir failures
-	plainLookPathError bool // strip ErrNotFound from LookPath failures
-	launderTerminal    bool // dress a terminal outcome up as a retryable transport failure
+	plainMissingBinary  bool // strip ErrNotFound from missing-binary failures
+	plainWorkdirError   bool // strip ErrInvalidWorkdir from workdir failures
+	plainLookPathError  bool // strip ErrNotFound from LookPath failures
+	launderTerminal     bool // dress a terminal outcome up as a retryable transport failure
+	launderWriteFailure bool // report a caller's failed writer as a retryable transport failure
 
 	// Transfer defects.
 	corruptUploads           bool // upload garbage in place of the source
@@ -125,6 +126,16 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 
 	stdio = m.mutateStdio(stdio)
 
+	// The launderWriteFailure defect is the docker provider's old
+	// mistake: a failed copy into the caller's writer, taken for the
+	// connection failing.
+	var spy *writeFailureSpy
+
+	if m.d.launderWriteFailure && stdio.Stdout != nil {
+		spy = &writeFailureSpy{w: stdio.Stdout}
+		stdio.Stdout = spy
+	}
+
 	// The waitJoinsStdin defect re-creates the tempting mistake: a Wait
 	// that joins the goroutine pumping the caller's reader, and so
 	// blocks until that reader deigns to return.
@@ -155,7 +166,37 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		return nil, err
 	}
 
-	return &misbehaveProcess{base: proc, d: m.d, env: m, startCtx: ctx, stdinReturned: stdinReturned}, nil
+	return &misbehaveProcess{base: proc, d: m.d, env: m, startCtx: ctx, stdinReturned: stdinReturned, writes: spy}, nil
+}
+
+// writeFailureSpy records the first error from the writer it wraps.
+type writeFailureSpy struct {
+	w io.Writer
+
+	mu  sync.Mutex
+	err error
+}
+
+func (s *writeFailureSpy) Write(p []byte) (int, error) {
+	n, err := s.w.Write(p)
+	if err != nil {
+		s.mu.Lock()
+
+		if s.err == nil {
+			s.err = err
+		}
+
+		s.mu.Unlock()
+	}
+
+	return n, err
+}
+
+func (s *writeFailureSpy) failure() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.err
 }
 
 // returnTrackingReader reports, once, that a Read call has returned.
@@ -616,6 +657,9 @@ type misbehaveProcess struct {
 	// blocks on it, honoring a reader that owes it nothing.
 	stdinReturned chan struct{}
 
+	// writes is non-nil under the launderWriteFailure defect.
+	writes *writeFailureSpy
+
 	mu         sync.Mutex
 	waitCalls  int
 	closeCalls int
@@ -640,6 +684,12 @@ func (p *misbehaveProcess) Wait() (invoke.Result, error) {
 
 	if got, done := p.corruptWait(res, err, waitCall, closed); done {
 		return got.result, got.err
+	}
+
+	if p.writes != nil {
+		if werr := p.writes.failure(); werr != nil {
+			return invoke.Result{ExitCode: -1, Duration: res.Duration}, &invoke.TransportError{Op: "wait", Err: werr}
+		}
 	}
 
 	if got, done := p.corruptError(res, err); done {
@@ -876,6 +926,7 @@ func defectCatalog() []defectCase {
 		{name: "bare lookpath name", contract: "errors/lookpath-classifies", defects: defects{bareLookPath: true}},
 		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
 		{name: "terminal laundered as transport", contract: "errors/terminal-outcomes-are-not-transport", defects: defects{launderTerminal: true}},
+		{name: "write failure laundered as transport", contract: "errors/failed-output-write-keeps-outcome", defects: defects{launderWriteFailure: true}},
 
 		{name: "corrupted uploads", contract: "transfer/roundtrip-preserves-content-and-mode", defects: defects{corruptUploads: true}},
 		{name: "corrupted binary", contract: "transfer/binary-content-survives", defects: defects{corruptUploads: true}},
