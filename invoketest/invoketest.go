@@ -173,21 +173,29 @@ func verifyContracts(t *testing.T, contracts []TestCase, factory Factory, opts .
 				t.Skipf("known provider gap: %s", reason)
 			}
 
-			env := factory(t)
-
-			defer func() {
-				_ = env.Close()
-			}()
-
-			if tc.Gate != nil {
-				if run, reason := tc.Gate(env.Capabilities()); !run {
-					t.Skipf("not applicable: %s", reason)
-				}
-			}
-
-			tc.Run(t, env)
+			runContract(t, tc, factory)
 		})
 	}
+}
+
+// runContract runs one contract against a fresh environment from factory,
+// honoring its capability gate. The environment's Close is bounded like
+// every other blocking step: a provider that strands a process can hang
+// it, and the contract has already reported that failure.
+func runContract(t T, tc TestCase, factory Factory) {
+	t.Helper()
+
+	env := factory(t)
+
+	defer closeEnvOrTimeout(t, env)
+
+	if tc.Gate != nil {
+		if run, reason := tc.Gate(env.Capabilities()); !run {
+			t.Skipf("not applicable: %s", reason)
+		}
+	}
+
+	tc.Run(t, env)
 }
 
 // validateGaps rejects WithKnownGap declarations that name contracts which
