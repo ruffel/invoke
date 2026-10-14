@@ -110,7 +110,7 @@ type recordedOutcome struct {
 
 // runRecorded executes one contract against environments from factory and
 // records what it did, honoring the capability gate exactly as Verify
-// does.
+// does and bounding the environment Close with the same deadline.
 func runRecorded(t *testing.T, tc TestCase, factory Factory) recordedOutcome {
 	t.Helper()
 
@@ -127,7 +127,7 @@ func runRecorded(t *testing.T, tc TestCase, factory Factory) recordedOutcome {
 
 		env := factory(rec)
 
-		defer func() { _ = env.Close() }()
+		defer closeEnvOrTimeout(rec, env)
 
 		if tc.Gate != nil {
 			if run, _ := tc.Gate(env.Capabilities()); !run {

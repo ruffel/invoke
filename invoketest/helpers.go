@@ -305,6 +305,36 @@ func closeOrTimeout(t T, proc invoke.Process) error {
 	}
 }
 
+// closeEnvOrTimeout closes env with the contract deadline, abandoning a
+// Close that stays blocked past it. It reports rather than stops: it runs
+// deferred, after the contract may already have failed and stopped. A
+// panic in Close is carried back and re-raised on the caller's goroutine,
+// where the test runner can still recover it.
+func closeEnvOrTimeout(t T, env invoke.Environment) {
+	t.Helper()
+
+	done := make(chan any, 1)
+
+	go func() {
+		var panicked any
+
+		defer func() { done <- panicked }()
+		defer func() { panicked = recover() }()
+
+		_ = env.Close()
+	}()
+
+	select {
+	case panicked := <-done:
+		if panicked != nil {
+			panic(panicked)
+		}
+	case <-time.After(contractTimeout):
+		assert.Failf(t, "environment Close blocked past the contract deadline",
+			"Close did not return within %v", contractTimeout)
+	}
+}
+
 // targetProbe runs a shell probe on the target and reports whether it
 // exited zero, failing the contract if the probe could not run at all.
 func targetProbe(t T, env invoke.Environment, script string) bool {

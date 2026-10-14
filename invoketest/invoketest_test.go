@@ -2,7 +2,9 @@ package invoketest
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
@@ -142,6 +144,74 @@ func TestVerifyGatesOnCapabilities(t *testing.T) {
 
 		assert.False(t, ran, "contract gated on an undeclared capability ran anyway")
 	})
+}
+
+// hangingCloseEnv is a stubEnv whose Close blocks until released: a
+// provider that strands a process and hangs on the way out.
+type hangingCloseEnv struct {
+	stubEnv
+
+	release chan struct{}
+}
+
+func (h *hangingCloseEnv) Close() error {
+	<-h.release
+
+	return nil
+}
+
+func TestVerifyBoundsEnvironmentClose(t *testing.T) {
+	t.Parallel()
+
+	release := make(chan struct{})
+
+	t.Cleanup(func() { close(release) })
+
+	tc := TestCase{Category: "core", Name: "passes", Run: func(_ T, _ invoke.Environment) {}}
+	rec := &recordingT{name: tc.ID(), ctx: t.Context()}
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		runContract(rec, tc, func(_ T) invoke.Environment {
+			return &hangingCloseEnv{release: release}
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(selfTestTimeout):
+		require.FailNow(t, "a hanging environment Close hung the contract instead of failing it")
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	assert.True(t, rec.failed, "a hanging environment Close must fail the contract")
+	assert.Contains(t, strings.Join(rec.logs, "\n"), "environment Close blocked past the contract deadline",
+		"the failure must name the blocked Close")
+}
+
+// panickingCloseEnv is a stubEnv whose Close panics.
+type panickingCloseEnv struct {
+	stubEnv
+}
+
+func (p *panickingCloseEnv) Close() error {
+	panic("misbehave: Close panicked")
+}
+
+func TestVerifyRecoversEnvironmentClosePanic(t *testing.T) {
+	t.Parallel()
+
+	tc := TestCase{Category: "core", Name: "passes", Run: func(_ T, _ invoke.Environment) {}}
+
+	outcome := runRecorded(t, tc, func(_ T) invoke.Environment { return &panickingCloseEnv{} })
+
+	assert.Equal(t, "misbehave: Close panicked", outcome.panicked,
+		"a panic in environment Close must surface on the contract's goroutine, not crash the binary")
 }
 
 func TestValidateContractsRejectsDuplicates(t *testing.T) {
