@@ -15,9 +15,16 @@ updates:
     directory: /docker
     schedule:
       interval: weekly
+    # The moby client is pre-1.0 and has changed call shapes and its
+    # minimum API version between minor releases, so its bumps get a pull
+    # request of their own: a breaking one inside the catch-all group would
+    # turn the whole pull request red and hold back unrelated updates.
     groups:
       go-dependencies:
         patterns: ["*"]
+        exclude-patterns: ["github.com/moby/moby/*"]
+      moby:
+        patterns: ["github.com/moby/moby/*"]
     ignore:
       # The core module is pinned to a released version by hand and
       # repointed only at release time (see RELEASING.md). An automated
