@@ -41,9 +41,9 @@ are worth stating, because they shape what counts as a vulnerability:
   a client of a daemon the caller chose to talk to; a vulnerability in the
   daemon itself is the daemon's to fix, and the exposure tracks the
   installed Docker Engine version rather than anything this library pins.
-  The `github.com/docker/docker` module carries both the daemon and the
-  client under one path, so an advisory against it may name daemon code
-  this provider never compiles — the client packages are all that reach a
-  consumer's binary.
+  The provider depends on the client and the API types alone, which are
+  published as their own modules — `github.com/moby/moby/client` and
+  `github.com/moby/moby/api` — apart from the daemon, so an advisory
+  against daemon code names a module this library does not require.
 
 [`Shell`]: https://pkg.go.dev/github.com/ruffel/invoke#Shell

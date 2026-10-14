@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bufio"
 	"context"
 	"math"
 	"net"
@@ -9,9 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/client"
 	"github.com/ruffel/invoke"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,30 +28,30 @@ type settleStubClient struct {
 	inspects int
 }
 
-func (c *settleStubClient) ContainerExecCreate(_ context.Context, _ string, _ container.ExecOptions) (container.ExecCreateResponse, error) {
-	return container.ExecCreateResponse{ID: "exec-under-test"}, nil
+func (c *settleStubClient) ExecCreate(_ context.Context, _ string, _ client.ExecCreateOptions) (client.ExecCreateResult, error) {
+	return client.ExecCreateResult{ID: "exec-under-test"}, nil
 }
 
-func (c *settleStubClient) ContainerExecAttach(_ context.Context, _ string, _ container.ExecAttachOptions) (types.HijackedResponse, error) {
+func (c *settleStubClient) ExecAttach(_ context.Context, _ string, _ client.ExecAttachOptions) (client.ExecAttachResult, error) {
 	server, clientSide := net.Pipe()
 
 	// The command produces no output: its stream ends immediately,
 	// which is exactly when the daemon may still call it running.
 	_ = server.Close()
 
-	return types.HijackedResponse{Conn: clientSide, Reader: bufio.NewReader(clientSide)}, nil
+	return client.ExecAttachResult{HijackedResponse: client.NewHijackedResponse(clientSide, "")}, nil
 }
 
-func (c *settleStubClient) ContainerExecInspect(_ context.Context, _ string) (container.ExecInspect, error) {
+func (c *settleStubClient) ExecInspect(_ context.Context, _ string, _ client.ExecInspectOptions) (client.ExecInspectResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.inspects++
 	if c.inspects <= c.runningPolls {
-		return container.ExecInspect{Running: true}, nil
+		return client.ExecInspectResult{Running: true}, nil
 	}
 
-	return container.ExecInspect{Running: false, ExitCode: c.exitCode}, nil
+	return client.ExecInspectResult{Running: false, ExitCode: c.exitCode}, nil
 }
 
 // TestRunRawWaitsForTheExecToStop pins runRaw to the same settling
