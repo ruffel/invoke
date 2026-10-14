@@ -22,6 +22,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # What counts as the account of a failure: the failing tests, the
+  # assertions that failed, and the ways a run ends without either.
+  FAILURE_LINES: "--- FAIL:|^(FAIL|panic:|fatal error:)|^[[:space:]]+(Error|Messages|Error Trace):|DATA RACE"
+
 jobs:
   stress:
     name: Stress (${{ matrix.lane }})
@@ -65,8 +70,30 @@ jobs:
             # next iteration.
             if ( ${{ matrix.run }} ) > "$log" 2>&1; then
               passed=$((passed + 1))
+
+              # Keep only what failed, so the artifact below is the
+              # evidence rather than a haystack with evidence in it.
+              rm -f "$log"
             else
-              echo "::group::${{ matrix.lane }} iteration $i failed"
+              # Which test failed, first and on its own. An integration
+              # test prints the server's debug log when it fails, so the
+              # tail of the log is that and the failure is well above it
+              # — which is why a nightly red has so far said only that
+              # the lane failed.
+              #
+              # The -- is load-bearing: the pattern starts with a dash,
+              # which grep would otherwise read as an option.
+              failed=$(grep -E -- "$FAILURE_LINES" "$log" | head -n 60 || true)
+
+              echo "::group::${{ matrix.lane }} iteration $i: what failed"
+              if [ -n "$failed" ]; then
+                printf '%s\n' "$failed"
+              else
+                echo "(no test failure markers: the lane failed before its tests ran)"
+              fi
+              echo "::endgroup::"
+
+              echo "::group::${{ matrix.lane }} iteration $i: last 120 lines"
               tail -n 120 "$log"
               echo "::endgroup::"
             fi
@@ -75,3 +102,15 @@ jobs:
           printf '%s: %d/%d iterations passed\n' '${{ matrix.lane }}' "$passed" "$ITERATIONS" >> "$GITHUB_STEP_SUMMARY"
 
           [ "$passed" -eq "$ITERATIONS" ]
+
+      # The run log keeps only the tail of each failure. A flake worth
+      # this job's existence is worth its whole output, including the
+      # iterations' server logs.
+      - name: Keep the failing iterations' logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: stress-logs-${{ matrix.lane }}
+          path: stress-logs/
+          retention-days: 30
+          if-no-files-found: ignore
