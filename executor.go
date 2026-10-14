@@ -144,7 +144,8 @@ func (e *Executor) Text(ctx context.Context, cmd Command, opts ...Option) (strin
 // note that a failed-then-retried attempt may have already delivered some
 // lines before failing.
 //
-// A single line longer than 1 MiB fails the stream.
+// A single line longer than 1 MiB fails the stream: the command is
+// stopped, and the error wraps [bufio.ErrTooLong].
 func (e *Executor) Lines(ctx context.Context, cmd Command, onLine func(string), opts ...Option) (Result, error) {
 	cfg, err := e.configFor(opts)
 	if err != nil {
@@ -253,6 +254,12 @@ func (e *Executor) once(ctx context.Context, cmd Command, stdio IO) (Result, err
 
 // streamOnce runs cmd once, delivering each stdout line to onLine.
 func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(string)) (Result, error) {
+	// The stream can fail while the command is still writing. Nothing
+	// reads the pipe after that, so the command has to be stopped, or it
+	// blocks on its next write and Wait never returns.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	pr, pw := io.Pipe()
 
 	scanErr := make(chan error, 1)
@@ -263,6 +270,15 @@ func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(stri
 
 		for scanner.Scan() {
 			onLine(scanner.Text())
+		}
+
+		if err := scanner.Err(); err != nil {
+			// Fail the writer rather than block it, for a provider that
+			// is writing from somewhere cancellation does not reach,
+			// then stop the command for one that is not.
+			_ = pr.CloseWithError(err)
+
+			cancel()
 		}
 
 		scanErr <- scanner.Err()
@@ -289,13 +305,15 @@ func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(stri
 	sErr := <-scanErr
 	_ = pr.Close()
 
+	// A failed stream comes first: it is why the command was stopped, so
+	// whatever Wait reports after that is its consequence.
 	switch {
+	case sErr != nil:
+		return res, fmt.Errorf("invoke: streaming output: %w", sErr)
 	case waitErr != nil:
 		attachStderrTail(waitErr, tw)
 
 		return res, waitErr
-	case sErr != nil:
-		return res, fmt.Errorf("invoke: streaming output: %w", sErr)
 	default:
 		return res, nil
 	}
