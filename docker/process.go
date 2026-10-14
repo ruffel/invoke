@@ -39,6 +39,10 @@ type process struct {
 	closedByUser atomic.Bool
 	ctxErr       func() error
 
+	// abandoned records that this side let go of a command it had no way
+	// to stop, which only a container without a shell leaves it.
+	abandoned atomic.Bool
+
 	// sentSignal records a signal this process actually delivered, which
 	// is the only evidence available that an exit was a signal death.
 	sentSignal atomic.Value
@@ -255,13 +259,38 @@ func (p *process) Close() error {
 		p.closedByUser.Store(true)
 
 		if !p.waitReturned.Load() {
-			_ = p.kill(invoke.SIGKILL)
+			p.stop()
 		}
 
 		_, _ = p.Wait()
 	})
 
 	return nil
+}
+
+// stop ends the command, or lets go of it when it cannot be ended.
+//
+// Without a shell there is no signalling it: the wrapper that records its
+// id needs one, and so does any kill. Waiting for it to finish on its own
+// held Close, and cancellation, for the whole life of the command. So the
+// command is abandoned instead: its input is ended, which is all it takes
+// for one reading to EOF, and the stream is let go, which is what ends
+// the wait. Whatever else it was doing, it goes on doing in the
+// container, and the outcome says so.
+func (p *process) stop() {
+	if p.pidFile != "" {
+		_ = p.kill(invoke.SIGKILL)
+
+		return
+	}
+
+	p.abandoned.Store(true)
+
+	if !p.tty {
+		_ = p.attach.CloseWrite()
+	}
+
+	p.attach.Close()
 }
 
 // discard tears down an exec that was created but never handed back,
@@ -359,7 +388,7 @@ func (p *process) pumpOutput(stdio invoke.IO) {
 	// with stderr already merged into them; without one it frames the two
 	// streams together and stdcopy separates them again.
 	if p.tty {
-		if _, err := io.Copy(p.stdout, p.attach.Reader); err != nil && !errors.Is(err, io.EOF) {
+		if _, err := io.Copy(p.stdout, p.attach.Reader); err != nil && !errors.Is(err, io.EOF) && !p.abandoned.Load() {
 			p.copyErr = err
 		}
 
@@ -367,7 +396,7 @@ func (p *process) pumpOutput(stdio invoke.IO) {
 	}
 
 	_, err := stdcopy.StdCopy(p.stdout, p.stderr, p.attach.Reader)
-	if err != nil && !errors.Is(err, io.EOF) {
+	if err != nil && !errors.Is(err, io.EOF) && !p.abandoned.Load() {
 		p.copyErr = err
 	}
 }
@@ -433,6 +462,10 @@ func (p *process) doWait() {
 // inspect deliberately outlives the caller's context so that asking is
 // still possible once it has been canceled.
 func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
+	if p.abandoned.Load() {
+		return p.abandonedOutcome(duration)
+	}
+
 	inspect, inspectErr := p.inspect()
 	if inspectErr == nil {
 		if res, out, settled := p.reportedExit(inspect.ExitCode, duration); settled {
@@ -458,6 +491,32 @@ func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
 	sig, _ := p.signalDeath(inspect.ExitCode)
 
 	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
+}
+
+// abandonedOutcome reports a command this side let go of. It is asked
+// about once, not waited on: a command that finished first has its exit
+// to report, and one still running in the container was neither ended
+// nor finished, which is what the error says.
+func (p *process) abandonedOutcome(duration time.Duration) (invoke.Result, error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
+	defer cancel()
+
+	inspect, err := p.env.client.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
+	if err == nil && !inspect.Running {
+		if res, out, settled := p.reportedExit(inspect.ExitCode, duration); settled {
+			return res, out
+		}
+	}
+
+	const why = "the container has no shell to stop it, so it was abandoned and may still be running"
+
+	if p.closedByUser.Load() {
+		return invoke.Result{ExitCode: -1, Duration: duration},
+			fmt.Errorf("docker: wait: released by Close; %s: %w", why, invoke.ErrClosed)
+	}
+
+	return invoke.Result{ExitCode: -1, Duration: duration},
+		fmt.Errorf("docker: wait: released by cancellation; %s: %w", why, p.ctxErr())
 }
 
 // reportedExit returns the outcome for a status that settles the command
@@ -542,7 +601,7 @@ func (p *process) monitorContext(ctx context.Context) {
 			// Deliberately not this ctx: it has just been canceled, and
 			// the kill is what makes the cancellation mean anything.
 			//nolint:contextcheck // kill detaches by design; see its comment.
-			_ = p.kill(invoke.SIGKILL)
+			p.stop()
 		}
 	case <-p.done:
 	}

@@ -245,9 +245,12 @@ values never appear in a remote process table. `WithCommandLineEnv` puts
 them on the command line instead, where every account on the host can read
 them.
 
-**Docker needs a shell in the container** for signal delivery and for
-staging transfers. Without one, both report `ErrNotSupported` rather than
-misbehaving.
+**Docker needs a shell in the container** for signal delivery, path
+lookup and staging uploads. Without one, those report `ErrNotSupported`
+rather than misbehaving; commands still run and downloads still arrive.
+Nothing can stop a command there either, so `Close` and cancellation let
+it go rather than wait for it: `Wait` returns at once, says the command
+was abandoned, and the command runs on in the container until it ends.
 
 **Docker needs Engine 19.03 or newer.** The provider talks to the daemon
 through Docker's own client library, which goes no lower than API version

@@ -18,7 +18,11 @@
 // over the API rather than on a command line. Signal delivery needs a
 // shell in the container to record the in-container process id; a
 // container without one reports the capability as unavailable rather than
-// accepting signals and dropping them.
+// accepting signals and dropping them. Without a shell, Close and
+// cancellation cannot stop a command either: they end its input and let
+// it go, returning at once with an outcome that says it was abandoned,
+// while the command runs on in the container until it ends. Path lookup
+// and uploads need the shell too; downloads do not.
 package docker
 
 import (
