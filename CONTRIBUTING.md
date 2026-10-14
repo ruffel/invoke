@@ -23,7 +23,9 @@ So does the toolchain it is built with. A golangci-lint built with an
 older Go than the modules require refuses to lint them at all, which is
 what a packaged binary does the day the floor moves past it. `just tools`
 run from the repository builds it with the toolchain the modules ask
-for, so re-run it whenever that changes.
+for, so re-run it whenever that changes. It installs into
+`$(go env GOPATH)/bin`, which has to come before any packaged copy on
+your `PATH`, or the packaged one still answers.
 
 ```sh
 just check              # format, lint, tidy, cross-build, race tests
