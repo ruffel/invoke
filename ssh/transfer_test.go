@@ -226,18 +226,28 @@ func TestTransferCancelsWhenServerGoesQuietMidCopy(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "file.txt")
 	require.NoError(t, os.WriteFile(src, []byte("payload"), 0o600), "writing fixture")
 
-	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
 	done := make(chan error, 1)
 
 	go func() { done <- env.Upload(ctx, src, filepath.Join(t.TempDir(), "file.txt")) }()
 
+	// Canceled only once the server has dropped an answer: earlier, and
+	// there is no client yet, which is the case the stall test covers.
+	select {
+	case <-srv.muted:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the server never received a request after the handshake")
+	}
+
+	cancel()
+
 	// The copy is given its idle grace to unwind before the session is
 	// pulled, so the budget allows for that.
 	select {
 	case err := <-done:
-		assert.ErrorIs(t, err, context.DeadlineExceeded, "Upload to a server that went quiet")
+		assert.ErrorIs(t, err, context.Canceled, "Upload to a server that went quiet")
 	case <-time.After(15 * time.Second):
 		require.Fail(t,
 			"Upload did not return after its context expired; teardown is waiting on a server that went quiet")

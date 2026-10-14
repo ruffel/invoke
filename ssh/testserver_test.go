@@ -46,8 +46,10 @@ type testServer struct {
 
 	// muteSFTP completes the version handshake and then stops answering,
 	// so the client exists and a copy is under way when the server goes
-	// quiet.
-	muteSFTP bool
+	// quiet. muted closes when the first answer is dropped.
+	muteSFTP  bool
+	muted     chan struct{}
+	mutedOnce sync.Once
 
 	// extraHostKey is offered alongside the primary key, so a client
 	// whose known_hosts records only one of them must ask for that one.
@@ -222,7 +224,10 @@ func withStalledSFTP() serverOption {
 // withMutedSFTP builds a server whose sftp subsystem answers the version
 // handshake and nothing after it.
 func withMutedSFTP() serverOption {
-	return func(s *testServer) { s.muteSFTP = true }
+	return func(s *testServer) {
+		s.muteSFTP = true
+		s.muted = make(chan struct{})
+	}
 }
 
 // withExtraHostKey offers a second host key of a different type, which
@@ -673,7 +678,7 @@ func (s *testServer) startSubsystem(channel ssh.Channel, req *ssh.Request) {
 	}
 
 	if s.muteSFTP {
-		go serveSFTP(&mutedChannel{Channel: channel})
+		go serveSFTP(&mutedChannel{Channel: channel, onMute: func() { s.mutedOnce.Do(func() { close(s.muted) }) }})
 
 		return
 	}
@@ -688,6 +693,10 @@ func (s *testServer) startSubsystem(channel ssh.Channel, req *ssh.Request) {
 type mutedChannel struct {
 	ssh.Channel
 
+	// onMute reports the first answer dropped: the client has finished
+	// its handshake and is waiting on a request.
+	onMute func()
+
 	mu       sync.Mutex
 	answered bool
 }
@@ -697,6 +706,8 @@ func (c *mutedChannel) Write(p []byte) (int, error) {
 	defer c.mu.Unlock()
 
 	if c.answered {
+		c.onMute()
+
 		return len(p), nil
 	}
 
