@@ -11,7 +11,7 @@
 // The daemon must serve Engine API version 1.40 or newer, which Docker
 // 19.03 was the first to do. That is the oldest version Docker's client
 // library speaks, and an older daemon is refused when the Environment is
-// created.
+// created — as is a DOCKER_API_VERSION naming an older version.
 //
 // Commands are delivered to the daemon as a real argument vector, so
 // nothing is reinterpreted by a shell, and environment variables travel
@@ -30,6 +30,7 @@ import (
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/client"
+	"github.com/moby/moby/client/pkg/versions"
 	"github.com/ruffel/invoke"
 )
 
@@ -86,6 +87,12 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	cli, err := client.New(opts...)
 	if err != nil {
 		return nil, &invoke.TransportError{Op: "connect", Err: err}
+	}
+
+	if err := checkAPIVersion(cli); err != nil {
+		_ = cli.Close()
+
+		return nil, err
 	}
 
 	env := &Environment{
@@ -199,6 +206,26 @@ func (e *Environment) inspectContainer(ctx context.Context) error {
 	e.id = info.Container.ID
 
 	return nil
+}
+
+// checkAPIVersion refuses an API version below the oldest this provider
+// supports.
+//
+// Only DOCKER_API_VERSION can set one. The client uses a version set that
+// way as given — it neither negotiates it nor checks it against its own
+// floor — so a version below the floor would carry the provider to a
+// daemon it does not support, and the mismatch would surface part-way
+// through a command rather than here. Without the variable the client
+// starts from its newest version and negotiates down no further than the
+// floor, which this never refuses.
+func checkAPIVersion(cli *client.Client) error {
+	version := cli.ClientVersion()
+	if !versions.LessThan(version, client.MinAPIVersion) {
+		return nil
+	}
+
+	return fmt.Errorf("docker: API version %s, set by %s, is older than the oldest this provider supports (%s): %w",
+		version, client.EnvOverrideAPIVersion, client.MinAPIVersion, invoke.ErrNotSupported)
 }
 
 // detectOS classifies the container's operating system by asking it,

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/moby/moby/client"
+	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/docker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -120,4 +121,43 @@ func minorVersion(version string) int {
 	}
 
 	return number
+}
+
+// TestNewRefusesAnAPIVersionForcedBelowTheFloor checks the floor holds
+// when DOCKER_API_VERSION names an older version.
+//
+// The client uses a version set that way as given: it neither negotiates
+// it nor checks it against its own floor. Left alone, a version below the
+// floor carries the provider to a daemon it does not support, and the
+// mismatch surfaces part-way through somebody's command rather than here.
+//
+//nolint:paralleltest // t.Setenv, which these need, forbids t.Parallel.
+func TestNewRefusesAnAPIVersionForcedBelowTheFloor(t *testing.T) {
+	connect := func(t *testing.T, version string) error {
+		t.Helper()
+
+		t.Setenv("DOCKER_API_VERSION", version)
+
+		daemon := httptest.NewServer(daemonServing(version))
+		t.Cleanup(daemon.Close)
+
+		env, err := docker.New(t.Context(), "a-container", docker.WithHost("tcp://"+daemon.Listener.Addr().String()))
+		if err == nil {
+			t.Cleanup(func() { _ = env.Close() })
+		}
+
+		return err
+	}
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("a version before the floor is refused", func(t *testing.T) {
+		require.ErrorIs(t, connect(t, "1.39"), invoke.ErrNotSupported,
+			"an API version forced below the documented floor must be refused, not used unchecked")
+	})
+
+	//nolint:paralleltest // t.Setenv forbids t.Parallel.
+	t.Run("the floor itself is accepted", func(t *testing.T) {
+		require.NoError(t, connect(t, documentedFloor),
+			"forcing the oldest supported version is a choice the provider can honor")
+	})
 }
