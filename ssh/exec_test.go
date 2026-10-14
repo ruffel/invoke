@@ -3,6 +3,7 @@ package ssh_test
 import (
 	"bytes"
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -448,4 +449,52 @@ func TestTeardownKillSurvivesADroppedSignal(t *testing.T) {
 			_ = proc.Close()
 		})
 	}
+}
+
+// TestSignalSurvivesADroppedDelivery checks that a signal sent straight
+// after Start reaches the command even when the server drops the first
+// attempt, as OpenSSH does before the session's child has made itself a
+// process group.
+func TestSignalSurvivesADroppedDelivery(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t, withDroppedSignals(1))
+	env := dialServer(t, srv)
+
+	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+	require.NoError(t, err)
+
+	defer func() { _ = proc.Close() }()
+
+	before := srv.exitsReported()
+
+	require.NoError(t, proc.Signal(invoke.SIGTERM))
+
+	require.Eventually(t, func() bool { return srv.exitsReported() > before },
+		exitReportBound, exitReportPoll,
+		"Signal reported success, but the command never received it")
+
+	_, waitErr := proc.Wait()
+
+	var exitErr *invoke.ExitError
+
+	require.ErrorAs(t, waitErr, &exitErr)
+	assert.Equal(t, invoke.SIGTERM, exitErr.Signal)
+	assert.Equal(t, int32(1), srv.signalsDropped.Load(), "the server must have dropped the first attempt")
+}
+
+// TestUndeliveredSignalIsNotSupported checks that a signal the server
+// keeps refusing is reported, never passed off as delivered.
+func TestUndeliveredSignalIsNotSupported(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t, withDroppedSignals(math.MaxInt32))
+	env := dialServer(t, srv)
+
+	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+	require.NoError(t, err)
+
+	defer func() { _ = proc.Close() }()
+
+	assert.ErrorIs(t, proc.Signal(invoke.SIGTERM), invoke.ErrNotSupported)
 }
