@@ -114,12 +114,13 @@ func (e *Environment) OS() invoke.TargetOS {
 // Signal delivery is declared with a caveat this provider cannot resolve
 // for itself. The protocol carries a signal request, and the servers this
 // library is tested against act on it — a real OpenSSH server and the
-// in-process one, both of which the signal contracts run against. But the
-// request is sent without asking for a reply, there being no answer worth
-// waiting for, so a server that discards it cannot be told apart from one
-// that obeyed. A container can be asked whether it holds a shell, which
-// is why the docker provider conditions this capability on the answer; a
-// server offers nothing equivalent to ask.
+// in-process one, both of which the signal contracts run against. The
+// request asks for a reply, so a server that refuses it is reported,
+// wrapping [invoke.ErrNotSupported]; but a reply is the server's word,
+// and one that confirms a signal it then discards cannot be told apart
+// from one that obeyed. A container can be asked whether it holds a
+// shell, which is why the docker provider conditions this capability on
+// the answer; a server offers nothing equivalent to ask.
 //
 // A server not known to honor signals can be put to the question
 // directly: run invoketest.Verify against it and the signal contracts

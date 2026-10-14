@@ -328,8 +328,13 @@ func (p *process) Signal(sig invoke.Signal) error {
 		return fmt.Errorf("ssh: signal %s: %w", sig, invoke.ErrNotSupported)
 	}
 
-	if err := p.session.Signal(ssh.Signal(sig)); err != nil {
+	delivered, err := p.deliverSignal(ssh.Signal(sig))
+	if err != nil {
 		return fmt.Errorf("ssh: signal %s: %w", sig, err)
+	}
+
+	if !delivered {
+		return fmt.Errorf("ssh: signal %s: the server did not deliver it: %w", sig, invoke.ErrNotSupported)
 	}
 
 	return nil
@@ -426,10 +431,10 @@ func (p *process) sweepEnvFile() {
 	p.env.removeRemoteFile(p.envFile)
 }
 
-// Teardown's kill is retried while the server reports it undelivered.
+// A signal is retried while the server reports it undelivered.
 const (
-	killAttempts   = 10
-	killRetryDelay = 20 * time.Millisecond
+	signalAttempts   = 10
+	signalRetryDelay = 20 * time.Millisecond
 )
 
 // signalRequest is the payload of a "signal" channel request (RFC 4254
@@ -438,31 +443,41 @@ type signalRequest struct {
 	Signal string
 }
 
-// kill ends the remote command, then closes its session.
+// deliverSignal sends sig to the remote command and reports whether the
+// server delivered it.
 //
 // OpenSSH delivers a signal with killpg on the session's pid, which only
-// becomes a process group once the forked child calls setsid. A kill
-// that arrives in between finds no group and is dropped — and closing the
-// session does not end the command either: sshd holds the channel open
-// until its child exits on its own. A dropped kill therefore held Close,
-// and cancellation, for the whole life of the command.
-//
-// So the kill asks for a reply, and is repeated while the server says it
-// was not delivered. A server that refuses signals outright still gets
-// the closed session once the attempts run out; that is all there is
-// left to ask with.
-func (p *process) kill() {
-	payload := ssh.Marshal(signalRequest{Signal: string(ssh.SIGKILL)})
+// becomes a process group once the forked child calls setsid. A signal
+// that arrives in between finds no group and is dropped, and a request
+// sent without asking for a reply never hears about it. So the request
+// asks for one, and is repeated while the server says the signal was not
+// delivered: past that window, a refusal is the server's answer.
+func (p *process) deliverSignal(sig ssh.Signal) (bool, error) {
+	payload := ssh.Marshal(signalRequest{Signal: string(sig)})
 
-	for range killAttempts {
-		delivered, err := p.session.SendRequest("signal", true, payload)
-		if err != nil || delivered {
-			break
+	for attempt := range signalAttempts {
+		if attempt > 0 {
+			time.Sleep(signalRetryDelay)
 		}
 
-		time.Sleep(killRetryDelay)
+		delivered, err := p.session.SendRequest("signal", true, payload)
+		if err != nil || delivered {
+			return delivered, err
+		}
 	}
 
+	return false, nil
+}
+
+// kill ends the remote command, then closes its session.
+//
+// The kill has to land: closing the session does not end the command,
+// since sshd holds the channel open until its child exits on its own. A
+// dropped kill therefore held Close, and cancellation, for the whole life
+// of the command. A server that refuses signals outright still gets the
+// closed session; that is all there is left to ask with.
+func (p *process) kill() {
+	_, _ = p.deliverSignal(ssh.SIGKILL)
 	_ = p.session.Close()
 }
 

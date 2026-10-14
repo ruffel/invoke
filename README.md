@@ -174,8 +174,9 @@ capability must work, and an undeclared one must fail with
 ¹ A container must have a shell for a signal to reach the right process.
 Without one the capability is not declared.
 
-² SSH carries the signal but offers no confirmation, so a server that
-discards it cannot be told from one that acted. The servers this is
+² SSH carries the signal and the server confirms it, so a refusal is
+reported as `ErrNotSupported`; but a server that confirms a signal and
+then discards it cannot be told from one that acted. The servers this is
 tested against — a real OpenSSH server, and the in-process one — honor
 it. For any other, run `invoketest` against it and the signal contracts
 will answer.
