@@ -89,6 +89,14 @@ type testServer struct {
 	// with AllowTcpForwarding no does.
 	refuseForwarding bool
 
+	// dropSignals is how many signal requests are still to be refused
+	// undelivered, as OpenSSH does when its killpg reaches a session whose
+	// child has not yet made itself a process group.
+	dropSignals atomic.Int32
+
+	// signalsDropped counts the signal requests refused that way.
+	signalsDropped atomic.Int32
+
 	mu          sync.Mutex
 	sessions    int
 	forwards    int
@@ -251,6 +259,13 @@ func withExtraHostKey(signer ssh.Signer) serverOption {
 // with AllowTcpForwarding no does.
 func withRefusedForwarding() serverOption {
 	return func(s *testServer) { s.refuseForwarding = true }
+}
+
+// withDroppedSignals refuses the first n signal requests without
+// delivering them, as OpenSSH does to a kill that lands between the
+// session's fork and its child's setsid.
+func withDroppedSignals(n int32) serverOption {
+	return func(s *testServer) { s.dropSignals.Store(n) }
 }
 
 // blackholeNow makes the server stop answering global requests while
@@ -605,8 +620,7 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 
 			reply(req, true)
 		case "signal":
-			state.forwardSignal(signalName(req.Payload))
-			reply(req, true)
+			s.handleSignal(state, req)
 		case "subsystem":
 			s.startSubsystem(channel, req)
 		default:
@@ -614,6 +628,20 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 			reply(req, false)
 		}
 	}
+}
+
+// handleSignal delivers a signal request to the session's command, unless
+// the server is still dropping them.
+func (s *testServer) handleSignal(state *sessionState, req *ssh.Request) {
+	if s.dropSignals.Add(-1) >= 0 {
+		s.signalsDropped.Add(1)
+		reply(req, false)
+
+		return
+	}
+
+	state.forwardSignal(signalName(req.Payload))
+	reply(req, true)
 }
 
 // startSubsystem answers a subsystem request according to the server's

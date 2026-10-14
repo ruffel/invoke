@@ -342,8 +342,7 @@ func (p *process) Close() error {
 		p.closedByUser.Store(true)
 
 		if !p.waitReturned.Load() {
-			_ = p.session.Signal(ssh.SIGKILL)
-			_ = p.session.Close()
+			p.kill()
 		}
 
 		_, _ = p.Wait()
@@ -427,6 +426,46 @@ func (p *process) sweepEnvFile() {
 	p.env.removeRemoteFile(p.envFile)
 }
 
+// Teardown's kill is retried while the server reports it undelivered.
+const (
+	killAttempts   = 10
+	killRetryDelay = 20 * time.Millisecond
+)
+
+// signalRequest is the payload of a "signal" channel request (RFC 4254
+// section 6.9).
+type signalRequest struct {
+	Signal string
+}
+
+// kill ends the remote command, then closes its session.
+//
+// OpenSSH delivers a signal with killpg on the session's pid, which only
+// becomes a process group once the forked child calls setsid. A kill
+// that arrives in between finds no group and is dropped — and closing the
+// session does not end the command either: sshd holds the channel open
+// until its child exits on its own. A dropped kill therefore held Close,
+// and cancellation, for the whole life of the command.
+//
+// So the kill asks for a reply, and is repeated while the server says it
+// was not delivered. A server that refuses signals outright still gets
+// the closed session once the attempts run out; that is all there is
+// left to ask with.
+func (p *process) kill() {
+	payload := ssh.Marshal(signalRequest{Signal: string(ssh.SIGKILL)})
+
+	for range killAttempts {
+		delivered, err := p.session.SendRequest("signal", true, payload)
+		if err != nil || delivered {
+			break
+		}
+
+		time.Sleep(killRetryDelay)
+	}
+
+	_ = p.session.Close()
+}
+
 // monitorContext kills the remote command when the start context is
 // canceled, so cancellation terminates work on the server rather than
 // merely unblocking the local Wait.
@@ -434,8 +473,7 @@ func (p *process) monitorContext(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		if !p.waitReturned.Load() {
-			_ = p.session.Signal(ssh.SIGKILL)
-			_ = p.session.Close()
+			p.kill()
 		}
 	case <-p.done:
 	}
