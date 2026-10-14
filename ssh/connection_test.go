@@ -450,3 +450,56 @@ func TestBlackholedConnectionUnblocksWaitAndClose(t *testing.T) {
 		t.Fatal("Close did not return on a blackholed connection")
 	}
 }
+
+// TestCloseReturnsWhenTheLinkDiesUnderARunningProcess checks Close returns
+// when the connection has died silently while a command is still running,
+// before anything else has noticed.
+//
+// Close kills each running command and waits for it, and on a dead link
+// that kill is answered by nobody. Only the keepalive discovers the link
+// is gone and closes it, which is what ends the wait, so Close has to
+// keep it running until the processes are torn down.
+func TestCloseReturnsWhenTheLinkDiesUnderARunningProcess(t *testing.T) {
+	t.Parallel()
+
+	const (
+		probeInterval = 100 * time.Millisecond
+		bound         = 8 * time.Second
+	)
+
+	srv := startTestServer(t)
+
+	// The link to the server, which the test can stop carrying traffic
+	// without closing anything.
+	link := startFrozenLink(t, srv.addr)
+
+	env, err := ssh.New(t.Context(), link.host(),
+		ssh.WithPort(link.port()),
+		ssh.WithUser("tester"),
+		ssh.WithPassword(testPassword),
+		ssh.WithHostKeyCallback(xssh.FixedHostKey(srv.hostKey)),
+		ssh.WithKeepAlive(probeInterval))
+	require.NoError(t, err)
+
+	proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+	require.NoError(t, err)
+
+	link.freeze()
+
+	closed := make(chan struct{})
+
+	go func() {
+		_ = env.Close()
+
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+	case <-time.After(bound):
+		t.Fatal("Close did not return: it waited on a process over a link nothing was watching")
+	}
+
+	_, waitErr := proc.Wait()
+	require.Error(t, waitErr, "a command torn down over a dead link cannot report success")
+}

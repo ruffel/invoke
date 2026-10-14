@@ -235,7 +235,9 @@ func WithCommandLineEnv() Option {
 // tighter bound measures scheduling noise rather than the link —
 // declares the connection dead and closes it, unblocking everything
 // still waiting on it, including Close. Zero means the default; a
-// negative interval disables probing.
+// negative interval disables probing, and with it that discovery: Close
+// then waits on a running command for as long as a dead link stays
+// silent.
 //
 // One probe covers a whole chain: it travels to the target over every hop,
 // so a jump host that dies takes the probe with it and is discovered on

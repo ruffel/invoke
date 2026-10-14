@@ -171,16 +171,21 @@ func (e *Environment) Close() error {
 
 	e.mu.Unlock()
 
-	// Stop probing and wait for the loop to finish before the connection
-	// goes away, so no probe outlives Close. The wait is bounded: a
-	// probe already in flight answers or times out within one interval.
+	// The processes go while the keepalive is still watching. Each Close
+	// kills its command and waits for the outcome, and on a link that has
+	// died without a close nothing answers either: the keepalive
+	// discovering the dead link and closing it is what ends those waits.
+	for _, p := range procs {
+		_ = p.Close()
+	}
+
+	// Then stop probing and wait for the loop to finish before the
+	// connection goes away, so no probe outlives Close. The wait is
+	// bounded: a probe already in flight answers or times out within one
+	// interval.
 	if e.stopKeepAlive != nil {
 		e.stopKeepAlive()
 		<-e.keepAliveDone
-	}
-
-	for _, p := range procs {
-		_ = p.Close()
 	}
 
 	return e.chain.Close()
