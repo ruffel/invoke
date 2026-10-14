@@ -632,6 +632,11 @@ func (s *testServer) handleSession(channel ssh.Channel, requests <-chan *ssh.Req
 
 // handleSignal delivers a signal request to the session's command, unless
 // the server is still dropping them.
+//
+// The reply goes before the signal, as it does from sshd, which answers
+// the request before it reaps the child. Signaling first let a command
+// the signal killed report its exit and close the channel ahead of the
+// reply, and the client's request then failed with EOF.
 func (s *testServer) handleSignal(state *sessionState, req *ssh.Request) {
 	if s.dropSignals.Add(-1) >= 0 {
 		s.signalsDropped.Add(1)
@@ -640,8 +645,8 @@ func (s *testServer) handleSignal(state *sessionState, req *ssh.Request) {
 		return
 	}
 
-	state.forwardSignal(signalName(req.Payload))
 	reply(req, true)
+	state.forwardSignal(signalName(req.Payload))
 }
 
 // startSubsystem answers a subsystem request according to the server's
