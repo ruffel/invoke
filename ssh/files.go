@@ -423,7 +423,7 @@ func (f sftpFS) Base(p string) string {
 
 // Contains reports whether p is root itself or lies under it.
 func (f sftpFS) Contains(root, p string) bool {
-	return p == root || strings.HasPrefix(p, root+"/")
+	return transfer.ContainsPath(root, p, "/")
 }
 
 // sftpCopyConcurrency is how many files a tree transfer copies at once

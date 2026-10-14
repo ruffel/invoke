@@ -176,3 +176,13 @@ func TestExtractCarriesAnOrdinaryTree(t *testing.T) {
 
 	assert.NotZero(t, info.Mode()&fs.ModeSymlink, "the link was not preserved as a link")
 }
+
+// TestContainsPathTreatsTheRootAsItsOwnBoundary checks a root that ends
+// in the separator, the filesystem root, contains its entries.
+func TestContainsPathTreatsTheRootAsItsOwnBoundary(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, containsPath("/", "/etc"), "an entry of / lies under it")
+	assert.True(t, containsPath("/srv", "/srv/data"), "an entry of /srv lies under it")
+	assert.False(t, containsPath("/srv", "/srvx"), "a sibling sharing a prefix does not")
+}

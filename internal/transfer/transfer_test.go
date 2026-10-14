@@ -889,3 +889,92 @@ func TestTreeCopyReportsTheCallersCancellation(t *testing.T) {
 	require.NoError(t, err, "listing the destination")
 	assert.Empty(t, entries, "no file completed, so a canceled copy must leave nothing behind")
 }
+
+// chrootFS presents a host directory as the whole filesystem, so a
+// transfer can be rooted at "/" without touching the real one. Only the
+// source side's reads are mapped, which is all a source is asked for.
+type chrootFS struct {
+	transfer.HostFS
+
+	base string
+}
+
+func (chrootFS) Abs(p string) (string, error) { return filepath.Clean(p), nil }
+
+func (c chrootFS) Lstat(p string) (fs.FileInfo, error)      { return os.Lstat(c.real(p)) }
+func (c chrootFS) Stat(p string) (fs.FileInfo, error)       { return os.Stat(c.real(p)) }
+func (c chrootFS) ReadDir(p string) ([]fs.FileInfo, error)  { return c.HostFS.ReadDir(c.real(p)) }
+func (c chrootFS) Open(p string) (transfer.ReadFile, error) { return c.HostFS.Open(c.real(p)) }
+func (c chrootFS) Readlink(p string) (string, error)        { return os.Readlink(c.real(p)) }
+
+func (c chrootFS) Resolve(p string) (string, error) {
+	resolved, err := c.HostFS.Resolve(c.real(p))
+	if err != nil {
+		return "", err
+	}
+
+	rel, err := filepath.Rel(c.base, resolved)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join("/", rel), nil
+}
+
+// real maps a path on the presented filesystem to the host.
+func (c chrootFS) real(p string) string { return filepath.Join(c.base, p) }
+
+// TestCopyRootedAtTheFilesystemRoot checks a tree whose root is "/" is
+// copied rather than having every entry refused as escaping it.
+//
+// The containment check appended a separator to the root before asking
+// whether an entry lay under it, and "/" plus a separator is "//", which
+// no entry starts with.
+func TestCopyRootedAtTheFilesystemRoot(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(base, "etc.conf"), []byte("rooted"), 0o600), "writing fixture")
+	require.NoError(t, os.Mkdir(filepath.Join(base, "sub"), 0o750), "mkdir")
+	require.NoError(t, os.WriteFile(filepath.Join(base, "sub", "deep.txt"), []byte("deeper"), 0o600), "writing fixture")
+
+	dst := filepath.Join(t.TempDir(), "copy")
+
+	err := transfer.Copy(t.Context(), chrootFS{base: base}, "/", transfer.HostFS{}, dst, invoke.TransferConfig{})
+	require.NoError(t, err, "a tree rooted at / must copy")
+
+	got, err := os.ReadFile(filepath.Join(dst, "etc.conf"))
+	require.NoError(t, err)
+	assert.Equal(t, "rooted", string(got))
+
+	got, err = os.ReadFile(filepath.Join(dst, "sub", "deep.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "deeper", string(got))
+}
+
+// TestContainsTreatsAFilesystemRootAsItsOwnBoundary checks the path
+// algebra both sides use: a root that already ends in its separator does
+// not get a second one.
+func TestContainsTreatsAFilesystemRootAsItsOwnBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		root, path, sep string
+		want            bool
+	}{
+		{"/", "/", "/", true},
+		{"/", "/etc", "/", true},
+		{"/", "/etc/passwd", "/", true},
+		{"/srv", "/srv", "/", true},
+		{"/srv", "/srv/data", "/", true},
+		{"/srv", "/srvx", "/", false},
+		{"/srv", "/", "/", false},
+		{`C:\`, `C:\Windows`, `\`, true},
+		{`C:\data`, `C:\data2`, `\`, false},
+	}
+
+	for _, tt := range tests {
+		assert.Equalf(t, tt.want, transfer.ContainsPath(tt.root, tt.path, tt.sep),
+			"ContainsPath(%q, %q, %q)", tt.root, tt.path, tt.sep)
+	}
+}
