@@ -334,12 +334,16 @@ func (s *sftpSession) close() {
 	client, session := s.client, s.session
 	s.mu.Unlock()
 
-	if client != nil {
-		_ = client.Close()
-	}
-
+	// The session goes first. The client's Close waits for its receive
+	// loop, which is reading from the server and ends only when the
+	// server answers or the channel closes: on a server that has stopped
+	// answering, closing the client first waits forever.
 	if session != nil {
 		_ = session.Close()
+	}
+
+	if client != nil {
+		_ = client.Close()
 	}
 }
 

@@ -209,6 +209,53 @@ func TestTransferCancelsWhileServerStalls(t *testing.T) {
 	waitForSessions(t, srv, 0)
 }
 
+// TestTransferCancelsWhenServerGoesQuietMidCopy checks a canceled transfer
+// returns when the server stops answering after the copy has begun.
+//
+// Unlike [TestTransferCancelsWhileServerStalls], the SFTP client exists by
+// then, so teardown has a client to close as well as a session — and the
+// client's Close waits for its receive loop, which is blocked reading
+// from the server that has gone quiet. Only closing the session ends that
+// read.
+func TestTransferCancelsWhenServerGoesQuietMidCopy(t *testing.T) {
+	t.Parallel()
+
+	srv := startTestServer(t, withMutedSFTP())
+	env := dialServer(t, srv)
+
+	src := filepath.Join(t.TempDir(), "file.txt")
+	require.NoError(t, os.WriteFile(src, []byte("payload"), 0o600), "writing fixture")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	done := make(chan error, 1)
+
+	go func() { done <- env.Upload(ctx, src, filepath.Join(t.TempDir(), "file.txt")) }()
+
+	// Canceled only once the server has dropped an answer: earlier, and
+	// there is no client yet, which is the case the stall test covers.
+	select {
+	case <-srv.muted:
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "the server never received a request after the handshake")
+	}
+
+	cancel()
+
+	// The copy is given its idle grace to unwind before the session is
+	// pulled, so the budget allows for that.
+	select {
+	case err := <-done:
+		assert.ErrorIs(t, err, context.Canceled, "Upload to a server that went quiet")
+	case <-time.After(15 * time.Second):
+		require.Fail(t,
+			"Upload did not return after its context expired; teardown is waiting on a server that went quiet")
+	}
+
+	waitForSessions(t, srv, 0)
+}
+
 // waitForSessions waits for the server's open session count to settle at
 // want, so a teardown that is merely asynchronous is not read as a leak.
 func waitForSessions(t *testing.T, srv *testServer, want int) {
