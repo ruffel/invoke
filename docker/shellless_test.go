@@ -130,6 +130,33 @@ func TestShelllessCloseAndCancelDoNotWaitForTheCommand(t *testing.T) {
 		assert.Contains(t, err.Error(), "abandoned", "the outcome must not claim the command was ended")
 	})
 
+	// A terminal is one bidirectional stream, so its input is not ended on
+	// its own; letting go of the whole attachment has to be enough.
+	t.Run("close-under-a-terminal", func(t *testing.T) {
+		t.Parallel()
+
+		proc, err := env.Start(t.Context(), invoke.New("sleep", "300"), invoke.IO{TTY: &invoke.TTY{}})
+		require.NoError(t, err, "a command needs no shell to run under a terminal")
+
+		closed := make(chan struct{})
+
+		go func() {
+			_ = proc.Close()
+
+			close(closed)
+		}()
+
+		select {
+		case <-closed:
+		case <-time.After(bound):
+			t.Fatal("Close waited for a command under a terminal it had no way to stop")
+		}
+
+		_, err = proc.Wait()
+		require.ErrorIs(t, err, invoke.ErrClosed, "a command let go by Close")
+		assert.Contains(t, err.Error(), "abandoned", "the outcome must not claim the command was ended")
+	})
+
 	t.Run("cancel", func(t *testing.T) {
 		t.Parallel()
 
