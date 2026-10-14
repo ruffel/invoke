@@ -252,7 +252,9 @@ func (e *Environment) wrapCommand(cmd invoke.Command) ([]string, string) {
 	// command, so the command inherits it.
 	script := `echo $$ > "$1"; shift; exec "$@"`
 
-	argv := append([]string{"sh", "-c", script, "sh", pidFile, cmd.Path}, cmd.Args...)
+	// The shell by its own path, not by name: the exec runs with the
+	// caller's environment, whose PATH need not list it.
+	argv := append([]string{e.shell, "-c", script, "sh", pidFile, cmd.Path}, cmd.Args...)
 
 	return argv, pidFile
 }

@@ -65,10 +65,12 @@
 // and is reachable everywhere the name can be written. A script needing
 // more than the subset belongs in a handler, or on a real target.
 //
-// Every command, builtin or handler, lives in /usr/bin, which is where
-// LookPath reports it. Start finds a bare name only when the PATH the
-// command runs with lists /usr/bin: a PATH in Command.Env, or the base
-// environment's. A script's own changes to PATH are not followed.
+// The builtins, and handlers registered under a bare name, live in
+// /usr/bin, which is where LookPath reports them. Start finds a bare
+// name only when the PATH the command runs with lists /usr/bin: a PATH
+// in Command.Env, or the base environment's. A handler registered under
+// a path lives at that path, and is reached by it whatever PATH says. A
+// script's own changes to PATH are not followed.
 package fake
 
 import (
@@ -335,15 +337,15 @@ func (e *Environment) resolveCommand(pathStr string) (Handler, bool) {
 	return nil, false
 }
 
-// commandHome is where every command the fake knows lives, as LookPath
-// reports it.
+// commandHome is where the builtins and bare-named handlers live, as
+// LookPath reports them.
 const commandHome = "/usr/bin"
 
 // onPath reports whether a bare command name is reachable through the
 // PATH the command runs with: the caller's, when Command.Env sets one,
-// or the base environment's. Every known command lives in commandHome,
-// so a PATH that does not list it finds none of them, as on a real
-// target. A name with a slash is not looked up.
+// or the base environment's. Every bare-named command lives in
+// commandHome, so a PATH that does not list it finds none of them, as on
+// a real target. A name with a slash is not looked up.
 func (e *Environment) onPath(cmd invoke.Command) bool {
 	if strings.Contains(cmd.Path, "/") {
 		return true
