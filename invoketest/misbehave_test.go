@@ -45,6 +45,7 @@ type defects struct {
 	lieOS              bool // swap the reported OSLinux/OSDarwin
 	bareLookPath       bool // return LookPath results without a path separator
 	shell127AsNotFound bool // reclassify a shell exit 127 as ErrNotFound
+	resolveOnOwnPath   bool // find a bare command through the target's PATH, ignoring the caller's
 
 	// Lifecycle defects.
 	ignoreCancel         bool // detach the process from the caller's context
@@ -146,6 +147,8 @@ func (m *misbehaveEnv) Start(ctx context.Context, cmd invoke.Command, stdio invo
 		stdio.Stdin = tracked
 		stdinReturned = tracked.returned
 	}
+
+	cmd = m.resolveOnOwnPath(ctx, cmd)
 
 	proc, err := m.base.Start(startCtx, m.mutateCommand(cmd), stdio)
 	if err != nil {
@@ -479,6 +482,21 @@ func (m *misbehaveEnv) release() {
 	if m.active > 0 {
 		m.active--
 	}
+}
+
+// resolveOnOwnPath applies the resolveOnOwnPath defect, local's old
+// mistake: the name is resolved before the caller's environment exists,
+// so a PATH in it reaches the command without having found it.
+func (m *misbehaveEnv) resolveOnOwnPath(ctx context.Context, cmd invoke.Command) invoke.Command {
+	if !m.d.resolveOnOwnPath || strings.Contains(cmd.Path, "/") {
+		return cmd
+	}
+
+	if found, err := m.base.LookPath(ctx, cmd.Path); err == nil {
+		cmd.Path = found
+	}
+
+	return cmd
 }
 
 func (m *misbehaveEnv) mutateCommand(cmd invoke.Command) invoke.Command {
@@ -891,6 +909,7 @@ func defectCatalog() []defectCase {
 		{name: "truncated large stdin", contract: "core/large-stdin-is-delivered", defects: defects{truncateStdin: true}},
 		{name: "dropped env", contract: "core/env-overlays-base", defects: defects{dropEnv: true}},
 		{name: "first-wins env", contract: "core/env-override-wins", defects: defects{reverseEnv: true}},
+		{name: "command found on the target's own PATH", contract: "core/env-path-resolves-command", defects: defects{resolveOnOwnPath: true}},
 		{name: "ignored workdir", contract: "core/workdir-is-honored", defects: defects{ignoreWorkdir: true}},
 		{name: "shell-joined argv", contract: "core/args-are-literal", defects: defects{shellJoinArgs: true}},
 		{name: "exit-zero lie", contract: "core/exit-code-is-reported", defects: defects{exitZeroLie: true}},

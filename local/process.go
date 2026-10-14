@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,14 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	}
 
 	execCmd := exec.CommandContext(ctx, cmd.Path, cmd.Args...)
+
+	// A bare name is found through the caller's PATH when they set one.
+	// A failed lookup travels in Err, which Start reports as os/exec's
+	// own lookup failure would be.
+	if pathList, ok := callerPath(cmd.Env); ok && filepath.Base(cmd.Path) == cmd.Path {
+		execCmd.Path, execCmd.Err = resolveIn(cmd.Path, pathList)
+	}
+
 	execCmd.Dir = cmd.Dir
 	execCmd.Stdout = stdio.Stdout
 	execCmd.Stderr = stdio.Stderr

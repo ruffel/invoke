@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"bytes"
+	"path"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ func coreContracts() []TestCase {
 		coreLargeOutputIsComplete(),
 		coreEnvOverlaysBase(),
 		coreEnvOverrideWins(),
+		coreEnvPathResolvesCommand(),
 		coreWorkdirIsHonored(),
 		coreArgsAreLiteral(),
 		coreExitCodeIsReported(),
@@ -146,6 +148,53 @@ func coreEnvOverrideWins() TestCase {
 			home, dup, _ := strings.Cut(stdout, "|")
 			assert.Equal(t, "/overridden", home, "$HOME: the overlay value must win over the base")
 			assert.Equal(t, "second", dup, "$INVOKE_DUP: the last of duplicate keys must win")
+		},
+	}
+}
+
+// coreEnvPathResolvesCommand pins what a PATH in Command.Env means: it is
+// the PATH the command is found through, as well as the one it runs
+// with.
+//
+// The alternative reading, where the target's own PATH finds the command
+// and the caller's only reaches it afterwards, makes Command.Env say one
+// thing and do another. It also makes providers disagree, since some
+// resolve the name inside the environment the caller built and some
+// before it exists.
+func coreEnvPathResolvesCommand() TestCase {
+	return TestCase{
+		Category:    CategoryCore,
+		Name:        "env-path-resolves-command",
+		Description: "A PATH in Command.Env is the one a bare command name is resolved against",
+		Run: func(t T, env invoke.Environment) {
+			found, err := env.LookPath(t.Context(), "true")
+			require.NoError(t, err, "the target needs true for this contract")
+
+			nowhere := "/invoke-no-such-dir-" + token(t)
+
+			// The caller's PATH lists where true lives, after a directory
+			// that does not exist: the command is found through it.
+			listed := invoke.New("true")
+			listed.Env = []string{"PATH=" + nowhere + ":" + path.Dir(found)}
+
+			outcome, _, _ := runCapture(t, env, listed)
+			require.NoError(t, outcome.err, "true is on the caller's PATH, so it must run")
+
+			// The caller's PATH lists nowhere true lives: the command is
+			// not found, whatever the target's own PATH would have said.
+			unlisted := invoke.New("true")
+			unlisted.Env = []string{"PATH=" + nowhere}
+
+			proc, err := env.Start(t.Context(), unlisted, invoke.IO{})
+			if err == nil {
+				outcome := waitOrTimeout(t, proc)
+				_ = proc.Close()
+
+				require.Failf(t, "the target's own PATH found the command",
+					"true is not on the caller's PATH %q, yet it ran (%v)", nowhere, outcome.err)
+			}
+
+			assert.ErrorIs(t, err, invoke.ErrNotFound, "a command missing from the caller's PATH")
 		},
 	}
 }

@@ -42,8 +42,9 @@ type Environment struct {
 	os     invoke.TargetOS
 
 	// hasShell records whether the container has a shell, which signal
-	// delivery depends on.
+	// delivery depends on, and shell is where it lives.
 	hasShell bool
+	shell    string
 
 	mu     sync.Mutex
 	closed bool
@@ -108,7 +109,7 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	}
 
 	env.os = env.detectOS(ctx)
-	env.hasShell = env.detectShell(ctx)
+	env.shell, env.hasShell = env.detectShell(ctx)
 
 	return env, nil
 }
@@ -145,7 +146,15 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 		return "", fmt.Errorf("docker: lookpath %q: container has no shell: %w", name, invoke.ErrNotSupported)
 	}
 
-	out, code, err := e.runRaw(ctx, []string{"sh", "-c", `command -v "$1"`, "sh", name})
+	// Walked rather than asked of "command -v", which reports a shell
+	// builtin by its bare name: on a busybox image even "true" is one,
+	// and a bare name is not a path anything can exec.
+	script := `case "$1" in
+*/*) [ -f "$1" ] && [ -x "$1" ] && printf '%s\n' "$1" && exit 0; exit 1 ;;
+*) ` + pathWalkFor(`$1`, `printf '%s\n' "$d/$1"; exit 0`, `exit 1`) + ` ;;
+esac`
+
+	out, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", name})
 	if err != nil {
 		return "", fmt.Errorf("docker: lookpath %q: %w", name, err)
 	}
@@ -250,15 +259,31 @@ func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	}
 }
 
-// detectShell reports whether the container has a shell, which signal
-// delivery and path lookup depend on.
-func (e *Environment) detectShell(ctx context.Context) bool {
+// detectShell reports where the container's shell is, and whether it has
+// one, which signal delivery and path lookup depend on.
+//
+// The path is found under the container's own PATH, once, because the
+// wrapper every command runs under is started with the caller's
+// environment, and so with the caller's PATH. A PATH naming only the
+// caller's own tools has no sh on it, and the wrapper could not start.
+// A shell that ran but cannot be found on its own PATH is still a shell,
+// and is named as it was found.
+func (e *Environment) detectShell(ctx context.Context) (string, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	_, code, err := e.runRaw(probeCtx, []string{"sh", "-c", "exit 0"})
+	script := pathWalkFor(`$1`, `printf '%s\n' "$d/$1"; exit 0`, `exit 0`)
 
-	return err == nil && code == 0
+	out, code, err := e.runRaw(probeCtx, []string{"sh", "-c", script, "sh", "sh"})
+	if err != nil || code != 0 {
+		return "", false
+	}
+
+	if found := strings.TrimSpace(out); found != "" {
+		return found, true
+	}
+
+	return "sh", true
 }
 
 func (e *Environment) checkOpen(op string) error {
