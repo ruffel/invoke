@@ -128,18 +128,32 @@ func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 		return nil
 	}
 
-	// A name is resolved through PATH, which only ever yields something
-	// executable. A path is checked directly, because "command -v" given
-	// a path answers whether the file exists on some shells and whether
-	// it can be executed on others — and the first answer would let a
-	// file that cannot run reach the caller as a runtime failure instead.
-	script := `if [ -n "$1" ] && ! cd "$1"; then exit 91; fi
+	// The check resolves the executable where the command will be: the
+	// daemon finds it through the exec's own environment, so a PATH the
+	// caller supplies is the one the check walks too. Otherwise the two
+	// disagree, refusing a runnable command or waving through one that
+	// resolves elsewhere at run time.
+	//
+	// A name is resolved by walking PATH for executable files, as every
+	// provider resolves one. "command -v" answers for shell builtins too,
+	// so it blesses a bare "cd" that no exec could run. A path is checked
+	// directly, because "command -v" given a path answers whether the
+	// file exists on some shells and whether it can be executed on others.
+	script := `if [ -n "$3" ]; then PATH=$4; export PATH; fi
+if [ -n "$1" ] && ! cd "$1"; then exit 91; fi
 case "$2" in
 */*) [ -f "$2" ] && [ -x "$2" ] || exit 92 ;;
-*) command -v "$2" >/dev/null 2>&1 || exit 92 ;;
+*) ` + pathWalk(`exit 0`, `exit 92`) + ` ;;
 esac`
 
-	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", cmd.Dir, cmd.Path})
+	callerPath, hasPath := envValue(cmd.Env, "PATH")
+
+	set := ""
+	if hasPath {
+		set = "1"
+	}
+
+	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", cmd.Dir, cmd.Path, set, callerPath})
 	if err != nil {
 		return fmt.Errorf("docker: start: %w", err)
 	}
@@ -152,6 +166,33 @@ esac`
 	default:
 		return nil
 	}
+}
+
+// pathWalk walks PATH for the pre-flight check's command name, $2.
+func pathWalk(hit, miss string) string {
+	return pathWalkFor(`$2`, hit, miss)
+}
+
+// pathWalkFor walks PATH for the name held in the positional parameter
+// param, files only, running hit on the first executable match and miss
+// when nothing matched. $d holds the matching directory in hit.
+func pathWalkFor(param, hit, miss string) string {
+	return `IFS=:; for d in $PATH; do [ -f "$d/` + param + `" ] && [ -x "$d/` + param + `" ] && { ` + hit +
+		`; }; done; ` + miss
+}
+
+// envValue returns the last value name carries in env, honoring the
+// last-wins rule the delivered environment has.
+func envValue(env []string, name string) (string, bool) {
+	value, found := "", false
+
+	for _, pair := range env {
+		if key, v, ok := strings.Cut(pair, "="); ok && key == name {
+			value, found = v, true
+		}
+	}
+
+	return value, found
 }
 
 // Exit codes the pre-flight check uses to tell its two failures apart.

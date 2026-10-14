@@ -145,7 +145,15 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 		return "", fmt.Errorf("docker: lookpath %q: container has no shell: %w", name, invoke.ErrNotSupported)
 	}
 
-	out, code, err := e.runRaw(ctx, []string{"sh", "-c", `command -v "$1"`, "sh", name})
+	// Walked rather than asked of "command -v", which reports a shell
+	// builtin by its bare name: on a busybox image even "true" is one,
+	// and a bare name is not a path anything can exec.
+	script := `case "$1" in
+*/*) [ -f "$1" ] && [ -x "$1" ] && printf '%s\n' "$1" && exit 0; exit 1 ;;
+*) ` + pathWalkFor(`$1`, `printf '%s\n' "$d/$1"; exit 0`, `exit 1`) + ` ;;
+esac`
+
+	out, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", name})
 	if err != nil {
 		return "", fmt.Errorf("docker: lookpath %q: %w", name, err)
 	}

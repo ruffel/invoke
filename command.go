@@ -24,6 +24,10 @@ type Command struct {
 
 	// Env lists additional environment variables in "KEY=VALUE" form,
 	// applied over the target's base environment.
+	//
+	// A PATH here is the one a bare Path is resolved against, as well as
+	// the one the command runs with: a name it does not list is not
+	// found, whatever the target's own PATH holds.
 	Env []string
 
 	// Dir is the working directory on the target. Empty means the
