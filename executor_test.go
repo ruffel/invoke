@@ -1,6 +1,7 @@
 package invoke_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/fake"
+	"github.com/ruffel/invoke/local"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -660,6 +662,59 @@ func TestLinesDeliversEachLine(t *testing.T) {
 
 	assert.Equal(t, 0, res.ExitCode)
 	assert.Equal(t, []string{"a", "b", "c"}, lines)
+}
+
+func TestLinesFailsALineTooLongRatherThanHanging(t *testing.T) {
+	t.Parallel()
+
+	// A line past the 1 MiB limit, with more output after it, so the
+	// provider still has bytes to write once the scanner has given up.
+	long := strings.Repeat("a", 2<<20) + "\nafter\n"
+
+	tests := map[string]func(t *testing.T) invoke.Environment{
+		// Writes from inside Start and ignores the context, so only the
+		// stream's read end giving way can unblock it.
+		"writer-ignores-context": func(*testing.T) invoke.Environment {
+			return &scriptEnv{outcome: []scriptOutcome{{onStdout: long}}}
+		},
+		// A real pipe and a real process, still writing when the line
+		// fails.
+		"local": func(t *testing.T) invoke.Environment {
+			t.Helper()
+
+			env, err := local.New()
+			require.NoError(t, err)
+
+			return env
+		},
+	}
+
+	for name, newEnv := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newEnv(t)
+
+			t.Cleanup(func() { _ = env.Close() })
+
+			exec := invoke.NewExecutor(env)
+			cmd := invoke.Shell("head -c 2097152 /dev/zero | tr '\\0' a; echo; echo after")
+
+			done := make(chan error, 1)
+
+			go func() {
+				_, err := exec.Lines(t.Context(), cmd, func(string) {})
+				done <- err
+			}()
+
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, bufio.ErrTooLong)
+			case <-time.After(30 * time.Second):
+				t.Fatal("Lines did not return after a line over its limit")
+			}
+		})
+	}
 }
 
 func TestExecutorUploadRetriesTransportErrors(t *testing.T) {
