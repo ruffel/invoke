@@ -13,9 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/client"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,12 +47,12 @@ func daemonHost(t *testing.T) string {
 func newClient(t *testing.T) *client.Client {
 	t.Helper()
 
-	opts := []client.Opt{client.FromEnv, client.WithAPIVersionNegotiation()}
+	opts := []client.Opt{client.FromEnv}
 	if host := daemonHost(t); host != "" {
 		opts = append(opts, client.WithHost(host))
 	}
 
-	cli, err := client.NewClientWithOpts(opts...)
+	cli, err := client.New(opts...)
 	require.NoError(t, err, "connecting to the daemon")
 
 	return cli
@@ -79,20 +78,24 @@ func startContainerWith(t *testing.T, hostCfg *container.HostConfig) string {
 
 	pullImage(ctx, t, cli)
 
-	created, err := cli.ContainerCreate(ctx, &container.Config{
-		Image: testImage,
-		// Idle forever: the contracts exec into a running container.
-		Cmd: []string{"sleep", "infinity"},
-	}, hostCfg, nil, nil, "")
+	created, err := cli.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Config: &container.Config{
+			Image: testImage,
+			// Idle forever: the contracts exec into a running container.
+			Cmd: []string{"sleep", "infinity"},
+		},
+		HostConfig: hostCfg,
+	})
 	require.NoError(t, err, "creating the container")
 
-	require.NoError(t, cli.ContainerStart(ctx, created.ID, container.StartOptions{}), "starting the container")
+	_, err = cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{})
+	require.NoError(t, err, "starting the container")
 
 	t.Cleanup(func() {
 		removeCtx, removeCancel := context.WithTimeout(context.Background(), time.Minute)
 		defer removeCancel()
 
-		_ = cli.ContainerRemove(removeCtx, created.ID, container.RemoveOptions{Force: true})
+		_, _ = cli.ContainerRemove(removeCtx, created.ID, client.ContainerRemoveOptions{Force: true})
 		_ = cli.Close()
 	})
 
@@ -107,7 +110,7 @@ func pullImage(ctx context.Context, t *testing.T, cli *client.Client) {
 		return
 	}
 
-	body, err := cli.ImagePull(ctx, testImage, image.PullOptions{})
+	body, err := cli.ImagePull(ctx, testImage, client.ImagePullOptions{})
 	require.NoError(t, err, "pulling %s", testImage)
 
 	defer func() { _ = body.Close() }()

@@ -11,9 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/client"
 	"github.com/ruffel/invoke"
 )
 
@@ -24,7 +23,7 @@ type process struct {
 	pidFile string
 	started time.Time
 
-	attach  types.HijackedResponse
+	attach  client.ExecAttachResult
 	copied  chan struct{}
 	copyErr error
 
@@ -73,7 +72,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
-	attach, err := e.client.ContainerExecAttach(ctx, execID, container.ExecAttachOptions{Tty: stdio.TTY != nil})
+	attach, err := e.client.ExecAttach(ctx, execID, client.ExecAttachOptions{TTY: stdio.TTY != nil})
 	if err != nil {
 		return nil, classifyStart(err)
 	}
@@ -163,7 +162,7 @@ const (
 // is not attached separately when one is requested; there is nothing left
 // on it to carry.
 func (e *Environment) createExec(ctx context.Context, cmd invoke.Command, argv []string, tty *invoke.TTY) (string, error) {
-	opts := container.ExecOptions{
+	opts := client.ExecCreateOptions{
 		User:         e.cfg.User,
 		Privileged:   e.cfg.Privileged,
 		AttachStdin:  true,
@@ -176,11 +175,11 @@ func (e *Environment) createExec(ctx context.Context, cmd invoke.Command, argv [
 
 	if tty != nil {
 		cols, rows := tty.Size()
-		opts.Tty = true
-		opts.ConsoleSize = &[2]uint{uint(rows), uint(cols)} //nolint:gosec // Terminal dimensions are small positives.
+		opts.TTY = true
+		opts.ConsoleSize = client.ConsoleSize{Height: uint(rows), Width: uint(cols)} //nolint:gosec // Terminal dimensions are small positives.
 	}
 
-	resp, err := e.client.ContainerExecCreate(ctx, e.id, opts)
+	resp, err := e.client.ExecCreate(ctx, e.id, opts)
 	if err != nil {
 		return "", classifyStart(err)
 	}
@@ -457,7 +456,7 @@ func (p *process) reportedExit(exitCode int, duration time.Duration) (invoke.Res
 
 // inspect reports the finished command's status, allowing for the daemon
 // briefly still calling it running after the stream has closed.
-func (p *process) inspect() (container.ExecInspect, error) {
+func (p *process) inspect() (client.ExecInspectResult, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
 	defer cancel()
 
@@ -469,13 +468,13 @@ func (p *process) inspect() (container.ExecInspect, error) {
 // daemon still calls the command running. An inspect answered inside
 // that window carries exit code zero, so trusting one mistakes an
 // unfinished command for a successful one.
-func (e *Environment) settleInspect(ctx context.Context, execID string) (container.ExecInspect, error) {
+func (e *Environment) settleInspect(ctx context.Context, execID string) (client.ExecInspectResult, error) {
 	const settleInterval = 5 * time.Millisecond
 
 	for {
-		inspect, err := e.client.ContainerExecInspect(ctx, execID)
+		inspect, err := e.client.ExecInspect(ctx, execID, client.ExecInspectOptions{})
 		if err != nil {
-			return container.ExecInspect{}, &invoke.TransportError{Op: "inspect", Err: err}
+			return client.ExecInspectResult{}, &invoke.TransportError{Op: "inspect", Err: err}
 		}
 
 		if !inspect.Running {
@@ -487,7 +486,7 @@ func (e *Environment) settleInspect(ctx context.Context, execID string) (contain
 			// Report the wait as unresolved rather than inventing a
 			// status: an exit code of zero beside an error is how a
 			// failure gets mistaken for success.
-			return container.ExecInspect{}, &invoke.TransportError{
+			return client.ExecInspectResult{}, &invoke.TransportError{
 				Op:  "inspect",
 				Err: errors.New("the daemon still reports the command running after its output ended"),
 			}
@@ -531,7 +530,7 @@ func (p *process) cleanupPIDFile() {
 // runRaw runs argv in the container and returns its combined output and
 // exit code. It backs path lookup, shell detection, and signal delivery.
 func (e *Environment) runRaw(ctx context.Context, argv []string) (string, int, error) {
-	resp, err := e.client.ContainerExecCreate(ctx, e.id, container.ExecOptions{
+	resp, err := e.client.ExecCreate(ctx, e.id, client.ExecCreateOptions{
 		AttachStdout: true,
 		AttachStderr: true,
 		User:         e.cfg.User,
@@ -541,7 +540,7 @@ func (e *Environment) runRaw(ctx context.Context, argv []string) (string, int, e
 		return "", -1, &invoke.TransportError{Op: "exec", Err: err}
 	}
 
-	attach, err := e.client.ContainerExecAttach(ctx, resp.ID, container.ExecAttachOptions{})
+	attach, err := e.client.ExecAttach(ctx, resp.ID, client.ExecAttachOptions{})
 	if err != nil {
 		return "", -1, &invoke.TransportError{Op: "exec", Err: err}
 	}

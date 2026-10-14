@@ -248,6 +248,11 @@ them.
 staging transfers. Without one, both report `ErrNotSupported` rather than
 misbehaving.
 
+**Docker needs Engine 19.03 or newer.** The provider talks to the daemon
+through Docker's own client library, which goes no lower than API version
+1.40 — the version 19.03 introduced. An older daemon is refused when the
+environment is created.
+
 **A command can outlive its own exit.** Something it left running may still
 hold its output open, so `Wait` gives up after a grace period rather than
 blocking forever. `local.WithTerminationGrace` sets how long that is; the
