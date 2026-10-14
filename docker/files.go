@@ -30,6 +30,13 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		return err
 	}
 
+	// Staging and the move into place run in the container, through its
+	// shell. Download needs neither: the archive is unpacked and placed
+	// on this side.
+	if !e.hasShell {
+		return fmt.Errorf("docker: upload: container has no shell to stage the transfer: %w", invoke.ErrNotSupported)
+	}
+
 	dst, err := normalizeRemote(remotePath)
 	if err != nil {
 		return fmt.Errorf("docker: upload: %w", err)
@@ -124,10 +131,6 @@ func (e *Environment) beginTransfer(ctx context.Context, op string) error {
 
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("docker: %s: %w", op, err)
-	}
-
-	if !e.hasShell {
-		return fmt.Errorf("docker: %s: container has no shell to stage the transfer: %w", op, invoke.ErrNotSupported)
 	}
 
 	return nil
