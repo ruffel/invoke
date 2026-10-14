@@ -91,11 +91,19 @@ func exportPrologue(pairs []string) string {
 // special built-in, and a POSIX shell aborts outright when one fails,
 // skipping any || that was waiting to catch it — the guard would never
 // fire from where it looks like it belongs.
+//
+// The file is removed under the session's own PATH rather than the one
+// it just set. A caller's PATH that names only their own tools has no rm
+// on it, and the file, secrets and all, stayed where it was. Saving and
+// restoring PATH costs no process, unlike asking where rm is, and
+// unlike command -p it finds rm wherever this host keeps it.
 func sourcePrologue(path string) string {
 	quoted := quoteArg(path)
 
 	return "[ -r " + quoted + " ] || exit " + strconv.Itoa(envDeliveryFailed) + "; " +
-		". " + quoted + "; rm -f " + quoted + "; "
+		"__invoke_path=$PATH; . " + quoted + "; " +
+		"__invoke_caller_path=$PATH; PATH=$__invoke_path; rm -f " + quoted + "; " +
+		"PATH=$__invoke_caller_path; unset __invoke_path __invoke_caller_path; "
 }
 
 // Exit codes used by the pre-flight check to distinguish a missing working
