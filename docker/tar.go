@@ -240,9 +240,20 @@ func writeFollowedLink(
 }
 
 // containsPath reports whether p is root or lies under it, using host
-// path rules.
+// path rules. A root that already ends in the separator, the filesystem
+// root, is its own boundary: appending another would make "//", which
+// nothing under it starts with.
 func containsPath(root, p string) bool {
-	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+	if p == root {
+		return true
+	}
+
+	boundary := root
+	if !strings.HasSuffix(boundary, string(filepath.Separator)) {
+		boundary += string(filepath.Separator)
+	}
+
+	return strings.HasPrefix(p, boundary)
 }
 
 // ctxReader fails the next read once the context is done, so a transfer

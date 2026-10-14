@@ -98,3 +98,12 @@ func TestUnwindDoesNotWaitBeforeTheCopyHasASession(t *testing.T) {
 		require.Fail(t, "unwind waited out a grace on a session the copy never had")
 	}
 }
+
+// TestSFTPContainsTreatsTheRootAsItsOwnBoundary checks the remote side's
+// path algebra places entries under "/" inside it.
+func TestSFTPContainsTreatsTheRootAsItsOwnBoundary(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, sftpFS{}.Contains("/", "/etc"), "an entry of / lies under it")
+	assert.False(t, sftpFS{}.Contains("/srv", "/srvx"), "a sibling sharing a prefix does not")
+}

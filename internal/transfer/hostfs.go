@@ -36,7 +36,26 @@ func (HostFS) Base(path string) string {
 
 // Contains reports whether path is root itself or lies under it.
 func (HostFS) Contains(root, path string) bool {
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
+	return ContainsPath(root, path, string(filepath.Separator))
+}
+
+// ContainsPath reports whether path is root itself or lies under it, for
+// clean paths whose elements sep separates.
+//
+// The boundary is root followed by sep, so "/srv" does not contain
+// "/srvx". A root that already ends in sep is its own boundary: that is
+// the filesystem root, "/" or `C:\`, and appending another made "//",
+// which nothing under it starts with.
+func ContainsPath(root, path, sep string) bool {
+	if path == root {
+		return true
+	}
+
+	if !strings.HasSuffix(root, sep) {
+		root += sep
+	}
+
+	return strings.HasPrefix(path, root)
 }
 
 // Lstat stats path without following a trailing symlink.

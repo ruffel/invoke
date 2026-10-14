@@ -9,9 +9,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/transfer"
 )
 
 // Upload copies a real host file or tree into the fake target's virtual
@@ -402,5 +402,5 @@ func downloadFile(ctx context.Context, absDst, vpath string, node vnode, cfg inv
 }
 
 func hostContains(root, p string) bool {
-	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
+	return transfer.ContainsPath(root, p, string(filepath.Separator))
 }
