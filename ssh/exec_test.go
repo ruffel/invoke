@@ -5,6 +5,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -328,6 +329,51 @@ func TestFileEnvRouteDeliversAndCleansUp(t *testing.T) {
 	for _, line := range srv.recordedExecs() {
 		assert.NotContains(t, line, secret, "the secret appeared in a remote command line")
 	}
+}
+
+// TestFileEnvRouteCleansUpWithoutRmOnTheCallersPath checks the delivery
+// file is removed when the PATH the caller sets has no rm on it.
+//
+// The file is removed after it is sourced, so the removal runs with the
+// caller's environment in force, PATH included. A PATH that carries only
+// the caller's own tools is ordinary, and it left the file, secrets and
+// all, in /tmp.
+func TestFileEnvRouteCleansUpWithoutRmOnTheCallersPath(t *testing.T) {
+	t.Parallel()
+
+	const secret = "no-rm-value"
+
+	printenv, err := exec.LookPath("printenv")
+	require.NoError(t, err, "the host needs printenv for this test")
+
+	bin := t.TempDir()
+	require.NoError(t, os.Symlink(printenv, filepath.Join(bin, "printenv")), "linking the caller's one tool")
+
+	srv := startTestServer(t, withRefusedEnv())
+	env := dialServer(t, srv)
+
+	cmd := invoke.New("printenv", "TOKEN")
+	cmd.Env = []string{"PATH=" + bin, "TOKEN=" + secret}
+
+	out, result, err := runOutput(t, env, cmd)
+	require.NoError(t, err)
+	require.Equal(t, 0, result.ExitCode, "the variable did not reach the command")
+	assert.Equal(t, secret, strings.TrimSpace(out), "the variable did not reach the command")
+
+	_, statErr := os.Stat(deliveredEnvFile(t, srv))
+	assert.True(t, os.IsNotExist(statErr),
+		"the delivery file must be gone even when the caller's PATH has no rm")
+
+	// The removal borrows the session's PATH and hands the caller's back:
+	// the command runs under the PATH the caller set, and none of the
+	// bookkeeping reaches it.
+	whole := invoke.New("printenv")
+	whole.Env = cmd.Env
+
+	out, _, err = runOutput(t, env, whole)
+	require.NoError(t, err)
+	assert.Contains(t, out, "PATH="+bin+"\n", "the command must run under the caller's PATH")
+	assert.NotContains(t, out, "__invoke_", "the prologue's own variables leaked into the command")
 }
 
 // TestFileEnvGuardReportsAnUndeliveredEnvironment pins the route's
