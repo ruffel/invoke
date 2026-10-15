@@ -79,7 +79,12 @@ const abandonGrace = 2 * time.Second
 // where the body cannot return — wedged in a caller-supplied Read that
 // nothing in Go can interrupt — by abandoning it a grace period after
 // its context is canceled, so Wait, Signal, and Close stay bounded.
-func (e *Environment) spawn(ctx context.Context, guard *outputGuard, fn func(runCtx context.Context) (int, bool)) (*process, error) {
+func (e *Environment) spawn(
+	ctx context.Context,
+	cmd invoke.Command,
+	guard *outputGuard,
+	fn func(runCtx context.Context) (int, bool),
+) (*process, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 
 	p := &process{
@@ -91,7 +96,7 @@ func (e *Environment) spawn(ctx context.Context, guard *outputGuard, fn func(run
 		startCtxErr: ctx.Err,
 	}
 
-	if err := e.track(p); err != nil {
+	if err := e.track(p, cmd); err != nil {
 		cancel()
 
 		return nil, err

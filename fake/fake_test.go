@@ -953,3 +953,44 @@ func TestCloseReachesAProcessStartedAsItRuns(t *testing.T) {
 		}
 	}
 }
+
+// TestAHandlerSeesItsOwnCall checks a command is in Calls by the time its
+// handler runs, and so before anything the handler starts. Calls is the
+// ordered history of what was started; a handler reading it, or starting
+// a command of its own, must find its own invocation already there.
+func TestAHandlerSeesItsOwnCall(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	var seen []string
+
+	env.Handle("parent", func(ctx context.Context, _ invoke.Command, _ *fake.Session) int {
+		for _, call := range env.Calls() {
+			seen = append(seen, call.Path)
+		}
+
+		_, err := invoke.NewExecutor(env).Run(ctx, invoke.New("true"), invoke.IO{})
+		if err != nil {
+			return 1
+		}
+
+		return 0
+	})
+
+	_, err := invoke.NewExecutor(env).Run(t.Context(), invoke.New("parent"), invoke.IO{})
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"parent"}, seen, "the handler must find its own invocation recorded")
+
+	calls := env.Calls()
+	order := make([]string, 0, len(calls))
+
+	for _, call := range calls {
+		order = append(order, call.Path)
+	}
+
+	assert.Equal(t, []string{"parent", "true"}, order, "a parent is recorded before what it starts")
+}

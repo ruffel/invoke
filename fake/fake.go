@@ -222,7 +222,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 
 	s, guard := e.newSession(cmd, stdio)
 
-	proc, err := e.spawn(ctx, guard, func(runCtx context.Context) (int, bool) {
+	proc, err := e.spawn(ctx, cmd, guard, func(runCtx context.Context) (int, bool) {
 		if handler != nil {
 			return e.runHandler(runCtx, handler, cmd, s)
 		}
@@ -232,8 +232,6 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	if err != nil {
 		return nil, err
 	}
-
-	e.record(cmd)
 
 	return proc, nil
 }
@@ -398,13 +396,6 @@ func commandName(pathStr string) string {
 	return pathStr
 }
 
-func (e *Environment) record(cmd invoke.Command) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.calls = append(e.calls, cmd)
-}
-
 func (e *Environment) checkOpen(op string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -425,7 +416,12 @@ func (e *Environment) checkOpen(op string) error {
 // under the same lock closes that gap: a process is either registered
 // before Close gathers them, and terminated with the rest, or refused
 // before its body runs.
-func (e *Environment) track(p *process) error {
+//
+// The command is recorded here too, under the same lock and before the
+// body runs: a handler reading Calls finds its own invocation, and one
+// that starts another command is recorded before it. A refused command
+// is not recorded, since it never started.
+func (e *Environment) track(p *process, cmd invoke.Command) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -434,6 +430,7 @@ func (e *Environment) track(p *process) error {
 	}
 
 	e.active[p] = struct{}{}
+	e.calls = append(e.calls, cmd)
 
 	return nil
 }
