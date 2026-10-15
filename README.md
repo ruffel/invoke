@@ -13,7 +13,7 @@ containers through one provider-agnostic Go interface.
   constructor is the only line that changes.
 - **Contract-verified behavior.** An executable suite enforces the
   semantics against every provider — cancellation really terminates,
-  signals really deliver, transfers land whole or not at all — including
+  signals really deliver, every transferred file lands whole — including
   against a real OpenSSH server and a real container on every change. The
   suite tests itself: a contract that cannot be made to fail does not
   merge.
@@ -235,7 +235,12 @@ running command is a transport failure by any ordinary reading, but the
 command may already have taken effect and nothing on this side can tell.
 Retrying would run an arbitrary command a second time, so it is terminal
 and the error says so. File transfers are the exception, and only because
-they are built to be: each is delivered whole or not at all.
+they are built to be: every file lands by rename, whole or not at all, so
+repeating a transfer finishes what an interrupted one started and corrupts
+nothing. A tree is not delivered as one unit, though. One that fails part
+way leaves the files it had already delivered, so a caller that needs the
+whole tree or none of it has to transfer it somewhere else and move it
+into place itself.
 
 **SSH environment variables need somewhere to go.** A server accepts only
 the variables its `AcceptEnv` setting names, and the stock setting names
