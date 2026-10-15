@@ -36,6 +36,7 @@ import (
 	"github.com/moby/moby/client"
 	"github.com/moby/moby/client/pkg/versions"
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 )
 
 // Environment is a connection to a running container.
@@ -54,7 +55,7 @@ type Environment struct {
 	closed bool
 
 	// life is what Close ends, taking in-flight transfers with it.
-	life   *lifetime
+	life   *lifetime.Lifetime
 	active map[*process]struct{}
 }
 
@@ -107,7 +108,7 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		cfg:    cfg,
 		client: cli,
 		active: make(map[*process]struct{}),
-		life:   newLifetime(),
+		life:   lifetime.New(),
 	}
 
 	if err := env.inspectContainer(ctx); err != nil {
@@ -185,7 +186,7 @@ func (e *Environment) Close() error {
 		// A Close racing another still waits for the transfers the first
 		// one stopped: returning while they unwind would let them run
 		// on past it.
-		e.life.close()
+		e.life.Close()
 
 		return nil
 	}
@@ -199,7 +200,7 @@ func (e *Environment) Close() error {
 
 	e.mu.Unlock()
 
-	e.life.close()
+	e.life.Close()
 
 	for _, p := range procs {
 		_ = p.Close()
