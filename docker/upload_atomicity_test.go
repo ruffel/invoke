@@ -117,3 +117,53 @@ func TestUploadRefusesALinkedChildDirectory(t *testing.T) {
 	_, err = exec.Run(t.Context(), invoke.New("test", "-e", "/data/elsewhere/a.txt"), invoke.IO{})
 	require.Error(t, err, "nothing may be written through the link")
 }
+
+// TestMergeCrossesMountedFilesystems checks the merge where it cannot
+// rename across: a destination root that is a mount of its own, beneath
+// the directory staging is made in, and a mounted child directory inside
+// an ordinary one. Each entry has to arrive by way of a temporary name on
+// its own filesystem, and none may be left behind.
+func TestMergeCrossesMountedFilesystems(t *testing.T) {
+	t.Parallel()
+
+	id := startContainerWith(t, &container.HostConfig{Tmpfs: map[string]string{
+		"/data/mounted":    "",
+		"/data/target/sub": "",
+	}})
+
+	env, err := docker.New(t.Context(), id)
+	require.NoError(t, err, "docker.New")
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	exec := invoke.NewExecutor(env)
+
+	_, err = exec.Run(t.Context(), invoke.Shell(
+		"echo kept > /data/mounted/keep.txt && echo kept > /data/target/sub/keep.txt"), invoke.IO{})
+	require.NoError(t, err, "seeding the mounts")
+
+	srcDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "top.txt"), []byte("top"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "sub"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "deep.txt"), []byte("deep"), 0o600))
+
+	for _, root := range []string{"/data/mounted", "/data/target"} {
+		require.NoErrorf(t, env.Upload(t.Context(), srcDir, root), "upload onto %s", root)
+	}
+
+	for path, want := range map[string]string{
+		"/data/mounted/top.txt":      "top",
+		"/data/mounted/sub/deep.txt": "deep",
+		"/data/mounted/keep.txt":     "kept\n",
+		"/data/target/sub/deep.txt":  "deep",
+		"/data/target/sub/keep.txt":  "kept\n",
+	} {
+		got, err := exec.Output(t.Context(), invoke.New("cat", path))
+		require.NoErrorf(t, err, "reading %s", path)
+		assert.Equalf(t, want, string(got), "%s after the merge", path)
+	}
+
+	leftovers, err := exec.Output(t.Context(), invoke.Shell("find /data -name '*.invoke-*'"))
+	require.NoError(t, err)
+	assert.Empty(t, string(leftovers), "a temporary name was left behind")
+}

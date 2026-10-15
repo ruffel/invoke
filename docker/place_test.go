@@ -1,8 +1,11 @@
 package docker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,7 +42,7 @@ func TestPlaceArrivalMergesATreeIntoAnExistingDirectory(t *testing.T) {
 	writePlaceFixture(t, filepath.Join(dst, "keep.txt"), "kept")
 	writePlaceFixture(t, filepath.Join(dst, "sub", "keep.txt"), "kept deep")
 
-	require.NoError(t, placeArrival(src, dst))
+	require.NoError(t, placeArrival(t.Context(), src, dst))
 
 	assert.Equal(t, "new", readPlaced(t, filepath.Join(dst, "shared.txt")), "a namesake is replaced")
 	assert.Equal(t, "kept", readPlaced(t, filepath.Join(dst, "keep.txt")), "what only the destination held stays")
@@ -58,13 +61,13 @@ func TestPlaceArrivalReplacesAFileOrMovesIntoNothing(t *testing.T) {
 	dst := filepath.Join(dir, "file")
 	writePlaceFixture(t, dst, "old")
 
-	require.NoError(t, placeArrival(src, dst))
+	require.NoError(t, placeArrival(t.Context(), src, dst))
 	assert.Equal(t, "new", readPlaced(t, dst), "a file replaces its namesake")
 
 	tree := filepath.Join(dir, "staging", "tree")
 	writePlaceFixture(t, filepath.Join(tree, "a.txt"), "a")
 
-	require.NoError(t, placeArrival(tree, filepath.Join(dir, "fresh")))
+	require.NoError(t, placeArrival(t.Context(), tree, filepath.Join(dir, "fresh")))
 	assert.Equal(t, "a", readPlaced(t, filepath.Join(dir, "fresh", "a.txt")), "a tree moves into a missing destination")
 }
 
@@ -83,7 +86,7 @@ func TestPlaceArrivalRefusesToDeleteWhatStandsInTheWay(t *testing.T) {
 		dst := filepath.Join(dir, "dest")
 		writePlaceFixture(t, dst, "precious")
 
-		require.Error(t, placeArrival(src, dst))
+		require.Error(t, placeArrival(t.Context(), src, dst))
 		assert.Equal(t, "precious", readPlaced(t, dst))
 	})
 
@@ -97,7 +100,7 @@ func TestPlaceArrivalRefusesToDeleteWhatStandsInTheWay(t *testing.T) {
 		dst := filepath.Join(dir, "dest")
 		writePlaceFixture(t, filepath.Join(dst, "keep.txt"), "precious")
 
-		require.Error(t, placeArrival(src, dst))
+		require.Error(t, placeArrival(t.Context(), src, dst))
 		assert.Equal(t, "precious", readPlaced(t, filepath.Join(dst, "keep.txt")))
 	})
 
@@ -115,7 +118,7 @@ func TestPlaceArrivalRefusesToDeleteWhatStandsInTheWay(t *testing.T) {
 		require.NoError(t, os.Mkdir(dst, 0o755))
 		require.NoError(t, os.Symlink(elsewhere, filepath.Join(dst, "sub")))
 
-		require.ErrorContains(t, placeArrival(src, dst), "symbolic link")
+		require.ErrorContains(t, placeArrival(t.Context(), src, dst), "symbolic link")
 
 		_, err := os.Stat(filepath.Join(elsewhere, "a.txt"))
 		assert.True(t, os.IsNotExist(err), "nothing may be written through the link")
@@ -138,7 +141,7 @@ func TestPlaceArrivalMergesIntoALinkedRoot(t *testing.T) {
 	current := filepath.Join(dir, "current")
 	require.NoError(t, os.Symlink(release, current))
 
-	require.NoError(t, placeArrival(src, current))
+	require.NoError(t, placeArrival(t.Context(), src, current))
 	assert.Equal(t, "a", readPlaced(t, filepath.Join(release, "a.txt")))
 	assert.Equal(t, "kept", readPlaced(t, filepath.Join(release, "keep.txt")))
 }
@@ -162,10 +165,76 @@ func TestPlaceArrivalMovesOutOfReadOnlyStaging(t *testing.T) {
 		_ = os.Chmod(dst, 0o755)
 	})
 
-	require.NoError(t, placeArrival(src, dst))
+	require.NoError(t, placeArrival(t.Context(), src, dst))
 	assert.Equal(t, "a", readPlaced(t, filepath.Join(dst, "a.txt")))
 
 	info, err := os.Stat(dst)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o555), info.Mode().Perm(), "the destination takes the source's mode")
+}
+
+// crossingRename stands in for a filesystem boundary: a rename out of
+// the staging tree fails as one onto another filesystem does.
+func crossingRename(staging string) func(from, to string) error {
+	return func(from, to string) error {
+		if strings.HasPrefix(from, staging) {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: syscall.EXDEV}
+		}
+
+		return os.Rename(from, to)
+	}
+}
+
+// TestPlaceArrivalCrossesAFilesystemBoundary checks a merge that cannot
+// rename out of staging copies instead, and leaves no temporary names
+// behind it.
+func TestPlaceArrivalCrossesAFilesystemBoundary(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	staging := filepath.Join(dir, "staging")
+	src := filepath.Join(staging, "tree")
+	writePlaceFixture(t, filepath.Join(src, "shared.txt"), "new")
+	writePlaceFixture(t, filepath.Join(src, "fresh", "deep.txt"), "deep")
+	require.NoError(t, os.Symlink("shared.txt", filepath.Join(src, "link.txt")))
+
+	dst := filepath.Join(dir, "dest")
+	writePlaceFixture(t, filepath.Join(dst, "shared.txt"), "old")
+	writePlaceFixture(t, filepath.Join(dst, "keep.txt"), "kept")
+
+	require.NoError(t, placer{rename: crossingRename(staging)}.arrive(t.Context(), src, dst))
+
+	assert.Equal(t, "new", readPlaced(t, filepath.Join(dst, "shared.txt")))
+	assert.Equal(t, "kept", readPlaced(t, filepath.Join(dst, "keep.txt")))
+	assert.Equal(t, "deep", readPlaced(t, filepath.Join(dst, "fresh", "deep.txt")))
+
+	link, err := os.Readlink(filepath.Join(dst, "link.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "shared.txt", link, "a link is copied as a link")
+
+	entries, err := os.ReadDir(dst)
+	require.NoError(t, err)
+
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".invoke-", "a temporary name was left behind")
+	}
+}
+
+func TestPlaceArrivalStopsWhenCanceled(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "staging", "tree")
+	writePlaceFixture(t, filepath.Join(src, "a.txt"), "a")
+
+	dst := filepath.Join(dir, "dest")
+	writePlaceFixture(t, filepath.Join(dst, "keep.txt"), "kept")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	require.ErrorIs(t, placeArrival(ctx, src, dst), context.Canceled)
+
+	_, err := os.Stat(filepath.Join(dst, "a.txt"))
+	assert.True(t, os.IsNotExist(err), "nothing lands once the merge is canceled")
 }
