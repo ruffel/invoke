@@ -917,21 +917,21 @@ func TestCloseReachesAProcessStartedAsItRuns(t *testing.T) {
 		)
 
 		for range starters {
-			wg.Add(1)
-
-			go func() {
-				defer wg.Done()
-
+			wg.Go(func() {
 				proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
-				if err == nil {
-					mu.Lock()
-					procs = append(procs, proc)
-					mu.Unlock()
+				if err != nil {
+					return
 				}
-			}()
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				procs = append(procs, proc)
+			})
 		}
 
 		require.NoError(t, env.Close())
+
 		wg.Wait()
 
 		for _, proc := range procs {
@@ -939,6 +939,7 @@ func TestCloseReachesAProcessStartedAsItRuns(t *testing.T) {
 
 			go func() {
 				_, _ = proc.Wait()
+
 				close(waited)
 			}()
 
@@ -946,6 +947,7 @@ func TestCloseReachesAProcessStartedAsItRuns(t *testing.T) {
 			case <-waited:
 			case <-time.After(5 * time.Second):
 				_ = proc.Close()
+
 				require.FailNow(t, "a process started as Close ran was never stopped")
 			}
 		}
