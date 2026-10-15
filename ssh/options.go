@@ -14,9 +14,9 @@ import (
 const defaultPort = 22
 
 // maxChainDepth bounds the walk that appends a hop to a chain. It is not a
-// limit on how many hops a connection may have — [Config.validate] rejects
-// a cycle however deep — only a guarantee that a malformed one is reported
-// rather than spun on.
+// limit on how many hops a connection may have — the check [NewFromConfig]
+// runs rejects a cycle however deep — only a guarantee that a malformed
+// one is reported rather than spun on.
 const maxChainDepth = 1024
 
 // defaultTimeout bounds connection establishment (TCP dial plus SSH
@@ -35,6 +35,16 @@ const defaultKeepAlive = 30 * time.Second
 // order, the one OpenSSH uses: the public keys first — the key file, then
 // each key the agent holds — and the password last, sent only when no key
 // was accepted. The order the With options are given does not change it.
+// A credential that cannot be used — a key file that does not read or
+// parse, an agent that is unreachable or holds no keys — is skipped while
+// another remains, and the connection fails naming every reason only when
+// none does.
+//
+// Every field is read when the connection is made, not when an option is
+// applied. Before anything is dialed, only the chain and its hosts are
+// checked: the chain must not loop, and each hop's host is required and
+// carries neither a user nor a port. Anything else wrong is reported when
+// the hop it belongs to is connected, naming that hop in a chain.
 type Config struct {
 	// Host is the target hostname or address. Required.
 	Host string
@@ -54,13 +64,20 @@ type Config struct {
 	// PrivateKeyPassphrase decrypts an encrypted PrivateKeyPath.
 	PrivateKeyPassphrase string
 
-	// UseAgent enables authentication via the SSH agent at SSH_AUTH_SOCK.
+	// UseAgent enables authentication via the SSH agent at SSH_AUTH_SOCK,
+	// the only place the agent is looked for.
 	UseAgent bool
 
-	// HostKeyCallback verifies the server's host key. It is required:
-	// [New] fails closed if none is provided and no known_hosts source
-	// is configured. Use [WithKnownHosts], [WithHostKeyCallback], or —
-	// for tests only — [WithInsecureIgnoreHostKey].
+	// HostKeyCallback verifies the server's host key. A host-key policy is
+	// required: [New] fails closed if none is provided and no known_hosts
+	// source is configured. Use [WithKnownHosts], [WithHostKeyCallback], or
+	// — for tests only — [WithInsecureIgnoreHostKey].
+	//
+	// Configure exactly one. Where a hop has several, the first of these
+	// is used and the rest are ignored without error: the insecure
+	// override, then this callback, then known_hosts. A callback set beside
+	// [WithKnownHosts] therefore replaces it, and with it the algorithm
+	// constraint that known_hosts verification depends on.
 	HostKeyCallback ssh.HostKeyCallback
 
 	// knownHostsPath is a known_hosts file used to build both the host-key
@@ -71,7 +88,8 @@ type Config struct {
 	insecureHostKey bool
 
 	// Timeout bounds establishing this connection — its dial and its
-	// handshake — and zero means 30s. Each hop of a chain carries its own.
+	// handshake — and zero or negative means 30s. Each hop of a chain
+	// carries its own. See [WithTimeout].
 	Timeout time.Duration
 
 	// KeepAlive is how often to probe the server so a silently dropped
@@ -151,39 +169,53 @@ func (c *Config) validateHost(target bool) error {
 // Option configures a [Config].
 type Option func(*Config)
 
-// WithPort sets the target port.
+// WithPort sets the target port. Zero means 22. The value is not
+// range-checked; a port no server can listen on fails when it is dialed.
 func WithPort(port int) Option {
 	return func(c *Config) { c.Port = port }
 }
 
-// WithUser sets the login user.
+// WithUser sets the login user. Empty means the user this process runs
+// as, as OpenSSH defaults it.
 func WithUser(user string) Option {
 	return func(c *Config) { c.User = user }
 }
 
-// WithPassword enables password authentication. It is offered after any
-// configured key or agent, so the password is sent only when no key was
-// accepted.
+// WithPassword enables password authentication; an empty password
+// enables nothing. It is offered after any configured key or agent, so
+// the password is sent only when no key was accepted. See [Config] for
+// the order.
 func WithPassword(password string) Option {
 	return func(c *Config) { c.Password = password }
 }
 
 // WithPrivateKey enables public-key authentication using the key at path.
+// The file is read and parsed when the connection is made, and its key is
+// offered before any the agent holds. A file that cannot be read or
+// parsed is skipped while another credential remains; see [Config].
 func WithPrivateKey(path string) Option {
 	return func(c *Config) { c.PrivateKeyPath = path }
 }
 
 // WithPrivateKeyPassphrase supplies the passphrase for an encrypted key.
+// It applies only to the file named by [WithPrivateKey], never to keys
+// the agent holds. Without it the key file is parsed as unencrypted.
 func WithPrivateKeyPassphrase(passphrase string) Option {
 	return func(c *Config) { c.PrivateKeyPassphrase = passphrase }
 }
 
-// WithAgent enables authentication via the running SSH agent.
+// WithAgent enables authentication via the SSH agent at SSH_AUTH_SOCK,
+// the only place the agent is looked for. Every key it holds is offered,
+// after the key file of [WithPrivateKey] when one is set. An unset
+// variable, an agent that cannot be reached, or one that holds no keys is
+// skipped while another credential remains; see [Config].
 func WithAgent() Option {
 	return func(c *Config) { c.UseAgent = true }
 }
 
 // WithHostKeyCallback sets the host-key verification callback directly.
+// It takes precedence over [WithKnownHosts] and yields to
+// [WithInsecureIgnoreHostKey] on the same hop; see [Config.HostKeyCallback].
 func WithHostKeyCallback(cb ssh.HostKeyCallback) Option {
 	return func(c *Config) { c.HostKeyCallback = cb }
 }
@@ -191,22 +223,31 @@ func WithHostKeyCallback(cb ssh.HostKeyCallback) Option {
 // WithKnownHosts verifies the server against the given known_hosts file,
 // and constrains host-key negotiation to the algorithms recorded there for
 // this host so a host known under one key type is not rejected when the
-// server offers another.
+// server offers another. The file is loaded when the connection is made,
+// and one that cannot be loaded fails it. A callback or the insecure
+// override on the same hop takes precedence, and this option is then
+// ignored; see [Config.HostKeyCallback].
 func WithKnownHosts(path string) Option {
 	return func(c *Config) { c.knownHostsPath = path }
 }
 
 // WithInsecureIgnoreHostKey disables host-key verification. It is unsafe
-// against man-in-the-middle attacks and intended only for tests.
+// against man-in-the-middle attacks and intended only for tests. It takes
+// precedence over every other host-key option on the same hop, and
+// applies to that hop alone.
 func WithInsecureIgnoreHostKey() Option {
 	return func(c *Config) { c.insecureHostKey = true }
 }
 
 // WithTimeout sets the connection establishment timeout: the dial and the
 // handshake of one connection, as OpenSSH's ConnectTimeout bounds one.
-// Where [WithJumpHost] builds a chain, each hop is bounded by the timeout
-// it was configured with, and the caller's context bounds the chain as a
-// whole.
+// Zero or negative means 30s. Where [WithJumpHost] builds a chain, each
+// hop is bounded by the timeout it was configured with, and the caller's
+// context bounds the chain as a whole; whichever ends first applies.
+//
+// On the target it also bounds the probe [New] runs once connected to
+// detect the remote operating system. It bounds nothing after [New]
+// returns: commands and transfers are bounded by their own contexts.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Config) { c.Timeout = d }
 }

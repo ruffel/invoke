@@ -48,8 +48,12 @@ type Environment struct {
 	stopKeepAlive context.CancelFunc
 	keepAliveDone chan struct{}
 
+	// mu guards closed and active. Close is the only writer of closed;
+	// track and untrack are the only writers of active, and track refuses
+	// once closed is set.
 	mu sync.Mutex
-	// life is what Close ends, taking in-flight transfers with it.
+	// life is what Close ends, taking in-flight transfers with it. It is
+	// set once, at construction, and needs no lock of its own.
 	life *lifetime.Lifetime
 
 	closed bool

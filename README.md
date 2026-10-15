@@ -75,9 +75,12 @@ invocation, not the command. Transfers ride the same environment:
 `env.Upload(ctx, "./dist", "/srv/app")` copies a file or a whole tree.
 
 To run the same command elsewhere, construct a different target. A remote
-host authenticates with a key file, the agent (`ssh.WithAgent`), or a
-password, and verifies the host key against the file you name — there is
-no trust-on-first-use:
+host authenticates with a key file, the agent (`ssh.WithAgent`), a
+password, or several of them, and verifies the host key against the file
+you name — there is no trust-on-first-use. Credentials are offered in
+OpenSSH's order whatever order the options are given in: the key file,
+then the agent's keys, then the password, sent only if no key was
+accepted:
 
 ```go
 env, err := ssh.New(ctx, "build-3.example.net",
