@@ -220,17 +220,20 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		}
 	}
 
-	e.record(cmd)
-
 	s, guard := e.newSession(cmd, stdio)
 
-	return e.spawn(ctx, guard, func(runCtx context.Context) (int, bool) {
+	proc, err := e.spawn(ctx, cmd, guard, func(runCtx context.Context) (int, bool) {
 		if handler != nil {
 			return e.runHandler(runCtx, handler, cmd, s)
 		}
 
 		return dispatch(runCtx, s, cmd.Path, cmd.Args)
-	}), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return proc, nil
 }
 
 // LookPath resolves name against the fake's handlers and builtins. The
@@ -393,13 +396,6 @@ func commandName(pathStr string) string {
 	return pathStr
 }
 
-func (e *Environment) record(cmd invoke.Command) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	e.calls = append(e.calls, cmd)
-}
-
 func (e *Environment) checkOpen(op string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -411,11 +407,32 @@ func (e *Environment) checkOpen(op string) error {
 	return nil
 }
 
-func (e *Environment) track(p *process) {
+// track registers a running process so Close can terminate it, unless the
+// environment has closed in the meantime.
+//
+// Start checks the closed flag once at entry. A Close landing after that
+// has already gathered the processes it will terminate, so one added
+// afterwards would run with nothing left to stop it. Re-checking here
+// under the same lock closes that gap: a process is either registered
+// before Close gathers them, and terminated with the rest, or refused
+// before its body runs.
+//
+// The command is recorded here too, under the same lock and before the
+// body runs: a handler reading Calls finds its own invocation, and one
+// that starts another command is recorded before it. A refused command
+// is not recorded, since it never started.
+func (e *Environment) track(p *process, cmd invoke.Command) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.closed {
+		return fmt.Errorf("fake: start: %w", invoke.ErrClosed)
+	}
+
 	e.active[p] = struct{}{}
+	e.calls = append(e.calls, cmd)
+
+	return nil
 }
 
 func (e *Environment) untrack(p *process) {
