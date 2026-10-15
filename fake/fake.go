@@ -82,6 +82,7 @@ import (
 	"sync"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 )
 
 // Session is the execution state a [Handler] runs with.
@@ -119,6 +120,9 @@ type Environment struct {
 
 	fs      *vfs
 	baseEnv map[string]string
+
+	// life is what Close ends, taking in-flight transfers with it.
+	life *lifetime.Lifetime
 }
 
 var _ invoke.Environment = (*Environment)(nil)
@@ -144,6 +148,7 @@ func New(opts ...Option) *Environment {
 		handlers: make(map[string]Handler),
 		active:   make(map[*process]struct{}),
 		fs:       newVFS(),
+		life:     lifetime.New(),
 		baseEnv: map[string]string{
 			"PATH": "/usr/local/bin:/usr/bin:/bin",
 			"HOME": "/root",
@@ -273,6 +278,11 @@ func (e *Environment) Close() error {
 	if e.closed {
 		e.mu.Unlock()
 
+		// A Close racing another still waits for the transfers the first
+		// one stopped: returning while they unwind would let them run
+		// on past it.
+		e.life.Close()
+
 		return nil
 	}
 
@@ -284,6 +294,8 @@ func (e *Environment) Close() error {
 	}
 
 	e.mu.Unlock()
+
+	e.life.Close()
 
 	for _, p := range procs {
 		_ = p.Close()

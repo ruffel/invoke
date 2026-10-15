@@ -52,6 +52,9 @@ type Environment struct {
 
 	mu     sync.Mutex
 	closed bool
+
+	// life is what Close ends, taking in-flight transfers with it.
+	life   *lifetime
 	active map[*process]struct{}
 }
 
@@ -104,6 +107,7 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		cfg:    cfg,
 		client: cli,
 		active: make(map[*process]struct{}),
+		life:   newLifetime(),
 	}
 
 	if err := env.inspectContainer(ctx); err != nil {
@@ -178,6 +182,11 @@ func (e *Environment) Close() error {
 	if e.closed {
 		e.mu.Unlock()
 
+		// A Close racing another still waits for the transfers the first
+		// one stopped: returning while they unwind would let them run
+		// on past it.
+		e.life.close()
+
 		return nil
 	}
 
@@ -189,6 +198,8 @@ func (e *Environment) Close() error {
 	}
 
 	e.mu.Unlock()
+
+	e.life.close()
 
 	for _, p := range procs {
 		_ = p.Close()

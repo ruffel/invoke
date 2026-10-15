@@ -12,6 +12,9 @@ import (
 //
 // Lifecycle: Close is idempotent. After Close, every method fails with an
 // error wrapping [ErrClosed], and processes still running are terminated.
+// A transfer in flight is stopped, and Close waits for it to unwind: it
+// fails wrapping [ErrClosed], never as a [TransportError], and files it
+// had already delivered stay whole.
 type Environment interface {
 	io.Closer
 

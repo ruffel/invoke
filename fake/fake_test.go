@@ -3,6 +3,7 @@ package fake_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -842,4 +843,52 @@ func TestDownloadFollowsAStandaloneLink(t *testing.T) {
 	got, err := os.ReadFile(local)
 	require.NoError(t, err)
 	assert.Equal(t, "followed", string(got))
+}
+
+// TestCloseStopsADownloadHeldAtItsLastProgress checks a transfer Close
+// stopped reports ErrClosed even when nothing was left to copy after the
+// cancellation landed: its last progress report was the moment it was
+// held, and the copy then had only to commit.
+func TestCloseStopsADownloadHeldAtItsLastProgress(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	src := filepath.Join(t.TempDir(), "small.txt")
+	require.NoError(t, os.WriteFile(src, []byte("one chunk"), 0o600))
+	require.NoError(t, env.Upload(t.Context(), src, "/tmp/small.txt"))
+
+	held, release := make(chan struct{}), make(chan struct{})
+
+	downloaded := make(chan error, 1)
+
+	go func() {
+		downloaded <- env.Download(t.Context(), "/tmp/small.txt", filepath.Join(t.TempDir(), "small.txt"),
+			invoke.WithProgress(func(p invoke.TransferProgress) {
+				if p.Current == p.Total {
+					close(held)
+					<-release
+				}
+			}))
+	}()
+
+	<-held
+
+	closed := make(chan error, 1)
+
+	go func() { closed <- env.Close() }()
+
+	// Close has begun once the environment refuses a new call.
+	for {
+		if _, err := env.LookPath(context.Background(), "sh"); errors.Is(err, invoke.ErrClosed) {
+			break
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	close(release)
+
+	require.ErrorIs(t, <-downloaded, invoke.ErrClosed, "a download Close stopped, however late")
+	require.NoError(t, <-closed)
 }

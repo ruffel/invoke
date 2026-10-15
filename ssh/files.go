@@ -18,6 +18,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 	"github.com/ruffel/invoke/internal/transfer"
 	"golang.org/x/crypto/ssh"
 )
@@ -62,7 +63,7 @@ const idleChecks = 4
 // temp-and-rename delivery, mode preservation, and the configured symlink
 // and special-file policy.
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
-	return e.transfer(ctx, "upload", func(remote transfer.FS) error {
+	return e.transfer(ctx, "upload", func(ctx context.Context, remote transfer.FS) error {
 		return transfer.Copy(ctx, transfer.HostFS{}, localPath, remote, remotePath, invoke.NewTransferConfig(opts...))
 	})
 }
@@ -70,7 +71,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 // Download copies a remote file or directory tree to the local filesystem
 // over SFTP, with the same semantics as Upload.
 func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
-	return e.transfer(ctx, "download", func(remote transfer.FS) error {
+	return e.transfer(ctx, "download", func(ctx context.Context, remote transfer.FS) error {
 		return transfer.Copy(ctx, remote, remotePath, transfer.HostFS{}, localPath, invoke.NewTransferConfig(opts...))
 	})
 }
@@ -84,7 +85,13 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 // connection would otherwise pin the call until TCP gave up. Tearing the
 // session down from here is what unblocks it, once the copy has had the
 // chance to unwind over it.
-func (e *Environment) transfer(ctx context.Context, op string, run func(remote transfer.FS) error) error {
+//
+// The transfer runs for the life of the Environment: Close cancels it and
+// waits for it to unwind before the connection goes, so a stopped copy
+// still removes its temp file, and it then fails wrapping ErrClosed. The
+// connection failing under it is a transport fault; Close closing it is
+// not, and would otherwise read as one.
+func (e *Environment) transfer(ctx context.Context, op string, run func(context.Context, transfer.FS) error) error {
 	if err := e.checkOpen(op); err != nil {
 		return err
 	}
@@ -93,6 +100,26 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(remote t
 		return fmt.Errorf("ssh: %s: %w", op, err)
 	}
 
+	ctx, end, err := e.life.Enter(ctx)
+	if err != nil {
+		return fmt.Errorf("ssh: %s: %w", op, err)
+	}
+
+	defer end()
+
+	err = e.runSession(ctx, op, run)
+
+	// Asked even of a copy that finished: Close stopped it, whether or
+	// not its last bytes had already been written.
+	if lifetime.Ended(ctx) {
+		return fmt.Errorf("ssh: %s: stopped by Close: %w", op, invoke.ErrClosed)
+	}
+
+	return err
+}
+
+// runSession runs one transfer over its own SFTP session.
+func (e *Environment) runSession(ctx context.Context, op string, run func(context.Context, transfer.FS) error) error {
 	var (
 		session sftpSession
 		done    = make(chan transferResult, 1)
@@ -100,7 +127,7 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(remote t
 
 	defer session.close()
 
-	go func() { done <- e.runTransfer(&session, op, run) }()
+	go func() { done <- e.runTransfer(ctx, &session, op, run) }()
 
 	select {
 	case result := <-done:
@@ -135,7 +162,12 @@ type transferResult struct {
 // the channel when the subsystem request fails — enough repeated failures
 // exhaust the server's per-connection session limit and take the whole
 // Environment's command execution down with it.
-func (e *Environment) runTransfer(owner *sftpSession, op string, run func(remote transfer.FS) error) transferResult {
+func (e *Environment) runTransfer(
+	ctx context.Context,
+	owner *sftpSession,
+	op string,
+	run func(context.Context, transfer.FS) error,
+) transferResult {
 	setupFailed := func(err error) transferResult {
 		return transferResult{err: err, classified: true}
 	}
@@ -188,7 +220,7 @@ func (e *Environment) runTransfer(owner *sftpSession, op string, run func(remote
 		return setupFailed(&invoke.TransportError{Op: op, Err: errCanceled})
 	}
 
-	return transferResult{err: run(sftpFS{client: client})}
+	return transferResult{err: run(ctx, sftpFS{client: client})}
 }
 
 // sftpSession owns one transfer's session and client so cancellation can

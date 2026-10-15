@@ -12,19 +12,57 @@ import (
 	"strings"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 	"github.com/ruffel/invoke/internal/transfer"
 )
 
-// Upload copies a real host file or tree into the fake target's virtual
+// Upload copies a host file or tree into the virtual filesystem. See
+// upload for what it carries over; Close stops it, and it then fails
+// wrapping invoke.ErrClosed.
+func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	return e.transfer(ctx, "upload", func(ctx context.Context) error {
+		return e.upload(ctx, localPath, remotePath, opts...)
+	})
+}
+
+// Download copies a virtual file or tree out to the host. See download;
+// Close stops it as it does an Upload.
+func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
+	return e.transfer(ctx, "download", func(ctx context.Context) error {
+		return e.download(ctx, remotePath, localPath, opts...)
+	})
+}
+
+// transfer runs one transfer for the life of the Environment.
+func (e *Environment) transfer(ctx context.Context, op string, run func(context.Context) error) error {
+	if err := e.checkOpen(op); err != nil {
+		return err
+	}
+
+	opCtx, end, err := e.life.Enter(ctx)
+	if err != nil {
+		return fmt.Errorf("fake: %s: %w", op, err)
+	}
+
+	defer end()
+
+	err = run(opCtx)
+
+	// Asked even of a copy that finished: Close stopped it, whether or
+	// not its last bytes had already been written.
+	if lifetime.Ended(opCtx) {
+		return fmt.Errorf("fake: %s: stopped by Close: %w", op, invoke.ErrClosed)
+	}
+
+	return err
+}
+
+// upload copies a real host file or tree into the fake target's virtual
 // filesystem, with the full transfer semantics providers share: per-file
 // atomicity (nothing commits unless the source was read completely),
 // modes preserved or forced umask-proof, symlink policies with
 // containment, special files erroring by name, and real progress totals.
-func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
-	if err := e.checkOpen("upload"); err != nil {
-		return err
-	}
-
+func (e *Environment) upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
 	cfg := invoke.NewTransferConfig(opts...)
 
 	absSrc, err := filepath.Abs(localPath)
@@ -57,13 +95,9 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 	return nil
 }
 
-// Download copies a virtual file or tree out to the real host filesystem,
+// download copies a virtual file or tree out to the real host filesystem,
 // atomically per file via temp-and-rename.
-func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
-	if err := e.checkOpen("download"); err != nil {
-		return err
-	}
-
+func (e *Environment) download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
 	cfg := invoke.NewTransferConfig(opts...)
 
 	src := vfsClean("/", remotePath)
