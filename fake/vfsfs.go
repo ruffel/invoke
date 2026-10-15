@@ -33,13 +33,26 @@ func (f vfsFS) Contains(root, p string) bool {
 	return transfer.ContainsPath(root, p, "/")
 }
 
+// Paths are resolved the way the host resolves them. The VFS keys each
+// entry by its literal path, but a link standing in a parent component is
+// a directory to everyone who walks through it: an operation on an entry
+// resolves its parent and acts on the entry itself (inParent), and one
+// that reaches through the entry resolves the whole path (Resolve). A
+// lookup that took the literal path would find nothing under a link, and
+// a write would land under a name nothing else could see.
+
 func (f vfsFS) Lstat(p string) (fs.FileInfo, error) {
-	node, ok := f.v.snapshot(p)
+	q, err := f.inParent(p)
+	if err != nil {
+		return nil, err
+	}
+
+	node, size, ok := f.v.meta(q)
 	if !ok {
 		return nil, notExist("lstat", p)
 	}
 
-	return nodeInfo(path.Base(p), node), nil
+	return sizedInfo(path.Base(p), node, size), nil
 }
 
 func (f vfsFS) Stat(p string) (fs.FileInfo, error) {
@@ -48,16 +61,21 @@ func (f vfsFS) Stat(p string) (fs.FileInfo, error) {
 		return nil, err
 	}
 
-	node, ok := f.v.snapshot(resolved)
+	node, size, ok := f.v.meta(resolved)
 	if !ok {
 		return nil, notExist("stat", p)
 	}
 
-	return nodeInfo(path.Base(p), node), nil
+	return sizedInfo(path.Base(p), node, size), nil
 }
 
 func (f vfsFS) ReadDir(p string) ([]fs.FileInfo, error) {
-	node, ok := f.v.snapshot(p)
+	dir, err := f.Resolve(p)
+	if err != nil {
+		return nil, err
+	}
+
+	node, _, ok := f.v.meta(dir)
 	if !ok {
 		return nil, notExist("readdir", p)
 	}
@@ -66,39 +84,93 @@ func (f vfsFS) ReadDir(p string) ([]fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "readdir", Path: p, Err: errors.New("not a directory")}
 	}
 
-	names := f.v.children(p)
+	names := f.v.children(dir)
 	infos := make([]fs.FileInfo, 0, len(names))
 
 	for _, name := range names {
-		info, err := f.Lstat(path.Join(p, name))
-		if err != nil {
-			// Removed between the listing and the stat: it is no longer
-			// part of the tree.
+		child, size, ok := f.v.meta(path.Join(dir, name))
+		if !ok {
+			// Removed between the listing and the lookup: it is no
+			// longer part of the tree.
 			continue
 		}
 
-		infos = append(infos, info)
+		infos = append(infos, sizedInfo(name, child, size))
 	}
 
 	return infos, nil
 }
 
 func (f vfsFS) Mkdir(p string) error {
-	return f.v.mkdir(p)
+	q, err := f.inParent(p)
+	if err != nil {
+		return err
+	}
+
+	return f.v.mkdir(q)
 }
 
+// MkdirAll creates p and its missing parents, walking through any link to
+// a directory it meets, as the host's does.
 func (f vfsFS) MkdirAll(p string) error {
-	return f.v.mkdirAll(p)
+	cur := "/"
+
+	for _, name := range splitVFSPath(vfsClean("/", p)) {
+		if name == "" {
+			continue
+		}
+
+		next := path.Join(cur, name)
+
+		node, _, ok := f.v.meta(next)
+
+		switch {
+		case !ok:
+			if err := f.v.mkdir(next); err != nil {
+				// Created by someone else in the meantime is as good.
+				if made, _, ok := f.v.meta(next); !ok || !made.dir {
+					return err
+				}
+			}
+
+			cur = next
+		case node.link != "":
+			resolved, err := f.Resolve(next)
+			if err != nil {
+				return err
+			}
+
+			if target, _, ok := f.v.meta(resolved); !ok || !target.dir {
+				return &fs.PathError{Op: "mkdir", Path: next, Err: errors.New("not a directory")}
+			}
+
+			cur = resolved
+		case node.dir:
+			cur = next
+		default:
+			return &fs.PathError{Op: "mkdir", Path: next, Err: errors.New("not a directory")}
+		}
+	}
+
+	return nil
 }
 
+// Chmod changes what p leads to, following a link as chmod does.
 func (f vfsFS) Chmod(p string, mode fs.FileMode) error {
-	return f.v.chmod(p, mode)
+	resolved, err := f.Resolve(p)
+	if err != nil {
+		return err
+	}
+
+	return f.v.chmod(resolved, mode)
 }
 
 // SameFile reports false: the fake's filesystem is never the other side of
 // one of its own transfers, which always cross to or from the host.
 func (f vfsFS) SameFile(_, _ fs.FileInfo) bool { return false }
 
+// Open opens what p leads to. Its content is copied once, here, and the
+// lookups before it read metadata alone.
 func (f vfsFS) Open(p string) (transfer.ReadFile, error) {
 	resolved, err := f.Resolve(p)
 	if err != nil {
@@ -119,29 +191,59 @@ func (f vfsFS) Open(p string) (transfer.ReadFile, error) {
 
 // CreateExclusive creates p, failing if anything is there. The entry exists
 // from this moment, so a second exclusive create of the name fails, but its
-// content commits only on Close.
+// content commits only on Close, to the same entry.
 func (f vfsFS) CreateExclusive(p string) (transfer.WriteFile, error) {
-	if err := f.v.createExclusive(p); err != nil {
+	q, err := f.inParent(p)
+	if err != nil {
 		return nil, err
 	}
 
-	return &vfsWriteFile{v: f.v, path: p}, nil
+	if err := f.v.createExclusive(q); err != nil {
+		return nil, err
+	}
+
+	return &vfsWriteFile{v: f.v, path: q}, nil
 }
 
 func (f vfsFS) Rename(oldPath, newPath string) error {
-	return f.v.rename(oldPath, newPath)
+	from, err := f.inParent(oldPath)
+	if err != nil {
+		return err
+	}
+
+	to, err := f.inParent(newPath)
+	if err != nil {
+		return err
+	}
+
+	return f.v.rename(from, to)
 }
 
 func (f vfsFS) Remove(p string) error {
-	return f.v.remove(p)
+	q, err := f.inParent(p)
+	if err != nil {
+		return err
+	}
+
+	return f.v.remove(q)
 }
 
 func (f vfsFS) Symlink(target, link string) error {
-	return f.v.symlinkExclusive(target, link)
+	q, err := f.inParent(link)
+	if err != nil {
+		return err
+	}
+
+	return f.v.symlinkExclusive(target, q)
 }
 
 func (f vfsFS) Readlink(p string) (string, error) {
-	node, ok := f.v.snapshot(p)
+	q, err := f.inParent(p)
+	if err != nil {
+		return "", err
+	}
+
+	node, _, ok := f.v.meta(q)
 	if !ok {
 		return "", notExist("readlink", p)
 	}
@@ -176,7 +278,7 @@ func (f vfsFS) Resolve(p string) (string, error) {
 
 		next := path.Join(cur, name)
 
-		node, ok := f.v.snapshot(next)
+		node, _, ok := f.v.meta(next)
 		if !ok {
 			return "", notExist("resolve", p)
 		}
@@ -205,6 +307,23 @@ func (f vfsFS) Resolve(p string) (string, error) {
 	}
 
 	return cur, nil
+}
+
+// inParent resolves p's parent and keeps its final entry as written: the
+// path an operation on the entry itself, rather than on what it leads to,
+// acts on.
+func (f vfsFS) inParent(p string) (string, error) {
+	p = vfsClean("/", p)
+	if p == "/" {
+		return p, nil
+	}
+
+	dir, err := f.Resolve(path.Dir(p))
+	if err != nil {
+		return "", err
+	}
+
+	return path.Join(dir, path.Base(p)), nil
 }
 
 // maxLinkHops bounds a chain of links, as a kernel's own resolution does.
@@ -253,6 +372,30 @@ func (w *vfsWriteFile) Sync() error { return nil }
 
 func (w *vfsWriteFile) Close() error {
 	return w.v.fill(w.path, w.buf.Bytes())
+}
+
+// meta returns an entry's type, mode and link target without its content,
+// and the content's size: what a lookup needs, without copying a file's
+// bytes under the lock to answer it.
+func (v *vfs) meta(p string) (vnode, int64, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+
+	node, ok := v.nodes[p]
+	if !ok {
+		return vnode{}, 0, false
+	}
+
+	return vnode{mode: node.mode, dir: node.dir, link: node.link}, int64(len(node.content)), true
+}
+
+// sizedInfo is nodeInfo for an entry read by meta, whose size is carried
+// beside it rather than in its content.
+func sizedInfo(name string, node vnode, size int64) fs.FileInfo {
+	info, _ := nodeInfo(name, node).(fileInfo)
+	info.size = size
+
+	return info
 }
 
 // The vfs operations below back vfsFS. Each is one step under the lock, so
