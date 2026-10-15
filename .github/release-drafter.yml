@@ -24,12 +24,13 @@ categories:
     when:
       labels: ['skip-changelog']
 
-  # Pre-1.0, a breaking change raises the minor rather than the major.
-  # semver-increment is deliberately absent everywhere it would say
-  # "patch", which is its default; naming it only where a category lifts
-  # the version keeps the two that do visible. No category says "major":
-  # v1.0.0 is a decision to take deliberately, not one to arrive at by
-  # labelling.
+  # A breaking change raises the minor rather than the major. On a v1
+  # module it is a change callers have to act on, a raised requirement or
+  # a relied-on behaviour; one that breaks their code compiling needs a
+  # new major and a new module path, which no label can produce, so no
+  # category says "major". semver-increment is deliberately absent
+  # everywhere it would say "patch", which is its default; naming it only
+  # where a category lifts the version keeps the two that do visible.
   - title: 'Breaking changes'
     when:
       labels: ['breaking']
@@ -72,8 +73,8 @@ change-title-escapes: '\<*_&'
 # does nothing is how this broke in the first place.
 #
 # A breaking change carries the Conventional Commits "!" marker, as in
-# "fix(fake)!: ...". That marker is the only thing that raises the minor:
-# a breaking change titled without it drafts as a patch. The convention
+# "fix(fake)!: ...". That marker and a feature are the only things that
+# raise the minor: a breaking change titled without it drafts as a patch. The convention
 # is stated in CONTRIBUTING.md.
 
 template: |

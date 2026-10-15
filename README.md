@@ -265,8 +265,16 @@ command that flushes something substantial on the way out.
 
 ## Stability
 
-Pre-1.0: breaking changes land as minor releases and every one is called
-out in the [release notes](https://github.com/ruffel/invoke/releases).
+The Go API follows semantic versioning. A change that would stop a
+caller's code compiling needs a new major version, and with it a new
+module path; none is planned. Minor releases add to the API, and can
+raise a requirement a caller has to act on, such as the Go version or the
+Docker Engine version; each of those is listed under breaking changes in
+the [release notes](https://github.com/ruffel/invoke/releases). Behaviour
+that contradicts the documentation or the contract suite is a bug, and
+its fix ships in any release, even where a caller came to depend on it.
+The two modules are released together, at one version.
+
 POSIX targets this cycle — Linux and macOS hosts, Linux containers.
 Everything compiles on Windows, but execution semantics are out of scope
 for now. Go 1.26 or newer.

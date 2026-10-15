@@ -18,8 +18,10 @@ set -euo pipefail
 
 title=${1?usage: pr-label.sh <pull request title>}
 
-# The breaking marker raises the minor, and pre-1.0 that is as far as it
-# goes. Any type may carry it: "fix(fake)!:" as readily as "feat!:".
+# The breaking marker raises the minor: on a v1 module it marks a change
+# callers have to act on, not one that breaks their code compiling, which
+# needs a new major and module path. Any type may carry it: "fix(fake)!:"
+# as readily as "feat!:".
 if [[ $title =~ ^[[:alnum:]]+(\(.+\))?!: ]]; then
 	echo breaking
 fi
