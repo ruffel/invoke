@@ -11,9 +11,7 @@ import (
 	"github.com/ruffel/invoke"
 )
 
-// Windows is not a supported execution target this cycle; New refuses to
-// construct an Environment there, so these stubs exist only to keep the
-// package compiling for cross-builds.
+// Compile-only stubs: see the package doc on Windows.
 
 func setProcessGroup(_ *exec.Cmd) {}
 

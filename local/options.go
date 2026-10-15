@@ -6,8 +6,7 @@ import "time"
 // finish writing before it is abandoned, when none is configured.
 const defaultTerminationGrace = 2 * time.Second
 
-// config holds the settings for a local [Environment]. Callers set it
-// through [New] and the With options rather than directly.
+// config is the settings [New] assembles from its options.
 type config struct {
 	terminationGrace time.Duration
 }

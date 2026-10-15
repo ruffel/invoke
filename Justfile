@@ -47,7 +47,7 @@ build:
     cd docker && go build ./...
 
 # Cross-build for Windows: everything must compile there, even though
-# execution semantics are POSIX-only this cycle.
+# execution semantics are POSIX-only.
 #
 # vet as well as build, because `go build` does not compile _test.go
 # files: a test using a POSIX-only symbol left the claim false in the one
