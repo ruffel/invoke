@@ -22,6 +22,7 @@ func downloadContracts() []TestCase {
 		downloadFollowRejectsEscapes(),
 		downloadProgressTotals(),
 		downloadFailurePreservesDestination(),
+		downloadTreeMergesIntoExisting(),
 	}
 }
 
@@ -158,6 +159,36 @@ func downloadFailurePreservesDestination() TestCase {
 
 			assert.Equal(t, "precious destination", readHostFile(t, local),
 				"the destination changed after a failed download; atomicity was violated")
+		},
+	}
+}
+
+func downloadTreeMergesIntoExisting() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "download-merges-into-existing",
+		Description: "Downloading a tree onto an existing local directory merges: namesakes are replaced, everything else survives",
+		Run: func(t T, env invoke.Environment) {
+			srcDir := t.TempDir()
+			writeHostFixture(t, srcDir, "shared.txt", "new")
+			writeHostFixture(t, srcDir, "added.txt", "added")
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "seeding Upload")
+
+			local := t.TempDir()
+			writeHostFixture(t, local, "keep.txt", "kept")
+			writeHostFixture(t, local, "shared.txt", "old")
+
+			require.NoError(t, env.Download(t.Context(), remote, local), "Download onto the existing directory")
+
+			assert.Equal(t, "kept", readHostFile(t, filepath.Join(local, "keep.txt")),
+				"a file only the destination held must survive the merge")
+			assert.Equal(t, "new", readHostFile(t, filepath.Join(local, "shared.txt")),
+				"a file the tree carries must replace its namesake")
+			assert.Equal(t, "added", readHostFile(t, filepath.Join(local, "added.txt")))
 		},
 	}
 }

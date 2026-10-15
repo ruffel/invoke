@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,10 +20,12 @@ import (
 
 // Upload copies a local file or directory tree into the container.
 //
-// The archive is unpacked into a staging directory and moved into place
+// The archive is unpacked into a staging directory and merged into place
 // only once it has arrived whole, so a transfer that fails or is canceled
-// part-way leaves an existing destination exactly as it was. The daemon's
-// own unpacking offers no such guarantee: it writes as the bytes arrive.
+// while the archive is in flight leaves an existing destination exactly as
+// it was. The daemon's own unpacking offers no such guarantee: it writes
+// as the bytes arrive. The merge itself renames one entry at a time, as
+// the engine's does.
 func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
 	cfg := invoke.NewTransferConfig(opts...)
 
@@ -69,9 +72,7 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 		return fmt.Errorf("docker: upload: %w", err)
 	}
 
-	aside := dst + ".invoke-old-" + randomSuffix()
-
-	if err := e.moveRemote(ctx, path.Join(staging, name), dst, aside); err != nil {
+	if err := e.mergeRemote(ctx, path.Join(staging, name), dst); err != nil {
 		return fmt.Errorf("docker: upload: %w", err)
 	}
 
@@ -137,7 +138,7 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 		return fmt.Errorf("docker: download: %w", err)
 	}
 
-	if err := replacePath(arrived, dst); err != nil {
+	if err := placeArrival(arrived, dst); err != nil {
 		return fmt.Errorf("docker: download: %w", err)
 	}
 
@@ -268,30 +269,73 @@ func (e *Environment) makeRemoteDir(ctx context.Context, dir string) error {
 	return nil
 }
 
-// moveRemote replaces dst with src inside the container.
-func (e *Environment) moveRemote(ctx context.Context, src, dst, aside string) error {
-	// Staging shares the destination's directory, so each mv here is a
-	// rename on one filesystem. An existing destination is set aside rather
-	// than removed, and only cleared once the new one is in its place, so a
-	// move that fails leaves the original recoverable and restored — never
-	// a destination deleted ahead of a replacement that did not arrive.
-	script := `if [ -e "$2" ] || [ -L "$2" ]; then
-	mv -f -- "$2" "$3" || exit 1
-	if ! mv -f -- "$1" "$2"; then
-		mv -f -- "$3" "$2"
-		exit 1
-	fi
-	rm -rf -- "$3"
-else
+// mergeRemote moves a staged arrival into place inside the container,
+// merging a tree into an existing directory as the transfer engine does.
+//
+// A tree lands in an existing directory by merging into it, as cp, scp
+// and rsync do: each file is renamed over its namesake, which replaces it
+// in one step, and what only the destination holds is left alone. A
+// directory already there is merged into and given the source's mode; a
+// symbolic link where the tree has a directory is refused rather than
+// written through, and a file where it has one, or a directory where it
+// has a file, is an error rather than something to delete. The root may
+// be a link to a directory, which is the ordinary way to point a stable
+// name at a release. Staging shares the destination's directory, so each
+// rename stays on one filesystem.
+//
+// A file arriving where a symbolic link stands replaces the link, as a
+// rename does, but in two steps: mv given a link to a directory moves
+// into it rather than over it.
+func (e *Environment) mergeRemote(ctx context.Context, src, dst string) error {
+	// A refusal is reported on stdout, which is what runRaw hands back.
+	script := `fail() { printf '%s\n' "$*"; exit 1; }
+
+place() {
+	if [ -d "$2" ] && [ ! -L "$2" ]; then fail "destination $2 is a directory"; fi
+	if [ -L "$2" ]; then rm -f -- "$2" || exit 1; fi
 	mv -f -- "$1" "$2" || exit 1
+}
+
+merge() {
+	mode=$(stat -c %a "$1") || exit 1
+	chmod u+rwx "$1" || exit 1
+	for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do
+		[ -e "$e" ] || [ -L "$e" ] || continue
+		t="$2/${e##*/}"
+		if [ -d "$e" ] && [ ! -L "$e" ]; then
+			if [ -L "$t" ]; then fail "destination $t is a symbolic link; refusing to write the transferred tree through it"; fi
+			if [ -d "$t" ]; then
+				( merge "$e" "$t" ) || exit 1
+			elif [ -e "$t" ]; then
+				fail "destination $t is not a directory"
+			else
+				mv -- "$e" "$t" || exit 1
+			fi
+		else
+			( place "$e" "$t" ) || exit 1
+		fi
+	done
+	chmod "$mode" "$2" || exit 1
+}
+
+if [ -d "$1" ] && [ ! -L "$1" ]; then
+	if [ -d "$2" ]; then merge "$1" "$2"; exit; fi
+	if [ -e "$2" ] || [ -L "$2" ]; then fail "destination $2 exists and is not a directory"; fi
+	mv -- "$1" "$2"
+else
+	place "$1" "$2"
 fi`
 
-	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", src, dst, aside})
+	out, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", src, dst})
 	if err != nil {
 		return err
 	}
 
 	if code != 0 {
+		if msg := strings.TrimSpace(out); msg != "" {
+			return fmt.Errorf("moving the transfer into place at %q failed: %s", dst, msg)
+		}
+
 		return fmt.Errorf("moving the transfer into place at %q failed", dst)
 	}
 
@@ -312,42 +356,105 @@ func (e *Environment) removeRemote(dir string) {
 	}
 }
 
-// replacePath moves src onto dst, replacing whatever kind of entry is
-// there — the host-side half of the promise moveRemote keeps inside the
-// container.
-//
-// Staging shares the destination's directory, so each rename here stays
-// on one filesystem. An existing destination is set aside rather than
-// removed, and only cleared once the new one is in its place, so a move
-// that fails leaves the original restored — never a destination deleted
-// ahead of a replacement that did not arrive.
-func replacePath(src, dst string) error {
-	if _, err := os.Lstat(dst); err != nil {
-		// Nothing occupies the destination.
-		return os.Rename(src, dst)
-	}
-
-	asideDir, err := os.MkdirTemp(filepath.Dir(dst), ".invoke-aside-")
+// placeArrival moves a downloaded entry from staging into place, with
+// the same rules mergeRemote keeps inside the container: a tree merges
+// into an existing directory, each file renamed over its namesake in one
+// step, and nothing the destination alone holds is removed.
+func placeArrival(src, dst string) error {
+	info, err := os.Lstat(src)
 	if err != nil {
 		return err
 	}
 
-	aside := filepath.Join(asideDir, "previous")
+	if !info.IsDir() {
+		return placeFile(src, dst)
+	}
 
-	if err := os.Rename(dst, aside); err != nil {
-		_ = os.Remove(asideDir)
+	// Followed: the root may be a link to a directory.
+	existing, err := os.Stat(dst)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.Rename(src, dst)
+	}
 
+	if err != nil {
 		return err
 	}
 
-	if err := os.Rename(src, dst); err != nil {
-		_ = os.Rename(aside, dst)
-		_ = os.RemoveAll(asideDir)
+	if !existing.IsDir() {
+		return fmt.Errorf("destination %q exists and is not a directory", dst)
+	}
 
+	return mergeDir(src, dst, info.Mode().Perm())
+}
+
+// placeFile renames a file or link over whatever file or link stands at
+// dst, refusing to replace a directory with it.
+func placeFile(src, dst string) error {
+	if existing, err := os.Lstat(dst); err == nil && existing.IsDir() {
+		return fmt.Errorf("destination %q is a directory", dst)
+	}
+
+	return os.Rename(src, dst)
+}
+
+// mergeDir merges the staged directory src into the existing directory
+// dst, then gives dst the source's mode.
+//
+// The staged directory is made writable first: its mode came from the
+// archive, and moving its entries out needs to write it. It is discarded
+// afterwards, and its own mode is what dst is given.
+func mergeDir(src, dst string, mode fs.FileMode) error {
+	if err := os.Chmod(src, 0o700); err != nil { //nolint:gosec // A directory, which needs its execute bit to be walked.
 		return err
 	}
 
-	return os.RemoveAll(asideDir)
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		from := filepath.Join(src, entry.Name())
+		to := filepath.Join(dst, entry.Name())
+
+		if err := mergeEntry(from, to); err != nil {
+			return err
+		}
+	}
+
+	return os.Chmod(dst, mode)
+}
+
+// mergeEntry places one entry of a staged directory beneath an existing
+// directory.
+func mergeEntry(from, to string) error {
+	info, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+
+	if !info.IsDir() {
+		return placeFile(from, to)
+	}
+
+	existing, err := os.Lstat(to)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.Rename(from, to)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if existing.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("destination %q is a symbolic link; refusing to write the transferred tree through it", to)
+	}
+
+	if !existing.IsDir() {
+		return fmt.Errorf("destination %q is not a directory", to)
+	}
+
+	return mergeDir(from, to, info.Mode().Perm())
 }
 
 // classifyTransfer folds a daemon failure into the package taxonomy.
