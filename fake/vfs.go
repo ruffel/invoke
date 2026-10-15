@@ -124,16 +124,6 @@ func (v *vfs) symlink(target, p string) error {
 	return nil
 }
 
-// setDirMode records a directory's mode.
-func (v *vfs) setDirMode(p string, mode fs.FileMode) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
-	if node, ok := v.nodes[p]; ok && node.dir {
-		node.mode = mode
-	}
-}
-
 // touch creates an empty file if absent.
 func (v *vfs) touch(p string) error {
 	v.mu.Lock()
