@@ -21,8 +21,11 @@
 // accepting signals and dropping them. Without a shell, Close and
 // cancellation cannot stop a command either: they end its input and let
 // it go, returning at once with an outcome that says it was abandoned,
-// while the command runs on in the container until it ends. Path lookup
-// and uploads need the shell too; downloads do not.
+// while the command runs on in the container until it ends. Path lookup,
+// uploads and the check Start makes before running a command need the
+// shell too; downloads do not. Without that check, a missing executable
+// or working directory is reported the way the daemon reports it, as exit
+// status 127.
 package docker
 
 import (
@@ -46,8 +49,11 @@ type Environment struct {
 	id     string
 	os     invoke.TargetOS
 
-	// hasShell records whether the container has a shell, which signal
-	// delivery depends on, and shell is where it lives.
+	// hasShell records whether the container has a shell, and shell is
+	// where it lives. Without one, Signal, LookPath and Upload fail with
+	// invoke.ErrNotSupported, Start skips its pre-flight check, and Close
+	// and cancellation abandon a command rather than end it. Download and
+	// running a command need no shell.
 	hasShell bool
 	shell    string
 
@@ -175,8 +181,17 @@ esac`
 	return strings.TrimSpace(out), nil
 }
 
-// Close releases the daemon connection, terminating commands still
-// running.
+// Close marks the environment closed, stops transfers in flight and
+// waits for them, then terminates commands still running and waits for
+// each outcome to settle. It is idempotent.
+//
+// A command in a container without a shell cannot be terminated: Close
+// lets it go instead, its Wait returns at once saying it was abandoned,
+// and it runs on in the container until it ends.
+//
+// The daemon client closes only its idle connections, so a call Close
+// does not own and that is already under way, such as a LookPath, runs
+// to its end; one begun afterwards fails with invoke.ErrClosed.
 func (e *Environment) Close() error {
 	e.mu.Lock()
 
@@ -256,6 +271,11 @@ func checkAPIVersion(cli *client.Client) error {
 // detectOS classifies the container's operating system by asking it,
 // rather than trusting the daemon's platform label, so the answer matches
 // what commands actually run against.
+//
+// A container that cannot answer, such as an image without uname, and an
+// answer it does not recognize are both taken as Linux: the provider
+// supports Linux containers, as the README's stability section says.
+// The ssh provider, whose hosts vary, reports invoke.OSUnknown instead.
 func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
@@ -276,7 +296,7 @@ func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 }
 
 // detectShell reports where the container's shell is, and whether it has
-// one, which signal delivery and path lookup depend on.
+// one; the hasShell field lists what depends on it.
 //
 // The path is found under the container's own PATH, once, because the
 // wrapper every command runs under is started with the caller's
