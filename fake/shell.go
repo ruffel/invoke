@@ -33,7 +33,9 @@ import (
 // a command failed would be satisfied by one, and the whole reason to
 // refuse is that such a caller is being told something untrue.
 func shellScriptSupported(cmd invoke.Command) error {
-	if cmd.Path != "sh" || len(cmd.Args) < 2 || cmd.Args[0] != "-c" {
+	// By the name the fake knows it by, so the shell is refused however
+	// it was spelled: as sh, or at the /usr/bin home LookPath reports.
+	if commandName(cmd.Path) != "sh" || len(cmd.Args) < 2 || cmd.Args[0] != "-c" {
 		return nil
 	}
 
