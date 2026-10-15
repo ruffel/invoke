@@ -288,7 +288,12 @@ func forceDirModes(root string, mode fs.FileMode) {
 }
 
 func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
-	err := m.base.Download(ctx, remotePath, localPath, opts...)
+	// The option-rewriting defects reach both directions: a provider that
+	// honors a policy on the way in and drops it on the way out is the
+	// drift the download contracts exist to catch.
+	cfg := m.mutateTransferConfig(invoke.NewTransferConfig(opts...))
+
+	err := m.base.Download(ctx, remotePath, localPath, rebuildOpts(cfg)...)
 	if err != nil && m.d.destroyDownloadOnFailure {
 		_ = os.WriteFile(localPath, []byte("CLOBBERED"), 0o600)
 	}
@@ -968,6 +973,10 @@ func defectCatalog() []defectCase {
 		{name: "follow lies on content", contract: "transfer/symlink-follow-copies-content", defects: defects{followLies: true}},
 		{name: "forced special skip", contract: "transfer/special-files-error-by-default", defects: defects{alwaysSkipSpecial: true}},
 		{name: "zeroed progress totals", contract: "transfer/progress-reports-totals", defects: defects{zeroProgressTotals: true}},
+		{name: "follow lies on download", contract: "transfer/download-symlink-follow-copies-content", defects: defects{followLies: true}},
+		{name: "follow lies on a download escape", contract: "transfer/download-follow-rejects-escapes", defects: defects{followLies: true}},
+		{name: "zeroed download progress totals", contract: "transfer/download-progress-reports-totals", defects: defects{zeroProgressTotals: true}},
+		{name: "destroy download on failure", contract: "transfer/download-failure-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
 		{name: "transfer ignores cancel", contract: "transfer/canceled-before-start-does-nothing", defects: defects{transferIgnoresCancel: true}},
 
 		{name: "pretend TTY", contract: "tty/allocates-terminal", defects: defects{claimTTY: true}},

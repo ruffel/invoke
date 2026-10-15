@@ -81,7 +81,9 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 		return fmt.Errorf("fake: download: %w", err)
 	}
 
-	if err := e.downloadEntry(ctx, src, absDst, node, cfg); err != nil {
+	// A single entry has no tree to stay inside, any more than a single
+	// uploaded link does; a directory's walk bounds its own entries.
+	if err := e.downloadEntry(ctx, "/", src, absDst, node, cfg); err != nil {
 		return fmt.Errorf("fake: download: %w", err)
 	}
 
@@ -256,19 +258,83 @@ func readAllChunked(ctx context.Context, src io.Reader, rel string, total int64,
 	}
 }
 
-func (e *Environment) downloadEntry(ctx context.Context, src, absDst string, node vnode, cfg invoke.TransferConfig) error {
+// downloadEntry delivers one node under the transfer root to the host.
+func (e *Environment) downloadEntry(ctx context.Context, root, src, absDst string, node vnode, cfg invoke.TransferConfig) error {
 	switch {
 	case node.dir:
 		return e.downloadTree(ctx, src, absDst, cfg)
 
 	case node.link != "":
-		_ = os.Remove(absDst)
-
-		return os.Symlink(node.link, absDst)
+		return e.downloadSymlink(ctx, root, src, absDst, node, cfg)
 
 	default:
 		return downloadFile(ctx, absDst, src, node, cfg)
 	}
+}
+
+// downloadSymlink applies the symlink policy to a link on the target, as
+// uploadSymlink does to one on the host.
+func (e *Environment) downloadSymlink(ctx context.Context, root, src, absDst string, node vnode, cfg invoke.TransferConfig) error {
+	switch cfg.Symlinks {
+	case invoke.SymlinkSkip:
+		return nil
+
+	case invoke.SymlinkPreserve:
+		_ = os.Remove(absDst)
+
+		return os.Symlink(node.link, absDst)
+
+	case invoke.SymlinkFollow:
+		resolved, target, err := e.followLink(src)
+		if err != nil {
+			return err
+		}
+
+		if !transfer.ContainsPath(root, resolved, "/") {
+			return fmt.Errorf("symlink %q resolves outside the transfer root: %q", src, resolved)
+		}
+
+		if target.dir {
+			return fmt.Errorf("following symlink %q: target %q is not a regular file", src, resolved)
+		}
+
+		return downloadFile(ctx, absDst, src, target, cfg)
+
+	default:
+		return fmt.Errorf("unknown symlink policy %d", cfg.Symlinks)
+	}
+}
+
+// maxLinkHops bounds a chain of links, as a kernel's own resolution does.
+const maxLinkHops = 40
+
+// followLink resolves the link at p hop by hop through the virtual
+// filesystem, returning where the chain ends and what is there. The
+// fake models links only as entries, so a link in the middle of a path
+// is not followed: a chain is resolved, a link to a directory is not
+// walked through.
+func (e *Environment) followLink(p string) (string, vnode, error) {
+	cur := p
+
+	for range maxLinkHops {
+		node, ok := e.fs.snapshot(cur)
+		if !ok {
+			return "", vnode{}, fmt.Errorf("following symlink %q: %q does not exist", p, cur)
+		}
+
+		if node.link == "" {
+			return cur, node, nil
+		}
+
+		next := node.link
+		if !path.IsAbs(next) {
+			next = path.Join(path.Dir(cur), next)
+		}
+
+		cur = path.Clean(next)
+	}
+
+	return "", vnode{}, fmt.Errorf("following symlink %q: too many levels of links", p)
 }
 
 func (e *Environment) downloadTree(ctx context.Context, src, absDst string, cfg invoke.TransferConfig) error {
@@ -287,7 +353,7 @@ func (e *Environment) downloadTree(ctx context.Context, src, absDst string, cfg 
 		}
 
 		if !node.dir {
-			return e.downloadEntry(ctx, vpath, hostPath, node, cfg)
+			return e.downloadEntry(ctx, src, vpath, hostPath, node, cfg)
 		}
 
 		if err := os.MkdirAll(hostPath, 0o755); err != nil {

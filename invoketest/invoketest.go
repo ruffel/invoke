@@ -138,7 +138,7 @@ func Verify(t *testing.T, factory Factory, opts ...Option) {
 // enumerate or filter it. The returned cases are safe to inspect; run them
 // via [Verify] where possible.
 func AllContracts() []TestCase {
-	const expectedContracts = 64
+	const expectedContracts = 67
 
 	contracts := make([]TestCase, 0, expectedContracts)
 
@@ -146,6 +146,7 @@ func AllContracts() []TestCase {
 	contracts = append(contracts, lifecycleContracts()...)
 	contracts = append(contracts, errorsContracts()...)
 	contracts = append(contracts, transferContracts()...)
+	contracts = append(contracts, downloadContracts()...)
 	contracts = append(contracts, ttyContracts()...)
 
 	validateContracts(contracts)

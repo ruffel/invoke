@@ -78,7 +78,7 @@ func TestExtractRefusesToWriteThroughASymlinkedParent(t *testing.T) {
 		{name: "root/sub/payload.txt", typeflag: tar.TypeReg, body: "payload"},
 	})
 
-	err := extractTree(t.Context(), archive, dst, invoke.TransferConfig{})
+	err := extractTree(t.Context(), archive, dst, invoke.TransferConfig{}, nil)
 	require.Error(t, err, "an extraction through a planted link reported success")
 
 	assert.ErrorContains(t, err, "symbolic link", "the error does not say why the extraction stopped")
@@ -109,7 +109,7 @@ func TestExtractReplacesALinkAtTheTargetRatherThanWritingThroughIt(t *testing.T)
 		{name: "root/f.txt", typeflag: tar.TypeReg, body: "overwritten"},
 	})
 
-	require.NoError(t, extractTree(t.Context(), archive, dst, invoke.TransferConfig{}),
+	require.NoError(t, extractTree(t.Context(), archive, dst, invoke.TransferConfig{}, nil),
 		"replacing a link with a file is an ordinary extraction")
 
 	got, err := os.ReadFile(victim)
@@ -141,7 +141,7 @@ func TestExtractRefusesAHardlinkResolvingThroughASymlink(t *testing.T) {
 		{name: "root/stolen.txt", typeflag: tar.TypeLink, linkname: "root/sub/secret.txt"},
 	})
 
-	err := extractTree(t.Context(), archive, dst, invoke.TransferConfig{})
+	err := extractTree(t.Context(), archive, dst, invoke.TransferConfig{}, nil)
 	require.Error(t, err, "a hard link resolving through a planted link reported success")
 
 	assert.NoFileExists(t, filepath.Join(dst, "root", "stolen.txt"),
@@ -163,7 +163,7 @@ func TestExtractCarriesAnOrdinaryTree(t *testing.T) {
 		{name: "root/link.txt", typeflag: tar.TypeSymlink, linkname: "lib/real.txt"},
 	})
 
-	require.NoError(t, extractTree(t.Context(), archive, dst, invoke.TransferConfig{}),
+	require.NoError(t, extractTree(t.Context(), archive, dst, invoke.TransferConfig{}, nil),
 		"an ordinary tree must still extract")
 
 	got, err := os.ReadFile(filepath.Join(dst, "root", "lib", "real.txt"))

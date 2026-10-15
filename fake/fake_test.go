@@ -814,3 +814,32 @@ func TestUnsupportedSyntaxNestedInQuotesIsRefusedLoudly(t *testing.T) {
 		"the failure must say what the shell could not run")
 	assert.Empty(t, stdout.String(), "nothing must be produced by a script that did not run")
 }
+
+// TestDownloadFollowsAStandaloneLink checks a link downloaded on its own
+// is followed to its target, which need not lie beneath the link's own
+// path: there is no tree to stay inside, as there is none for an upload
+// of a single link.
+func TestDownloadFollowsAStandaloneLink(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	src := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(src, "real.txt"), []byte("followed"), 0o600))
+	require.NoError(t, os.Symlink("real.txt", filepath.Join(src, "link.txt")))
+	require.NoError(t, env.Upload(t.Context(), src, "/tmp/tree"))
+
+	local := filepath.Join(t.TempDir(), "link.txt")
+	require.NoError(t,
+		env.Download(t.Context(), "/tmp/tree/link.txt", local, invoke.WithSymlinks(invoke.SymlinkFollow)))
+
+	info, err := os.Lstat(local)
+	require.NoError(t, err)
+	assert.True(t, info.Mode().IsRegular(), "a followed link must arrive as a regular file")
+
+	got, err := os.ReadFile(local)
+	require.NoError(t, err)
+	assert.Equal(t, "followed", string(got))
+}
