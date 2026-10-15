@@ -116,6 +116,10 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 	// which need not match what the caller asked the copy to be called.
 	arrived := filepath.Join(staging, path.Base(src))
 
+	if err := applyLinkPolicy(arrived, src, cfg); err != nil {
+		return fmt.Errorf("docker: download: %w", err)
+	}
+
 	if err := replacePath(arrived, dst); err != nil {
 		return fmt.Errorf("docker: download: %w", err)
 	}
