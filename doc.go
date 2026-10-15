@@ -54,7 +54,9 @@
 // second time, so such a failure is terminal and the error says so.
 //
 // File transfers are the exception, and only because they are built to
-// be: each is delivered whole or not at all, so repeating one is safe.
+// be: every file lands by rename, whole or not at all, so repeating a
+// transfer is safe. A tree is not one unit: one that fails part way
+// leaves the files it had already delivered.
 //
 // # Optional features
 //

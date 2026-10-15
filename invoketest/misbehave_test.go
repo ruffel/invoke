@@ -78,6 +78,7 @@ type defects struct {
 	modeOverrideOnDirs       bool // apply a WithMode override to directories too
 	destroyOnFailure         bool // clobber the upload destination when a transfer fails
 	destroyDownloadOnFailure bool // clobber the local destination when a download fails
+	replaceTrees             bool // delete an existing destination before a transfer, replacing rather than merging
 	shallowTrees             bool // upload only a tree's top-level files
 	dropSymlinks             bool // silently skip symlinks in transfers
 	followLies               bool // treat SymlinkFollow as SymlinkSkip
@@ -245,6 +246,13 @@ func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string,
 		return survivor.Upload(ctx, localPath, remotePath, opts...)
 	}
 
+	// The replaceTrees defect is docker's old behaviour: the destination
+	// swapped out whole, taking with it everything the tree did not carry.
+	// The reference target is this host, so the remote path is a host path.
+	if m.d.replaceTrees {
+		_ = os.RemoveAll(remotePath)
+	}
+
 	if m.d.destroySamePath && localPath == remotePath {
 		// The legacy bug: the destination was opened truncating while the
 		// source was still open, leaving zero bytes and a nil error.
@@ -303,6 +311,10 @@ func forceDirModes(root string, mode fs.FileMode) {
 }
 
 func (m *misbehaveEnv) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
+	if m.d.replaceTrees {
+		_ = os.RemoveAll(localPath)
+	}
+
 	// The option-rewriting defects reach both directions: a provider that
 	// honors a policy on the way in and drops it on the way out is the
 	// drift the download contracts exist to catch.
@@ -993,6 +1005,8 @@ func defectCatalog() []defectCase {
 		{name: "follow lies on a download escape", contract: "transfer/download-follow-rejects-escapes", defects: defects{followLies: true}},
 		{name: "zeroed download progress totals", contract: "transfer/download-progress-reports-totals", defects: defects{zeroProgressTotals: true}},
 		{name: "destroy download on failure", contract: "transfer/download-failure-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
+		{name: "uploaded tree replaces the destination", contract: "transfer/tree-upload-merges-into-existing", defects: defects{replaceTrees: true}},
+		{name: "downloaded tree replaces the destination", contract: "transfer/download-merges-into-existing", defects: defects{replaceTrees: true}},
 		{name: "transfer ignores cancel", contract: "transfer/canceled-before-start-does-nothing", defects: defects{transferIgnoresCancel: true}},
 
 		{name: "pretend TTY", contract: "tty/allocates-terminal", defects: defects{claimTTY: true}},
