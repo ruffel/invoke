@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -86,6 +87,7 @@ type defects struct {
 	pruneTreeUpload          bool // silently omit one file from a tree upload
 	replayStaleProgress      bool // re-deliver a finished file's progress after another file's began
 	zeroProgressTotals       bool // report Total as zero in progress callbacks
+	baseNameProgress         bool // report each file by its bare name rather than relative to the root
 	transferIgnoresCancel    bool // detach a transfer from the caller's context
 	swallowTreeCancel        bool // report a canceled tree upload as delivered
 	leaveTempOnCancel        bool // abandon a temp file beside the destination when a transfer is canceled
@@ -598,6 +600,14 @@ func (m *misbehaveEnv) mutateTransferConfig(cfg invoke.TransferConfig) invoke.Tr
 		cfg.SkipSpecial = true
 	}
 
+	if m.d.baseNameProgress && cfg.Progress != nil {
+		forward := cfg.Progress
+		cfg.Progress = func(p invoke.TransferProgress) {
+			p.Path = path.Base(p.Path)
+			forward(p)
+		}
+	}
+
 	if m.d.zeroProgressTotals && cfg.Progress != nil {
 		forward := cfg.Progress
 		cfg.Progress = func(p invoke.TransferProgress) {
@@ -976,6 +986,8 @@ func defectCatalog() []defectCase {
 		{name: "follow lies on download", contract: "transfer/download-symlink-follow-copies-content", defects: defects{followLies: true}},
 		{name: "follow lies on a download escape", contract: "transfer/download-follow-rejects-escapes", defects: defects{followLies: true}},
 		{name: "zeroed download progress totals", contract: "transfer/download-progress-reports-totals", defects: defects{zeroProgressTotals: true}},
+		{name: "progress by bare name", contract: "transfer/progress-reports-totals", defects: defects{baseNameProgress: true}},
+		{name: "download progress by bare name", contract: "transfer/download-progress-reports-totals", defects: defects{baseNameProgress: true}},
 		{name: "destroy download on failure", contract: "transfer/download-failure-preserves-destination", defects: defects{destroyDownloadOnFailure: true}},
 		{name: "transfer ignores cancel", contract: "transfer/canceled-before-start-does-nothing", defects: defects{transferIgnoresCancel: true}},
 

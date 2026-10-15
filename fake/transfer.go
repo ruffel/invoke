@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/internal/transfer"
@@ -83,7 +84,7 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 
 	// A single entry has no tree to stay inside, any more than a single
 	// uploaded link does; a directory's walk bounds its own entries.
-	if err := e.downloadEntry(ctx, "/", src, absDst, node, cfg); err != nil {
+	if err := e.downloadEntry(ctx, "/", src, path.Base(src), absDst, node, cfg); err != nil {
 		return fmt.Errorf("fake: download: %w", err)
 	}
 
@@ -259,22 +260,25 @@ func readAllChunked(ctx context.Context, src io.Reader, rel string, total int64,
 }
 
 // downloadEntry delivers one node under the transfer root to the host.
-func (e *Environment) downloadEntry(ctx context.Context, root, src, absDst string, node vnode, cfg invoke.TransferConfig) error {
+//
+// rel is the entry's path relative to the transfer root, which progress
+// reports it by.
+func (e *Environment) downloadEntry(ctx context.Context, root, src, rel, absDst string, node vnode, cfg invoke.TransferConfig) error {
 	switch {
 	case node.dir:
 		return e.downloadTree(ctx, src, absDst, cfg)
 
 	case node.link != "":
-		return e.downloadSymlink(ctx, root, src, absDst, node, cfg)
+		return e.downloadSymlink(ctx, root, src, rel, absDst, node, cfg)
 
 	default:
-		return downloadFile(ctx, absDst, src, node, cfg)
+		return downloadFile(ctx, absDst, rel, node, cfg)
 	}
 }
 
 // downloadSymlink applies the symlink policy to a link on the target, as
 // uploadSymlink does to one on the host.
-func (e *Environment) downloadSymlink(ctx context.Context, root, src, absDst string, node vnode, cfg invoke.TransferConfig) error {
+func (e *Environment) downloadSymlink(ctx context.Context, root, src, rel, absDst string, node vnode, cfg invoke.TransferConfig) error {
 	switch cfg.Symlinks {
 	case invoke.SymlinkSkip:
 		return nil
@@ -298,7 +302,7 @@ func (e *Environment) downloadSymlink(ctx context.Context, root, src, absDst str
 			return fmt.Errorf("following symlink %q: target %q is not a regular file", src, resolved)
 		}
 
-		return downloadFile(ctx, absDst, src, target, cfg)
+		return downloadFile(ctx, absDst, rel, target, cfg)
 
 	default:
 		return fmt.Errorf("unknown symlink policy %d", cfg.Symlinks)
@@ -353,7 +357,7 @@ func (e *Environment) downloadTree(ctx context.Context, src, absDst string, cfg 
 		}
 
 		if !node.dir {
-			return e.downloadEntry(ctx, src, vpath, hostPath, node, cfg)
+			return e.downloadEntry(ctx, src, vpath, relTo(src, vpath), hostPath, node, cfg)
 		}
 
 		if err := os.MkdirAll(hostPath, 0o755); err != nil {
@@ -394,9 +398,18 @@ func (e *Environment) downloadTree(ctx context.Context, src, absDst string, cfg 
 	return nil
 }
 
+// relTo returns p relative to root, for a p at or under it.
+func relTo(root, p string) string {
+	if root == "/" {
+		return strings.TrimPrefix(p, "/")
+	}
+
+	return strings.TrimPrefix(p, root+"/")
+}
+
 // downloadFile writes VFS content to the host atomically: temp file,
 // explicit mode, fsync, rename.
-func downloadFile(ctx context.Context, absDst, vpath string, node vnode, cfg invoke.TransferConfig) error {
+func downloadFile(ctx context.Context, absDst, rel string, node vnode, cfg invoke.TransferConfig) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -436,7 +449,7 @@ func downloadFile(ctx context.Context, absDst, vpath string, node vnode, cfg inv
 
 		if cfg.Progress != nil {
 			cfg.Progress(invoke.TransferProgress{
-				Path:    path.Base(vpath),
+				Path:    rel,
 				Current: current,
 				Total:   int64(len(node.content)),
 			})
