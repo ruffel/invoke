@@ -50,7 +50,10 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(context.
 	defer end()
 
 	err = run(opCtx)
-	if err != nil && lifetimeEnded(opCtx) {
+
+	// Asked even of a copy that finished: Close stopped it, whether or
+	// not its last bytes had already been written.
+	if lifetimeEnded(opCtx) {
 		return fmt.Errorf("docker: %s: stopped by Close: %w", op, invoke.ErrClosed)
 	}
 

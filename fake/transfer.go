@@ -46,7 +46,10 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(context.
 	defer end()
 
 	err = run(opCtx)
-	if err != nil && lifetime.Ended(opCtx) {
+
+	// Asked even of a copy that finished: Close stopped it, whether or
+	// not its last bytes had already been written.
+	if lifetime.Ended(opCtx) {
 		return fmt.Errorf("fake: %s: stopped by Close: %w", op, invoke.ErrClosed)
 	}
 

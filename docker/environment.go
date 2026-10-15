@@ -182,6 +182,11 @@ func (e *Environment) Close() error {
 	if e.closed {
 		e.mu.Unlock()
 
+		// A Close racing another still waits for the transfers the first
+		// one stopped: returning while they unwind would let them run
+		// on past it.
+		e.life.close()
+
 		return nil
 	}
 

@@ -25,8 +25,9 @@ func TestCloseCancelsAndWaitsForOperations(t *testing.T) {
 		<-ctx.Done()
 		time.Sleep(50 * time.Millisecond) // the operation unwinding
 
-		end()
+		// Signaled before end, which is what releases Close.
 		close(returned)
+		end()
 	}()
 
 	life.Close()

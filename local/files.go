@@ -38,12 +38,14 @@ func (e *Environment) copy(ctx context.Context, op, src, dst string, opts []invo
 
 	err = transfer.Copy(opCtx, transfer.HostFS{}, src, transfer.HostFS{}, dst, invoke.NewTransferConfig(opts...))
 
+	// Ended is asked first, even of a copy that finished: Close stopped
+	// it, whether or not its last bytes had already been written.
 	switch {
-	case err == nil:
-		return nil
 	case lifetime.Ended(opCtx):
 		return fmt.Errorf("local: %s: stopped by Close: %w", op, invoke.ErrClosed)
-	default:
+	case err != nil:
 		return fmt.Errorf("local: %s: %w", op, err)
+	default:
+		return nil
 	}
 }

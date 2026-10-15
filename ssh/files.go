@@ -107,15 +107,15 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(context.
 
 	defer end()
 
-	if err := e.runSession(ctx, op, run); err != nil {
-		if lifetime.Ended(ctx) {
-			return fmt.Errorf("ssh: %s: stopped by Close: %w", op, invoke.ErrClosed)
-		}
+	err = e.runSession(ctx, op, run)
 
-		return err
+	// Asked even of a copy that finished: Close stopped it, whether or
+	// not its last bytes had already been written.
+	if lifetime.Ended(ctx) {
+		return fmt.Errorf("ssh: %s: stopped by Close: %w", op, invoke.ErrClosed)
 	}
 
-	return nil
+	return err
 }
 
 // runSession runs one transfer over its own SFTP session.

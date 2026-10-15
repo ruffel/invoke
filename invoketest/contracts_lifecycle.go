@@ -538,7 +538,29 @@ func lifecycleEnvCloseStopsTransfers() TestCase {
 
 			// Close has begun once the environment refuses a new call.
 			waitForClosed(t, env)
+
+			// A second Close, racing the first, finds the environment
+			// already closed. It must still wait for the transfer the
+			// first one stopped, or the transfer outlives it.
+			again := make(chan error, 1)
+
+			go func() { again <- env.Close() }()
+
+			select {
+			case <-again:
+				close(release)
+				require.FailNow(t, "a second Close returned while the transfer it raced was still running")
+			case <-time.After(closeRaceWindow):
+			}
+
 			close(release)
+
+			select {
+			case closeErr := <-again:
+				assert.NoError(t, closeErr, "the second Close")
+			case <-time.After(contractTimeout):
+				require.FailNow(t, "the second Close did not return after the transfer it stopped")
+			}
 
 			var err error
 
@@ -561,6 +583,11 @@ func lifecycleEnvCloseStopsTransfers() TestCase {
 		},
 	}
 }
+
+// closeRaceWindow is how long a second Close gets to return too early.
+// It returning at all while the transfer is held is the defect, so the
+// window only bounds how long the contract looks.
+const closeRaceWindow = 100 * time.Millisecond
 
 // waitForClosed waits until env refuses new calls, the first thing Close
 // does, so a contract can act once Close has begun.
