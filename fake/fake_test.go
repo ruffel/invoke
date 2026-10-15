@@ -528,22 +528,26 @@ func TestUnsupportedShellSyntaxIsRefusedNotRun(t *testing.T) {
 
 	t.Cleanup(func() { _ = env.Close() })
 
-	proc, err := env.Start(t.Context(), invoke.Shell("false || echo rescued"), invoke.IO{})
-	if err == nil {
-		_ = proc.Close()
+	// The shell spelled both ways the fake resolves it: by name, and at
+	// the /usr/bin home LookPath reports for it.
+	for _, sh := range []string{"sh", "/usr/bin/sh"} {
+		proc, err := env.Start(t.Context(), invoke.New(sh, "-c", "false || echo rescued"), invoke.IO{})
+		if err == nil {
+			_ = proc.Close()
 
-		require.Fail(t, "a script the fake shell cannot run reported success")
+			require.Failf(t, "a script the fake shell cannot run reported success", "spelled %q", sh)
+		}
+
+		assert.ErrorIsf(t, err, invoke.ErrNotSupported,
+			"an unrunnable script is a thing this target cannot do, spelled %q", sh)
+
+		var exitErr *invoke.ExitError
+
+		assert.NotErrorAsf(t, err, &exitErr,
+			"refusing a script must not look like the script running and failing, spelled %q", sh)
+
+		assert.Containsf(t, err.Error(), "||", "the refusal must name what it could not run, spelled %q", sh)
 	}
-
-	assert.ErrorIs(t, err, invoke.ErrNotSupported,
-		"an unrunnable script is a thing this target cannot do")
-
-	var exitErr *invoke.ExitError
-
-	assert.NotErrorAs(t, err, &exitErr,
-		"refusing a script must not look like the script running and failing")
-
-	assert.Contains(t, err.Error(), "||", "the refusal must name what it could not run")
 }
 
 // TestBuiltinsAnswerTruthfullyOrRefuse pins the builtins' failure modes
