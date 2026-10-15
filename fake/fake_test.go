@@ -892,3 +892,62 @@ func TestCloseStopsADownloadHeldAtItsLastProgress(t *testing.T) {
 	require.ErrorIs(t, <-downloaded, invoke.ErrClosed, "a download Close stopped, however late")
 	require.NoError(t, <-closed)
 }
+
+// TestCloseReachesAProcessStartedAsItRuns checks no process escapes a
+// Close that lands while it is being started. Start checks the closed
+// flag on entry; a Close in the window after that has already gathered
+// the processes it will stop, so one registered afterwards would run with
+// nothing left to end it. Each attempt races Starts against one Close and
+// requires every process that did start to be stopped.
+func TestCloseReachesAProcessStartedAsItRuns(t *testing.T) {
+	t.Parallel()
+
+	const (
+		attempts = 50
+		starters = 8
+	)
+
+	for range attempts {
+		env := fake.New()
+
+		var (
+			wg    sync.WaitGroup
+			mu    sync.Mutex
+			procs []invoke.Process
+		)
+
+		for range starters {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+
+				proc, err := env.Start(t.Context(), invoke.New("sleep", "30"), invoke.IO{})
+				if err == nil {
+					mu.Lock()
+					procs = append(procs, proc)
+					mu.Unlock()
+				}
+			}()
+		}
+
+		require.NoError(t, env.Close())
+		wg.Wait()
+
+		for _, proc := range procs {
+			waited := make(chan struct{})
+
+			go func() {
+				_, _ = proc.Wait()
+				close(waited)
+			}()
+
+			select {
+			case <-waited:
+			case <-time.After(5 * time.Second):
+				_ = proc.Close()
+				require.FailNow(t, "a process started as Close ran was never stopped")
+			}
+		}
+	}
+}

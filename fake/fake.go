@@ -220,17 +220,22 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		}
 	}
 
-	e.record(cmd)
-
 	s, guard := e.newSession(cmd, stdio)
 
-	return e.spawn(ctx, guard, func(runCtx context.Context) (int, bool) {
+	proc, err := e.spawn(ctx, guard, func(runCtx context.Context) (int, bool) {
 		if handler != nil {
 			return e.runHandler(runCtx, handler, cmd, s)
 		}
 
 		return dispatch(runCtx, s, cmd.Path, cmd.Args)
-	}), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	e.record(cmd)
+
+	return proc, nil
 }
 
 // LookPath resolves name against the fake's handlers and builtins. The
@@ -411,11 +416,26 @@ func (e *Environment) checkOpen(op string) error {
 	return nil
 }
 
-func (e *Environment) track(p *process) {
+// track registers a running process so Close can terminate it, unless the
+// environment has closed in the meantime.
+//
+// Start checks the closed flag once at entry. A Close landing after that
+// has already gathered the processes it will terminate, so one added
+// afterwards would run with nothing left to stop it. Re-checking here
+// under the same lock closes that gap: a process is either registered
+// before Close gathers them, and terminated with the rest, or refused
+// before its body runs.
+func (e *Environment) track(p *process) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if e.closed {
+		return fmt.Errorf("fake: start: %w", invoke.ErrClosed)
+	}
+
 	e.active[p] = struct{}{}
+
+	return nil
 }
 
 func (e *Environment) untrack(p *process) {
