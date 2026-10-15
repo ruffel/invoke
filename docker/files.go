@@ -17,6 +17,7 @@ import (
 
 	"github.com/moby/moby/client"
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 )
 
 // Upload copies a local file or directory tree into the container. See
@@ -44,7 +45,7 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(context.
 		return err
 	}
 
-	opCtx, end, err := e.life.enter(ctx)
+	opCtx, end, err := e.life.Enter(ctx)
 	if err != nil {
 		return fmt.Errorf("docker: %s: %w", op, err)
 	}
@@ -55,7 +56,7 @@ func (e *Environment) transfer(ctx context.Context, op string, run func(context.
 
 	// Asked even of a copy that finished: Close stopped it, whether or
 	// not its last bytes had already been written.
-	if lifetimeEnded(opCtx) {
+	if lifetime.Ended(opCtx) {
 		return fmt.Errorf("docker: %s: stopped by Close: %w", op, invoke.ErrClosed)
 	}
 
