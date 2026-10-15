@@ -133,7 +133,48 @@ tidy-check:
     go mod tidy -diff
     cd docker && GOWORK=off go mod tidy -diff
 
-# Check the tree is ready to be tagged as VERSION (e.g. v0.2.0).
+# Point the submodule at the core module's VERSION, once that is tagged
+# and pushed, and commit the change (e.g. v1.2.0).
+#
+# This is the release's middle step, and the one that has been skipped:
+# docker/v1.0.0 was published still requiring core v0.5.0. It refuses to
+# run before the core tag exists, tidies against the published module the
+# way a consumer resolves it, checks the result, and commits the two
+# files it changed and nothing else. Pushing stays a separate, deliberate
+# step.
+release-repoint VERSION:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    if [[ ! "{{VERSION}}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "version must look like v1.2.3, got {{VERSION}}" >&2
+        exit 1
+    fi
+
+    if ! git rev-parse -q --verify "refs/tags/{{VERSION}}" >/dev/null; then
+        echo "no tag {{VERSION}}: tag and push the core module first" >&2
+        exit 1
+    fi
+
+    if ! git diff --quiet -- docker/go.mod docker/go.sum || ! git diff --cached --quiet -- docker/go.mod docker/go.sum; then
+        echo "docker/go.mod or docker/go.sum has uncommitted changes; commit or discard them first" >&2
+        exit 1
+    fi
+
+    (cd docker && go mod edit -require=github.com/ruffel/invoke@{{VERSION}} && GOWORK=off go mod tidy)
+
+    just release-check {{VERSION}}
+
+    if git diff --quiet -- docker/go.mod docker/go.sum; then
+        echo "docker/go.mod already requires {{VERSION}}; nothing to commit"
+        exit 0
+    fi
+
+    git commit -m "build(docker): Require the core module at {{VERSION}}" -- docker/go.mod docker/go.sum
+
+    echo "committed; push main, then tag docker/{{VERSION}}"
+
+# Check the tree is ready to be tagged as VERSION (e.g. v1.2.0).
 #
 # The submodule pins the core module by version, and during development
 # that pin points at whatever already exists — which is the previous

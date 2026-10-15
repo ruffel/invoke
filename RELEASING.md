@@ -46,14 +46,10 @@ git push ruffel v1.2.0
 # 2. Repoint the submodule, tidy it, and commit.
 #
 # Tidying only becomes possible here: until the core module is published
-# there is no version for the submodule to resolve, which is why its
-# go.mod has been maintained by hand until now.
-cd docker
-go mod edit -require=github.com/ruffel/invoke@v1.2.0
-GOWORK=off go mod tidy
-cd ..
-just release-check v1.2.0          # refuses if the pin is wrong
-git commit -am "build(docker): Require the core module at v1.2.0"
+# there is no version for the submodule to resolve. The recipe refuses
+# to run before the tag exists, runs release-check on the result, and
+# commits only docker/go.mod and docker/go.sum.
+just release-repoint v1.2.0
 git push ruffel main
 
 # 3. Tag the submodule.
