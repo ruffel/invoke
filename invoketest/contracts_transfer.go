@@ -57,6 +57,7 @@ func transferContracts() []TestCase {
 		transferCancelPreservesTreeDestination(),
 		transferDownloadCancelPreservesDestination(),
 		transferTreeCreatesParents(),
+		transferTreeMergesIntoExisting(),
 		transferEmptyFilesAndDirs(),
 		transferSymlinksPreserve(),
 		transferSymlinkUnsupportedErrors(),
@@ -894,6 +895,50 @@ func transferConcurrencyOneIsSequential() TestCase {
 				seen[path] = true
 				last = path
 			}
+		},
+	}
+}
+
+// transferTreeMergesIntoExisting pins what a tree transfer does to a
+// destination directory that already exists: it merges, as cp, scp and
+// rsync do. Files the tree carries replace their namesakes, each by its
+// own atomic rename; files only the destination holds are left alone.
+// Nothing is deleted that the caller did not name.
+func transferTreeMergesIntoExisting() TestCase {
+	return TestCase{
+		Category:    CategoryTransfer,
+		Name:        "tree-upload-merges-into-existing",
+		Description: "Uploading a tree onto an existing directory merges: namesakes are replaced, everything else survives",
+		Run: func(t T, env invoke.Environment) {
+			remote := "/tmp/invoke-xfer-" + token(t)
+			defer cleanupTargetPath(t, env, remote)
+
+			first := t.TempDir()
+			writeHostFixture(t, first, "keep.txt", "kept")
+			writeHostFixture(t, first, "shared.txt", "old")
+			require.NoError(t, os.Mkdir(filepath.Join(first, "sub"), 0o750), "mkdir")
+			writeHostFixture(t, filepath.Join(first, "sub"), "keep.txt", "kept deep")
+
+			require.NoError(t, env.Upload(t.Context(), first, remote), "seeding Upload")
+
+			second := t.TempDir()
+			writeHostFixture(t, second, "shared.txt", "new")
+			writeHostFixture(t, second, "added.txt", "added")
+			require.NoError(t, os.Mkdir(filepath.Join(second, "sub"), 0o750), "mkdir")
+			writeHostFixture(t, filepath.Join(second, "sub"), "added.txt", "added deep")
+
+			require.NoError(t, env.Upload(t.Context(), second, remote), "Upload onto the existing tree")
+
+			local := downloadBack(t, env, remote)
+
+			assert.Equal(t, "kept", readHostFile(t, filepath.Join(local, "keep.txt")),
+				"a file only the destination held must survive the merge")
+			assert.Equal(t, "kept deep", readHostFile(t, filepath.Join(local, "sub", "keep.txt")),
+				"a nested file only the destination held must survive the merge")
+			assert.Equal(t, "new", readHostFile(t, filepath.Join(local, "shared.txt")),
+				"a file the tree carries must replace its namesake")
+			assert.Equal(t, "added", readHostFile(t, filepath.Join(local, "added.txt")))
+			assert.Equal(t, "added deep", readHostFile(t, filepath.Join(local, "sub", "added.txt")))
 		},
 	}
 }

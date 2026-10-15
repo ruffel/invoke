@@ -48,14 +48,88 @@ func TestUploadStagesOnTheDestinationFilesystem(t *testing.T) {
 	assert.Equal(t, "delivered", string(stdout), "the upload did not arrive at the destination")
 }
 
-// TestUploadReplacesAnExistingDirectory pins that uploading a directory
-// over one already there replaces it rather than merging into it, and
-// leaves nothing of the old contents behind — the behaviour the aside-move
-// has to preserve now that it no longer removes the destination up front.
-func TestUploadReplacesAnExistingDirectory(t *testing.T) {
+// TestUploadMergesIntoAnExistingDirectory pins the container-side merge
+// beyond what the contract asks of every provider: the shell that does it
+// has its own ways to go wrong. Hidden names have to be globbed for
+// explicitly, a link where a file arrives has to be replaced rather than
+// moved through, and a directory whose archive mode is read-only still has
+// to be emptied into place.
+func TestUploadMergesIntoAnExistingDirectory(t *testing.T) {
 	t.Parallel()
 
-	id := startContainer(t)
+	env := dialContainer(t)
+	exec := invoke.NewExecutor(env)
+
+	_, err := exec.Run(t.Context(), invoke.Shell(
+		"mkdir -p /data/target/locked /data/elsewhere && echo kept > /data/target/old.txt && "+
+			"ln -s /data/elsewhere /data/target/link.txt"), invoke.IO{})
+	require.NoError(t, err, "seeding the existing destination")
+
+	srcDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, ".hidden"), []byte("hidden"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "link.txt"), []byte("file now"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "locked"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "locked", "inner.txt"), []byte("inner"), 0o600))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "locked"), 0o555))
+
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(srcDir, "locked"), 0o755) })
+
+	require.NoError(t, env.Upload(t.Context(), srcDir, "/data/target"), "upload over an existing directory")
+
+	for path, want := range map[string]string{
+		"/data/target/old.txt":          "kept\n",
+		"/data/target/.hidden":          "hidden",
+		"/data/target/link.txt":         "file now",
+		"/data/target/locked/inner.txt": "inner",
+	} {
+		got, err := exec.Output(t.Context(), invoke.New("cat", path))
+		require.NoErrorf(t, err, "reading %s", path)
+		assert.Equalf(t, want, string(got), "%s after the merge", path)
+	}
+
+	_, err = exec.Run(t.Context(), invoke.New("test", "!", "-L", "/data/target/link.txt"), invoke.IO{})
+	require.NoError(t, err, "the link must have been replaced by the file, not written through")
+
+	_, err = exec.Run(t.Context(), invoke.New("test", "-e", "/data/elsewhere/link.txt"), invoke.IO{})
+	require.Error(t, err, "nothing may have been moved into the directory the link pointed at")
+}
+
+// TestUploadRefusesALinkedChildDirectory checks a symbolic link standing
+// where the tree has a directory is refused, as the engine refuses it,
+// rather than having the rest of the tree written through it.
+func TestUploadRefusesALinkedChildDirectory(t *testing.T) {
+	t.Parallel()
+
+	env := dialContainer(t)
+	exec := invoke.NewExecutor(env)
+
+	_, err := exec.Run(t.Context(), invoke.Shell(
+		"mkdir -p /data/target /data/elsewhere && ln -s /data/elsewhere /data/target/sub"), invoke.IO{})
+	require.NoError(t, err, "seeding the existing destination")
+
+	srcDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "sub"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "a.txt"), []byte("a"), 0o600))
+
+	err = env.Upload(t.Context(), srcDir, "/data/target")
+	require.ErrorContains(t, err, "symbolic link", "a linked child directory must be refused")
+
+	_, err = exec.Run(t.Context(), invoke.New("test", "-e", "/data/elsewhere/a.txt"), invoke.IO{})
+	require.Error(t, err, "nothing may be written through the link")
+}
+
+// TestMergeCrossesMountedFilesystems checks the merge where it cannot
+// rename across: a destination root that is a mount of its own, beneath
+// the directory staging is made in, and a mounted child directory inside
+// an ordinary one. Each entry has to arrive by way of a temporary name on
+// its own filesystem, and none may be left behind.
+func TestMergeCrossesMountedFilesystems(t *testing.T) {
+	t.Parallel()
+
+	id := startContainerWith(t, &container.HostConfig{Tmpfs: map[string]string{
+		"/data/mounted":    "",
+		"/data/target/sub": "",
+	}})
 
 	env, err := docker.New(t.Context(), id)
 	require.NoError(t, err, "docker.New")
@@ -64,22 +138,32 @@ func TestUploadReplacesAnExistingDirectory(t *testing.T) {
 
 	exec := invoke.NewExecutor(env)
 
-	// An existing destination directory with a file the new tree does not
-	// contain.
-	_, err = exec.Run(t.Context(),
-		invoke.Shell("mkdir -p /data/target && echo stale > /data/target/old.txt"), invoke.IO{})
-	require.NoError(t, err, "seeding the existing destination")
+	_, err = exec.Run(t.Context(), invoke.Shell(
+		"echo kept > /data/mounted/keep.txt && echo kept > /data/target/sub/keep.txt"), invoke.IO{})
+	require.NoError(t, err, "seeding the mounts")
 
 	srcDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "new.txt"), []byte("fresh"), 0o600), "writing fixture")
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "top.txt"), []byte("top"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(srcDir, "sub"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", "deep.txt"), []byte("deep"), 0o600))
 
-	require.NoError(t, env.Upload(t.Context(), srcDir, "/data/target"), "upload over an existing directory")
+	for _, root := range []string{"/data/mounted", "/data/target"} {
+		require.NoErrorf(t, env.Upload(t.Context(), srcDir, root), "upload onto %s", root)
+	}
 
-	stdout, err := exec.Output(t.Context(), invoke.New("cat", "/data/target/new.txt"))
-	require.NoError(t, err, "reading the replacement content")
-	assert.Equal(t, "fresh", string(stdout), "the new content did not arrive")
+	for path, want := range map[string]string{
+		"/data/mounted/top.txt":      "top",
+		"/data/mounted/sub/deep.txt": "deep",
+		"/data/mounted/keep.txt":     "kept\n",
+		"/data/target/sub/deep.txt":  "deep",
+		"/data/target/sub/keep.txt":  "kept\n",
+	} {
+		got, err := exec.Output(t.Context(), invoke.New("cat", path))
+		require.NoErrorf(t, err, "reading %s", path)
+		assert.Equalf(t, want, string(got), "%s after the merge", path)
+	}
 
-	// The old file must be gone: a replacement, not a merge.
-	_, err = exec.Run(t.Context(), invoke.New("test", "-e", "/data/target/old.txt"), invoke.IO{})
-	require.Error(t, err, "the destination kept a file from before the upload; it was merged, not replaced")
+	leftovers, err := exec.Output(t.Context(), invoke.Shell("find /data -name '*.invoke-*'"))
+	require.NoError(t, err)
+	assert.Empty(t, string(leftovers), "a temporary name was left behind")
 }
