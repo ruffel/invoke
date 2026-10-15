@@ -108,6 +108,11 @@ func downloadProgressTotals() TestCase {
 			writeHostFixture(t, srcDir, "a.txt", strings.Repeat("a", 100))
 			writeHostFixture(t, srcDir, "b.txt", strings.Repeat("b", 500))
 
+			// Nested, so a path reported as the bare file name rather than
+			// relative to the root shows.
+			require.NoError(t, os.Mkdir(filepath.Join(srcDir, "nested"), 0o750), "mkdir")
+			writeHostFixture(t, filepath.Join(srcDir, "nested"), "c.txt", strings.Repeat("c", 100))
+
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
@@ -129,7 +134,7 @@ func downloadProgressTotals() TestCase {
 				}))
 			require.NoError(t, err, "Download")
 
-			for path, want := range map[string]int64{"a.txt": 100, "b.txt": 500} {
+			for path, want := range map[string]int64{"a.txt": 100, "b.txt": 500, "nested/c.txt": 100} {
 				final, ok := finals[path]
 				if !ok {
 					assert.Failf(t, "missing progress", "no progress reported for %q", path)

@@ -256,9 +256,6 @@ func transferSymlinkFollowCopiesContent() TestCase {
 		Category:    CategoryTransfer,
 		Name:        "symlink-follow-copies-content",
 		Description: "SymlinkFollow replaces an in-root link with its target's content, not a link and not nothing",
-		Gate: func(caps invoke.Capabilities) (bool, string) {
-			return caps.SymlinkPreserve, "target does not declare symlink handling"
-		},
 		Run: func(t T, env invoke.Environment) {
 			srcDir := t.TempDir()
 			writeHostFixture(t, srcDir, "real.txt", "followed content")
@@ -722,6 +719,11 @@ func transferProgressTotals() TestCase {
 			writeHostFixture(t, srcDir, "a.txt", strings.Repeat("a", 100))
 			writeHostFixture(t, srcDir, "b.txt", strings.Repeat("b", 500))
 
+			// Nested, so a path reported as the bare file name rather than
+			// relative to the root shows.
+			require.NoError(t, os.Mkdir(filepath.Join(srcDir, "nested"), 0o750), "mkdir")
+			writeHostFixture(t, filepath.Join(srcDir, "nested"), "c.txt", strings.Repeat("c", 100))
+
 			remote := "/tmp/invoke-xfer-" + token(t)
 			defer cleanupTargetPath(t, env, remote)
 
@@ -740,7 +742,7 @@ func transferProgressTotals() TestCase {
 				}))
 			require.NoError(t, err, "Upload")
 
-			wantSizes := map[string]int64{"a.txt": 100, "b.txt": 500}
+			wantSizes := map[string]int64{"a.txt": 100, "b.txt": 500, "nested/c.txt": 100}
 
 			for path, want := range wantSizes {
 				final, ok := finals[path]
