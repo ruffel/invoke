@@ -68,10 +68,26 @@ type SudoOption func(*sudoConfig)
 //
 // The command and its arguments are passed after a -- separator as an
 // argv, never as a shell string, so no argument can be misread as a sudo
-// flag or interpreted by a shell. Note that sudo resets the environment by
-// default: variables set via Command.Env do not reach the target command
-// unless the sudoers policy preserves them or [WithSudoPreserveEnv] is set
-// and permitted.
+// flag or interpreted by a shell.
+//
+// The process the target starts is sudo, so everything the provider does
+// addresses sudo rather than the wrapped command:
+//
+//   - Start resolves sudo, and only a missing sudo fails wrapping
+//     [ErrNotFound]. A wrapped command sudo cannot find, or a password
+//     sudo -n will not prompt for, makes sudo exit non-zero: an
+//     [ExitError], with sudo's own message on standard error, and never
+//     retried.
+//   - Command.Env is set on sudo's process, whichever way the provider
+//     delivers it, and sudo resets the environment by default: the
+//     variables do not reach the wrapped command unless the sudoers
+//     policy preserves them or [WithSudoPreserveEnv] is set and
+//     permitted.
+//   - [Process.Signal] and Close address sudo. sudo relays the signals it
+//     can catch to the command, but SIGKILL cannot be caught: a command
+//     sudo runs as a child of its own is killed with it only where the
+//     target signals the whole process group, as [Process.Signal]
+//     describes.
 func WithSudo(opts ...SudoOption) Option {
 	return func(c *execConfig) {
 		sc := &sudoConfig{}

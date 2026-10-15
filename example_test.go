@@ -35,7 +35,7 @@ func ExampleText() {
 
 // An Executor states policy once — here, retry with backoff — and every
 // call inherits it. For a single call with no shared defaults, the
-// package-level [Text] and [Run] need no Executor at all.
+// package-level [invoke.Text] and [invoke.Run] need no Executor at all.
 func ExampleNewExecutor() {
 	env, err := local.New()
 	if err != nil {

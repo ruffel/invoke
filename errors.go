@@ -86,8 +86,11 @@ func (e *ExitError) Error() string {
 // verdict about the command should return that verdict rather than dress
 // it as a transport failure.
 type TransportError struct {
-	// Op names the operation that failed: "start", "wait", "upload",
-	// "download", "lookpath".
+	// Op is a short label, chosen by the provider, for the operation that
+	// failed ("start", "session", "inspect", "archive", ...). It is for
+	// diagnostics, not dispatch: the set is not closed and differs between
+	// providers, so classify on the error's family and the sentinels it
+	// wraps rather than on Op.
 	Op string
 
 	// Err is the underlying transport failure.
