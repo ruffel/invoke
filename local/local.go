@@ -22,6 +22,7 @@ import (
 	"sync"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 )
 
 // Environment runs commands on the local machine.
@@ -31,6 +32,9 @@ type Environment struct {
 	mu     sync.Mutex
 	closed bool
 	active map[*process]struct{}
+
+	// life is what Close ends, taking in-flight transfers with it.
+	life *lifetime.Lifetime
 }
 
 var _ invoke.Environment = (*Environment)(nil)
@@ -46,7 +50,7 @@ func New(opts ...Option) (*Environment, error) {
 		opt(&cfg)
 	}
 
-	return &Environment{cfg: cfg, active: make(map[*process]struct{})}, nil
+	return &Environment{cfg: cfg, active: make(map[*process]struct{}), life: lifetime.New()}, nil
 }
 
 // OS reports the local operating system.
@@ -84,6 +88,8 @@ func (e *Environment) Close() error {
 	}
 
 	e.mu.Unlock()
+
+	e.life.Close()
 
 	for _, p := range procs {
 		_ = p.Close()

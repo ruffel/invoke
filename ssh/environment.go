@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/lifetime"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -47,7 +48,10 @@ type Environment struct {
 	stopKeepAlive context.CancelFunc
 	keepAliveDone chan struct{}
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// life is what Close ends, taking in-flight transfers with it.
+	life *lifetime.Lifetime
+
 	closed bool
 	active map[*process]struct{}
 }
@@ -85,6 +89,7 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		chain:  established,
 		client: established.target(),
 		active: make(map[*process]struct{}),
+		life:   lifetime.New(),
 	}
 
 	env.os = env.detectOS(ctx)
@@ -170,6 +175,11 @@ func (e *Environment) Close() error {
 	}
 
 	e.mu.Unlock()
+
+	// Transfers are stopped first, and waited for, while the connection
+	// they unwind over is still there: a stopped copy removes its temp
+	// file on the way out.
+	e.life.Close()
 
 	// The processes go while the keepalive is still watching. Each Close
 	// kills its command and waits for the outcome, and on a link that has

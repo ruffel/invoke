@@ -17,13 +17,53 @@ import (
 	"github.com/ruffel/invoke"
 )
 
-// Upload copies a local file or directory tree into the container.
+// Upload copies a local file or directory tree into the container. See
+// upload; Close stops it, and it then fails wrapping invoke.ErrClosed.
+func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	return e.transfer(ctx, "upload", func(ctx context.Context) error {
+		return e.upload(ctx, localPath, remotePath, opts...)
+	})
+}
+
+// Download copies a path out of the container. See download; Close stops
+// it as it does an Upload.
+func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
+	return e.transfer(ctx, "download", func(ctx context.Context) error {
+		return e.download(ctx, remotePath, localPath, opts...)
+	})
+}
+
+// transfer runs one transfer for the life of the Environment. Close
+// cancels it and waits for it, staging cleanup included, before the
+// client goes, so nothing it started reaches the daemon after Close has
+// returned.
+func (e *Environment) transfer(ctx context.Context, op string, run func(context.Context) error) error {
+	if err := e.checkOpen(op); err != nil {
+		return err
+	}
+
+	opCtx, end, err := e.life.enter(ctx)
+	if err != nil {
+		return fmt.Errorf("docker: %s: %w", op, err)
+	}
+
+	defer end()
+
+	err = run(opCtx)
+	if err != nil && lifetimeEnded(opCtx) {
+		return fmt.Errorf("docker: %s: stopped by Close: %w", op, invoke.ErrClosed)
+	}
+
+	return err
+}
+
+// upload copies a local file or directory tree into the container.
 //
 // The archive is unpacked into a staging directory and moved into place
 // only once it has arrived whole, so a transfer that fails or is canceled
 // part-way leaves an existing destination exactly as it was. The daemon's
 // own unpacking offers no such guarantee: it writes as the bytes arrive.
-func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+func (e *Environment) upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
 	cfg := invoke.NewTransferConfig(opts...)
 
 	if err := e.beginTransfer(ctx, "upload"); err != nil {
@@ -78,9 +118,9 @@ func (e *Environment) Upload(ctx context.Context, localPath, remotePath string, 
 	return nil
 }
 
-// Download copies a path out of the container to the local filesystem,
+// download copies a path out of the container to the local filesystem,
 // with the same staging guarantee as Upload.
-func (e *Environment) Download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
+func (e *Environment) download(ctx context.Context, remotePath, localPath string, opts ...invoke.TransferOption) error {
 	cfg := invoke.NewTransferConfig(opts...)
 
 	if err := e.beginTransfer(ctx, "download"); err != nil {

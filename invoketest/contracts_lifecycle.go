@@ -2,7 +2,11 @@ package invoketest
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -50,6 +54,7 @@ func lifecycleContracts() []TestCase {
 		lifecycleCloseIsIdempotent(),
 		lifecycleCloseAfterWaitKeepsOutcome(),
 		lifecycleEnvCloseTerminatesProcesses(),
+		lifecycleEnvCloseStopsTransfers(),
 		lifecycleSignalTerminatesProcess(),
 		lifecycleSignalAttributionRoundTrips(),
 		lifecycleSignalAfterExitErrors(),
@@ -480,6 +485,99 @@ func lifecycleEnvCloseTerminatesProcesses() TestCase {
 			requireNotExitError(t, outcome.err, "environment Close")
 		},
 	}
+}
+
+// lifecycleEnvCloseStopsTransfers pins what Close does to a transfer in
+// flight: it stops it, and the transfer fails wrapping ErrClosed.
+//
+// Close is often called from another goroutine, a watchdog or a teardown,
+// while an Upload runs. A transfer that went on and reported success has
+// done work after the caller ended the environment, and one that fails as
+// a TransportError invites a retry into an environment that is closed.
+// The copy is held at its first progress report until Close has begun, so
+// the cancellation lands with most of the file still to go.
+func lifecycleEnvCloseStopsTransfers() TestCase {
+	return TestCase{
+		Category:    CategoryLifecycle,
+		Name:        "env-close-stops-transfers",
+		Description: "Environment Close stops an in-flight transfer, which fails wrapping ErrClosed rather than succeeding or reporting a transport failure",
+		Run: func(t T, env invoke.Environment) {
+			// Large enough that most of it is still to go once Close lands.
+			const closeFileBytes = 4 * bigFileBytes
+
+			src := filepath.Join(t.TempDir(), "big.bin")
+			require.NoError(t, os.WriteFile(src, make([]byte, closeFileBytes), fixtureMode), "writing fixture")
+
+			remote := "/tmp/invoke-xfer-" + token(t)
+
+			held, release := make(chan struct{}), make(chan struct{})
+
+			var once sync.Once
+
+			uploaded := make(chan error, 1)
+
+			go func() {
+				uploaded <- env.Upload(t.Context(), src, remote, invoke.WithProgress(func(invoke.TransferProgress) {
+					once.Do(func() {
+						close(held)
+						<-release
+					})
+				}))
+			}()
+
+			select {
+			case <-held:
+			case <-time.After(contractTimeout):
+				close(release)
+				require.FailNow(t, "the transfer reported no progress within the contract deadline")
+			}
+
+			closed := make(chan error, 1)
+
+			go func() { closed <- env.Close() }()
+
+			// Close has begun once the environment refuses a new call.
+			waitForClosed(t, env)
+			close(release)
+
+			var err error
+
+			select {
+			case err = <-uploaded:
+			case <-time.After(contractTimeout):
+				require.FailNow(t, "the transfer did not return after the environment closed")
+			}
+
+			select {
+			case closeErr := <-closed:
+				assert.NoError(t, closeErr, "Close")
+			case <-time.After(contractTimeout):
+				require.FailNow(t, "Close did not return after the transfer it stopped")
+			}
+
+			require.Error(t, err, "the transfer reported success after the environment closed under it")
+			requireNotTransport(t, err, "a transfer stopped by Close")
+			assert.ErrorIs(t, err, invoke.ErrClosed, "a transfer stopped by Close")
+		},
+	}
+}
+
+// waitForClosed waits until env refuses new calls, the first thing Close
+// does, so a contract can act once Close has begun.
+func waitForClosed(t T, env invoke.Environment) {
+	t.Helper()
+
+	deadline := time.Now().Add(contractTimeout)
+
+	for time.Now().Before(deadline) {
+		if _, err := env.LookPath(context.Background(), "sh"); errors.Is(err, invoke.ErrClosed) {
+			return
+		}
+
+		time.Sleep(time.Millisecond)
+	}
+
+	require.FailNow(t, "the environment never began to close")
 }
 
 func lifecycleSignalTerminatesProcess() TestCase {

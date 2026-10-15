@@ -48,20 +48,21 @@ type defects struct {
 	resolveOnOwnPath   bool // find a bare command through the target's PATH, ignoring the caller's
 
 	// Lifecycle defects.
-	ignoreCancel         bool // detach the process from the caller's context
-	exitErrorOnCancel    bool // misreport cancellation as an ExitError
-	cancelOverwritesExit bool // rewrite a completed success as a late cancellation
-	hardcodeCanceled     bool // report every context error as Canceled, even a deadline
-	collapseSignalNames  bool // report every signal death as SIGTERM
-	singleProcess        bool // refuse a second concurrent Start
-	closeNoOp            bool // process Close does nothing
-	secondCloseErrors    bool // a second Close returns an error
-	closeForgets         bool // Wait after Close loses the cached outcome
-	envCloseNoOp         bool // environment Close does nothing
-	silentSignal         bool // Signal reports success and delivers nothing
-	plainSignalError     bool // unsupported signal errors without ErrNotSupported
-	waitFlipFlops        bool // a second Wait returns a different outcome
-	waitJoinsStdin       bool // hold Wait until the caller's stdin reader returns
+	ignoreCancel          bool // detach the process from the caller's context
+	exitErrorOnCancel     bool // misreport cancellation as an ExitError
+	cancelOverwritesExit  bool // rewrite a completed success as a late cancellation
+	hardcodeCanceled      bool // report every context error as Canceled, even a deadline
+	collapseSignalNames   bool // report every signal death as SIGTERM
+	singleProcess         bool // refuse a second concurrent Start
+	closeNoOp             bool // process Close does nothing
+	secondCloseErrors     bool // a second Close returns an error
+	closeForgets          bool // Wait after Close loses the cached outcome
+	envCloseNoOp          bool // environment Close does nothing
+	transferSurvivesClose bool // run transfers on an environment Close never reaches
+	silentSignal          bool // Signal reports success and delivers nothing
+	plainSignalError      bool // unsupported signal errors without ErrNotSupported
+	waitFlipFlops         bool // a second Wait returns a different outcome
+	waitJoinsStdin        bool // hold Wait until the caller's stdin reader returns
 
 	// Classification defects.
 	plainMissingBinary  bool // strip ErrNotFound from missing-binary failures
@@ -230,6 +231,20 @@ func (m *misbehaveEnv) LookPath(ctx context.Context, name string) (string, error
 }
 
 func (m *misbehaveEnv) Upload(ctx context.Context, localPath, remotePath string, opts ...invoke.TransferOption) error {
+	// The transferSurvivesClose defect is every provider's old behaviour:
+	// the transfer watched only the caller's context, so closing the
+	// environment under it changed nothing.
+	if m.d.transferSurvivesClose {
+		survivor, err := local.New()
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = survivor.Close() }()
+
+		return survivor.Upload(ctx, localPath, remotePath, opts...)
+	}
+
 	if m.d.destroySamePath && localPath == remotePath {
 		// The legacy bug: the destination was opened truncating while the
 		// source was still open, leaving zero bytes and a nil error.
@@ -949,6 +964,7 @@ func defectCatalog() []defectCase {
 		{name: "unclassified lookpath", contract: "errors/lookpath-classifies", defects: defects{plainLookPathError: true}},
 		{name: "bare lookpath name", contract: "errors/lookpath-classifies", defects: defects{bareLookPath: true}},
 		{name: "env close no-op refusal", contract: "errors/closed-env-refuses-all", defects: defects{envCloseNoOp: true}},
+		{name: "transfer survives close", contract: "lifecycle/env-close-stops-transfers", defects: defects{transferSurvivesClose: true}},
 		{name: "terminal laundered as transport", contract: "errors/terminal-outcomes-are-not-transport", defects: defects{launderTerminal: true}},
 		{name: "write failure laundered as transport", contract: "errors/failed-output-write-keeps-outcome", defects: defects{launderWriteFailure: true}},
 
