@@ -6,7 +6,8 @@ This repository holds two modules:
 - `github.com/ruffel/invoke/docker` — the Docker provider, tagged
   `docker/vX.Y.Z`
 
-They are released together and share a version number.
+They are released together and share a version number. The versioning
+policy itself is in the README, under Stability.
 
 ## Why it takes two stages
 
@@ -29,7 +30,9 @@ mistake impossible; run it before tagging.
 
 ## Procedure
 
-Replace `v0.2.0` throughout with the version being released.
+Replace `v1.2.0` throughout with the version being released. The draft
+release, which release-drafter keeps current as pull requests merge,
+names it: `gh release list` shows the draft.
 
 ```sh
 # 0. Everything green, including the lanes that need a container runtime.
@@ -37,8 +40,8 @@ just check
 just test-integration
 
 # 1. Tag the core module.
-git tag v0.2.0
-git push ruffel v0.2.0
+git tag v1.2.0
+git push ruffel v1.2.0
 
 # 2. Repoint the submodule, tidy it, and commit.
 #
@@ -46,16 +49,16 @@ git push ruffel v0.2.0
 # there is no version for the submodule to resolve, which is why its
 # go.mod has been maintained by hand until now.
 cd docker
-go mod edit -require=github.com/ruffel/invoke@v0.2.0
+go mod edit -require=github.com/ruffel/invoke@v1.2.0
 GOWORK=off go mod tidy
 cd ..
-just release-check v0.2.0          # refuses if the pin is wrong
-git commit -am "build(docker): Require the core module at v0.2.0"
+just release-check v1.2.0          # refuses if the pin is wrong
+git commit -am "build(docker): Require the core module at v1.2.0"
 git push ruffel main
 
 # 3. Tag the submodule.
-git tag docker/v0.2.0
-git push ruffel docker/v0.2.0
+git tag docker/v1.2.0
+git push ruffel docker/v1.2.0
 ```
 
 ## Verifying the release
@@ -66,8 +69,6 @@ check from outside the repository rather than trusting the local build:
 ```sh
 cd "$(mktemp -d)"
 go mod init example.com/check
-go get github.com/ruffel/invoke@v0.2.0
-go get github.com/ruffel/invoke/docker@v0.2.0
 cat > main.go <<'EOF'
 package main
 
@@ -80,8 +81,15 @@ import (
 
 func main() {}
 EOF
+go get github.com/ruffel/invoke@v1.2.0
+go get github.com/ruffel/invoke/docker@v1.2.0
+go mod tidy
 go build ./...
 ```
+
+The program comes first and the tidy before the build: `go get` records
+checksums only for packages something already imports, so a build after
+it alone fails asking for go.sum entries the release does not lack.
 
 The `release-verify` workflow does exactly this on every tag push, so it
 runs whether or not anyone remembers to.

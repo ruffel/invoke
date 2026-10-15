@@ -18,10 +18,10 @@ within a few days.
 
 ## Supported versions
 
-The library is pre-1.0, so fixes land on the current release line and a
-corrected version is published rather than patched in place. There is no
-long-term support for earlier lines: upgrading to the latest release is
-the way to receive a fix.
+Fixes land on the latest release, as a new patch or minor version; an
+earlier release is never patched in place. There is no long-term
+support for earlier versions: upgrading to the latest release is the
+way to receive a fix.
 
 ## Scope
 

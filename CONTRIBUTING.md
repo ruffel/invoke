@@ -43,10 +43,16 @@ Commits and pull request titles are [Conventional
 Commits](https://www.conventionalcommits.org): `fix(ssh): ...`,
 `test(invoketest): ...`, one reviewable concern each.
 
-A change that breaks callers carries the `!` marker — `fix(fake)!: ...`.
-The marker is what tells the release draft to raise the minor rather
-than the patch; pre-1.0 a breaking change is a minor, and nothing here
-resolves to a major.
+A change callers have to act on carries the `!` marker — `fix(fake)!:
+...`: a raised requirement, such as the Go or Docker Engine version, or
+a behaviour a caller may have relied on. The marker lists it under
+breaking changes in the release draft and raises the minor rather than
+the patch.
+
+A change that would stop a caller's code compiling is not one of those.
+The Go API is at v1, so it needs a new major version and a new module
+path, and the release draft cannot produce one. Raise it in an issue
+before writing it.
 
 Release notes are drafted automatically as pull requests merge, so a
 well-titled pull request is the changelog entry.
