@@ -14,12 +14,22 @@ import (
 	"github.com/ruffel/invoke"
 )
 
+// settleFunc runs once an archive is extracted and before final modes
+// are applied, with the final mode each extracted file is to carry. It
+// may record modes for files it creates.
+type settleFunc func(ctx context.Context, fileModes map[string]fs.FileMode) error
+
 // extractTree writes an archive into dst, applying the transfer's policy.
 //
 // Every entry is placed by the destination's own path rules and checked
 // to land inside dst: an archive names its own entries, and the daemon is
 // not the only thing that can produce one.
-func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.TransferConfig) error {
+//
+// settle, when not nil, gets the extracted tree before any of it is made
+// read-only: files are written readable and writable by their owner and
+// directories writable, and the modes the archive asks for are applied
+// once settle has finished.
+func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.TransferConfig, settle settleFunc) error {
 	// Directory modes are applied after the walk, deepest first, so a
 	// read-only directory cannot block writing its own contents.
 	type pendingDir struct {
@@ -28,6 +38,12 @@ func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.Tra
 	}
 
 	var dirs []pendingDir
+
+	// Final file modes, held back while settle needs the files open to it.
+	var fileModes map[string]fs.FileMode
+	if settle != nil {
+		fileModes = make(map[string]fs.FileMode)
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -60,13 +76,37 @@ func extractTree(ctx context.Context, tr *tar.Reader, dst string, cfg invoke.Tra
 			continue
 		}
 
-		if err := extractEntry(ctx, tr, dst, target, header, cfg); err != nil {
+		if err := extractEntry(ctx, tr, dst, target, header, cfg, fileModes); err != nil {
 			return err
 		}
 	}
 
+	if err := settleTree(ctx, settle, fileModes); err != nil {
+		return err
+	}
+
 	for i := len(dirs) - 1; i >= 0; i-- {
 		if err := os.Chmod(dirs[i].path, dirs[i].mode); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// settleTree runs settle over an extracted tree, then gives its files the
+// modes held back for it. A file settle removed has no mode to take.
+func settleTree(ctx context.Context, settle settleFunc, fileModes map[string]fs.FileMode) error {
+	if settle == nil {
+		return nil
+	}
+
+	if err := settle(ctx, fileModes); err != nil {
+		return err
+	}
+
+	for p, mode := range fileModes {
+		if err := os.Chmod(p, mode); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
 	}
@@ -81,10 +121,11 @@ func extractEntry(
 	dst, target string,
 	header *tar.Header,
 	cfg invoke.TransferConfig,
+	fileModes map[string]fs.FileMode,
 ) error {
 	switch header.Typeflag {
 	case tar.TypeReg:
-		return extractFile(ctx, tr, dst, target, header, cfg)
+		return extractFile(ctx, tr, dst, target, header, cfg, fileModes)
 
 	case tar.TypeSymlink:
 		return extractSymlink(dst, header.Linkname, target)
@@ -232,12 +273,17 @@ func headerMode(header *tar.Header, cfg invoke.TransferConfig) fs.FileMode {
 }
 
 // extractFile writes one regular file, reporting progress as bytes land.
+//
+// With fileModes, the file is left readable and writable by its owner
+// and the mode it is to carry is recorded there instead, to be applied
+// once the tree has been settled.
 func extractFile(
 	ctx context.Context,
 	tr io.Reader,
 	dst, target string,
 	header *tar.Header,
 	cfg invoke.TransferConfig,
+	fileModes map[string]fs.FileMode,
 ) error {
 	if err := ensureContainedDir(dst, filepath.Dir(target)); err != nil {
 		return err
@@ -251,6 +297,11 @@ func extractFile(
 	}
 
 	mode := headerMode(header, cfg)
+
+	if fileModes != nil {
+		fileModes[target] = mode
+		mode |= ownerReadWrite
+	}
 
 	file, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
@@ -280,6 +331,9 @@ func extractFile(
 
 	return file.Close()
 }
+
+// ownerReadWrite keeps a file workable while its tree is being settled.
+const ownerReadWrite fs.FileMode = 0o600
 
 // archiveRootPrefix returns the leading path element an archive's entries
 // share, so progress reports a path relative to the transfer root rather

@@ -81,7 +81,9 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 		return fmt.Errorf("fake: download: %w", err)
 	}
 
-	if err := e.downloadEntry(ctx, src, src, absDst, node, cfg); err != nil {
+	// A single entry has no tree to stay inside, any more than a single
+	// uploaded link does; a directory's walk bounds its own entries.
+	if err := e.downloadEntry(ctx, "/", src, absDst, node, cfg); err != nil {
 		return fmt.Errorf("fake: download: %w", err)
 	}
 

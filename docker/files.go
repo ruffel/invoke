@@ -92,6 +92,21 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 		return fmt.Errorf("docker: download: %w", err)
 	}
 
+	// A path that is itself a link is followed as the other providers
+	// follow one, before anything is copied: the daemon resolves it, and
+	// what is copied is what it leads to, as docker cp -L does. Links
+	// inside a tree are settled once it has arrived.
+	if cfg.Symlinks == invoke.SymlinkFollow {
+		stat, err := e.client.ContainerStatPath(ctx, e.id, client.ContainerStatPathOptions{Path: src})
+		if err != nil {
+			return fmt.Errorf("docker: download: %w", classifyTransfer(err))
+		}
+
+		if stat.Stat.Mode&os.ModeSymlink != 0 && stat.Stat.LinkTarget != "" {
+			src = path.Clean(stat.Stat.LinkTarget)
+		}
+	}
+
 	dst, err := filepath.Abs(localPath)
 	if err != nil {
 		return fmt.Errorf("docker: download: %w", err)
@@ -116,7 +131,9 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 	// which need not match what the caller asked the copy to be called.
 	arrived := filepath.Join(staging, path.Base(src))
 
-	if err := applyLinkPolicy(arrived, src, cfg); err != nil {
+	// Nothing reaches the destination for a download that was canceled
+	// while it was being settled.
+	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("docker: download: %w", err)
 	}
 
@@ -211,7 +228,8 @@ func (e *Environment) receiveArchive(ctx context.Context, src, dst string, cfg i
 
 	defer func() { _ = res.Content.Close() }()
 
-	return extractTree(ctx, tar.NewReader(res.Content), dst, cfg)
+	return extractTree(ctx, tar.NewReader(res.Content), dst, cfg,
+		linkSettler(filepath.Join(dst, path.Base(src)), src, cfg))
 }
 
 // normalizeRemote renders a container path in a single form.
