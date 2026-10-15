@@ -167,8 +167,8 @@ func ExampleCapabilities() {
 	// Output: tty refused: true
 }
 
-// Transfers move a file or a whole tree, and are delivered whole or not
-// at all.
+// Transfers move a file or a whole tree. Every file is delivered whole or
+// not at all; a tree that fails part way keeps what had already arrived.
 func ExampleExecutor_Upload() {
 	env := fake.New()
 

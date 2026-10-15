@@ -173,8 +173,9 @@ func (e *Executor) Lines(ctx context.Context, cmd Command, onLine func(string), 
 }
 
 // Upload copies a local path to the target, retrying on transport
-// failures per the executor's default policy. Transfers are path-based and
-// atomic, so a retry re-reads the source and never corrupts the
+// failures per the executor's default policy. Transfers are path-based
+// and every file lands by rename, so a retry re-reads the source,
+// finishes what a failed attempt started, and never corrupts the
 // destination.
 func (e *Executor) Upload(ctx context.Context, localPath, remotePath string, opts ...TransferOption) error {
 	return e.retryTransfer(ctx, func() error {
