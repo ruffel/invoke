@@ -66,11 +66,11 @@ type process struct {
 	closeOnce sync.Once
 }
 
-// abandonGrace is how long a terminated body gets to finish before the
-// caller is released without it. It mirrors the local provider's
+// terminationGrace is how long a terminated body gets to finish before
+// the caller is released without it. It matches the local provider's
 // default termination grace: the same wedge — a read nothing can
 // interrupt — gets the same bounded patience.
-const abandonGrace = 2 * time.Second
+const terminationGrace = 2 * time.Second
 
 // spawn launches fn as the simulated process body.
 //
@@ -121,7 +121,7 @@ func (e *Environment) spawn(
 		select {
 		case <-p.done:
 		case <-runCtx.Done():
-			timer := time.NewTimer(abandonGrace)
+			timer := time.NewTimer(terminationGrace)
 			defer timer.Stop()
 
 			select {

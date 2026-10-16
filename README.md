@@ -197,12 +197,12 @@ written against it cannot come to rely on behavior no real target has.
 
 Its shell interprets a subset — sequencing with `;` and `&&`, quoting,
 `$NAME` and `${NAME}`, `$(...)` substitution, redirection to `/dev/null`
-and between the output streams — and refuses what it cannot run, naming
-it, rather than running it wrongly. A pipeline, a `||` list, a glob, a
-comment: each fails with `ErrNotSupported` instead of quietly meaning
-something else, and the builtins answer truthfully or refuse loudly.
-Script anything beyond the subset with `Handle`, or run it against a real
-target.
+and between the output streams, and its own `cd`, `exit` and `exec` — and
+refuses what it cannot run, naming it, rather than running it wrongly. A
+pipeline, a `||` list, a glob, a comment: each fails with `ErrNotSupported`
+instead of quietly meaning something else, and the builtins answer
+truthfully or refuse loudly. Script anything beyond the subset with
+`Handle`, or run it against a real target.
 
 ```go
 env := fake.New()
@@ -283,7 +283,7 @@ that contradicts the documentation or the contract suite is a bug, and
 its fix ships in any release, even where a caller came to depend on it.
 The two modules are released together, at one version.
 
-POSIX targets this cycle — Linux and macOS hosts, Linux containers.
+POSIX targets: Linux and macOS hosts, Linux containers.
 Everything compiles on Windows, but execution semantics are out of scope
 for now. Go 1.26 or newer.
 

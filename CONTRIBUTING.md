@@ -37,6 +37,60 @@ suite against a real OpenSSH server and a real container and compare
 the providers against each other; they need a container runtime, which
 is why they are not part of `just check`.
 
+## Repository layout
+
+- The root is package `invoke`: the `Environment` interface, commands,
+  results, the `Executor`, and the exported transfer policy in
+  `transfer.go`.
+- `local/`, `ssh/` and `fake/` are providers in the core module.
+- `docker/` is the container provider, in a module of its own.
+- `internal/transfer/` is the transfer engine; `internal/lifetime/` ties
+  the operations an `Environment` runs to its life, so `Close` can stop
+  them.
+- `invoketest/` is the contract suite every provider passes.
+
+Tests run in three lanes, by build tag:
+
+- untagged, run by `just check` (or `just test`): everything that needs
+  no container runtime, the ssh provider included, against an
+  in-process SSH server;
+- `openssh`, run by `just test-openssh`: the ssh provider against a real
+  OpenSSH server in a container;
+- `docker`, run by `just test-docker`: the docker provider against a
+  real container, and `TestProviderParity` (also `just test-parity`).
+
+`just test-integration` runs both tagged lanes.
+
+Where things go:
+
+- Behaviour specific to one provider lives in that provider's package.
+  Mechanism more than one provider shares lives under `internal/`.
+- Transfer semantics are decided once. A transport that moves a file at
+  a time plugs an `FS` into `internal/transfer` — local and ssh do, and
+  the fake does through `fake/vfsfs.go`. A transport that moves whole
+  trees, as docker's tar archives do, cannot, and decides each entry
+  with `ClassifyEntry`, `EffectiveMode` and `CheckFollowTarget` instead.
+- Every behavioural change lands with its contract in `invoketest` and a
+  defect in `invoketest/misbehave_test.go` proving the contract can fail.
+
+The docker provider is its own module because the Docker client library
+brings a large dependency graph of its own, which consumers who never use
+docker should not inherit; ssh's dependencies are small enough to stay in
+the core. The docker module requires a released core version. It may
+import the core's `internal/` packages for mechanism — it uses
+`internal/lifetime` — but only once a release carries them. Policy stays
+exported in the root package, so a provider outside this repository can
+reach the same answers. `invoketest` is public for the same reason, and
+the parity test lives in `docker/` because only that module can import
+every provider.
+
+Test files are named for the behaviour they cover, not for a source
+file. In the root, `local/`, `ssh/`, `fake/` and `internal/`, white-box
+tests (in the package itself) are named `_internal_test.go` and the rest
+are in the external `_test` package. In `docker/` white-box tests carry
+no suffix and are told apart by their package clause; `invoketest/`'s
+tests are all white-box.
+
 ## Commits and pull requests
 
 Commits and pull request titles are [Conventional
@@ -76,8 +130,8 @@ not by prose. Two consequences for a change:
 - Every contract must be provably capable of failing: the suite's
   self-test runs each contract against a defect-injected provider and
   fails if any contract lacks a defect that makes it fail. A new
-  contract therefore registers one in the misbehave catalog
-  demonstrating it.
+  contract therefore registers one in the misbehave catalog,
+  `invoketest/misbehave_test.go`, demonstrating it.
 
 An `Environment` implemented outside this repository can be verified
 against the same suite with `invoketest.Verify`.
