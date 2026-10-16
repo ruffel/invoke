@@ -280,7 +280,7 @@ that contradicts the documentation or the contract suite is a bug, and
 its fix ships in any release, even where a caller came to depend on it.
 The two modules are released together, at one version.
 
-POSIX targets this cycle — Linux and macOS hosts, Linux containers.
+POSIX targets: Linux and macOS hosts, Linux containers.
 Everything compiles on Windows, but execution semantics are out of scope
 for now. Go 1.26 or newer.
 
