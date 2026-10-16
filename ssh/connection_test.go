@@ -221,8 +221,7 @@ func TestAgentSocketIsReleasedOnClose(t *testing.T) {
 
 // TestConstructionHonoursItsContext checks the caller's context bounds
 // connecting, which is where the blocking actually happens: a dial, a
-// handshake and a probe round trip, none of which a caller could
-// previously abandon.
+// handshake and a probe round trip, each of which a caller can abandon.
 func TestConstructionHonoursItsContext(t *testing.T) {
 	t.Parallel()
 
@@ -283,11 +282,10 @@ func TestTimeoutDoesNotOutliveTheHandshake(t *testing.T) {
 //
 // The taxonomy puts the context's own error among the terminal ones: the
 // caller stopping the work is not the transport failing, and only one of
-// those is ever retried. The two halves of establishing a connection used
-// to disagree about this — a handshake cut short reported the
-// cancellation, a dial cut short reported a transport failure — so which
-// family a caller landed in depended on how far the connection had got
-// before they stopped it.
+// those is ever retried. Both halves of establishing a connection report
+// it the same way — a dial cut short and a handshake cut short each
+// report the cancellation — so the family a caller lands in does not
+// depend on how far the connection had got before they stopped it.
 func TestCancelledConnectionIsNotATransportFailure(t *testing.T) {
 	t.Parallel()
 
