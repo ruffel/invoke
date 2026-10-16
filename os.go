@@ -4,11 +4,12 @@ import "runtime"
 
 // TargetOS identifies the operating system of an execution target. Values
 // mirror runtime.GOOS strings, so a TargetOS can be compared against GOOS
-// constants and logged directly.
+// constants and logged directly. The set is open: [LocalOS] reports
+// whatever runtime.GOOS is, including values not declared below.
 type TargetOS string
 
-// Known target operating systems. Execution semantics are POSIX-only this
-// cycle; providers reject targets they cannot serve correctly.
+// Known target operating systems. Execution semantics are POSIX-only;
+// providers reject targets they cannot serve correctly.
 const (
 	// OSUnknown means the target's operating system has not been
 	// determined.
