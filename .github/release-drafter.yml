@@ -3,17 +3,15 @@
 # recalling what changed.
 #
 # The draft is a starting point rather than the finished notes. It groups by
-# the kind of change, and a release worth reading usually groups by theme
-# and says why each change mattered; v0.4.0's and v0.5.0's notes did, and no
-# generator would have produced them. Edit before publishing.
+# the kind of change, and a release worth reading groups by theme and says
+# why each change mattered, which no generator does. Edit before
+# publishing, and just before it: every push to main redrafts the notes.
 #
 # Every rule below lives on a category, which is the one schema v7 is not
 # deprecating: a category says what it is (type), what it collects (when),
 # and what it does to the version (semver-increment). The older spellings —
-# categories[*].labels, exclude-labels, version-resolver — still work but
-# warn on every run, and they are documented as going away. Migrating on a
-# warning rather than on a removal is the difference between doing this
-# deliberately and doing it under a broken release.
+# categories[*].labels, exclude-labels, version-resolver — warn on every
+# run and are documented as going away, so none is used.
 
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
@@ -61,21 +59,19 @@ change-template: '- $TITLE (#$NUMBER)'
 change-title-escapes: '\<*_&'
 
 # A pull request matching no category at all resolves the version by the
-# schema's own default, which is patch — the behaviour the version-resolver
-# block used to spell out.
+# schema's own default, which is patch.
 #
 # The labels themselves are applied from the pull request title by
 # .github/pr-label.sh, which the workflow runs on every pull request. They
-# are not applied from here: release drafter's own autolabeler stopped
-# writing labels at v7, which forces dry-run mode whenever the ref is a
-# pull request's ephemeral merge commit. The block that used to live here
-# is gone rather than kept as decoration — configuration that silently
-# does nothing is how this broke in the first place.
+# are not applied from here: release drafter's own autolabeler writes no
+# labels from v7, which runs in dry-run mode whenever the ref is a pull
+# request's ephemeral merge commit, so an autolabeler block here would be
+# configuration that silently does nothing.
 #
 # A breaking change carries the Conventional Commits "!" marker, as in
 # "fix(fake)!: ...". That marker and a feature are the only things that
-# raise the minor: a breaking change titled without it drafts as a patch. The convention
-# is stated in CONTRIBUTING.md.
+# raise the minor: a breaking change titled without it drafts as a patch.
+# The convention is stated in CONTRIBUTING.md.
 
 template: |
   $CHANGES
