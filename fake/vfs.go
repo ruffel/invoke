@@ -19,6 +19,13 @@ type vnode struct {
 
 // vfs is the fake target's filesystem: absolute, slash-separated, cleaned
 // paths mapping to nodes. It is safe for concurrent use.
+//
+// It is the one store. The builtins and the shell's cd act on it
+// directly; vfsFS (vfsfs.go) presents it to the transfer engine for
+// Upload and Download; fsView (fsview.go) is the read-only io/fs view
+// [Environment.FS] returns. The store keys every entry by its literal
+// path, so the views resolve symbolic links themselves: vfsFS through
+// every component, as the host does, and fsView at the final one only.
 type vfs struct {
 	mu    sync.Mutex
 	nodes map[string]*vnode
@@ -36,7 +43,7 @@ func newVFS() *vfs {
 	}}
 }
 
-// clean normalizes p to an absolute cleaned path, resolving relative paths
+// vfsClean normalizes p to an absolute cleaned path, resolving relative paths
 // against dir.
 func vfsClean(dir, p string) string {
 	if !path.IsAbs(p) {

@@ -194,12 +194,12 @@ written against it cannot come to rely on behavior no real target has.
 
 Its shell interprets a subset — sequencing with `;` and `&&`, quoting,
 `$NAME` and `${NAME}`, `$(...)` substitution, redirection to `/dev/null`
-and between the output streams — and refuses what it cannot run, naming
-it, rather than running it wrongly. A pipeline, a `||` list, a glob, a
-comment: each fails with `ErrNotSupported` instead of quietly meaning
-something else, and the builtins answer truthfully or refuse loudly.
-Script anything beyond the subset with `Handle`, or run it against a real
-target.
+and between the output streams, and its own `cd`, `exit` and `exec` — and
+refuses what it cannot run, naming it, rather than running it wrongly. A
+pipeline, a `||` list, a glob, a comment: each fails with `ErrNotSupported`
+instead of quietly meaning something else, and the builtins answer
+truthfully or refuse loudly. Script anything beyond the subset with
+`Handle`, or run it against a real target.
 
 ```go
 env := fake.New()
