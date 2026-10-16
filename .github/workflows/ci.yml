@@ -54,11 +54,10 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
-      # The same check `just check` runs first, which CI otherwise
-      # skipped. `go work init` and `go work sync` stamp the running
-      # toolchain's exact patch version into go.work, and a stamp newer
-      # than the modules declare makes the tree unbuildable for everyone
-      # whose toolchain matches go.mod.
+      # The same check `just check` runs first. `go work init` and
+      # `go work sync` stamp the running toolchain's exact patch version
+      # into go.work, and a stamp newer than the modules declare makes the
+      # tree unbuildable for everyone whose toolchain matches go.mod.
       - name: Fail if the workspace demands a newer toolchain than the modules
         run: |
           workspace=$(awk '/^go /{print $2; exit}' go.work)
@@ -77,8 +76,7 @@ jobs:
       # The contracts that need a daemon are behind the docker build tag
       # and run in the integration lane. What is left is ordinary unit
       # tests — tar building, path classification, context resolution —
-      # which need nothing and were the only part of this module never
-      # run on macOS.
+      # which need nothing and run on both platforms.
       - name: Run the docker module's tests with race detector
         run: cd docker && go test -race -timeout 5m ./...
 

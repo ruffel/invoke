@@ -5,7 +5,8 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Full local verification: mirrors what CI runs.
+# Full local verification: the checks CI runs that need no container
+# runtime.
 default: check
 
 # Format-check, lint, tidy-check, cross-build, race tests.
@@ -122,8 +123,7 @@ fmt-check:
 #
 # The submodule is tidied with the workspace off, the way a consumer
 # resolves it: against the published core module its go.mod names, not the
-# local checkout the workspace would substitute. That version now exists,
-# so the submodule is no longer maintained by hand.
+# local checkout the workspace would substitute.
 tidy:
     go mod tidy
     cd docker && GOWORK=off go mod tidy
@@ -136,12 +136,11 @@ tidy-check:
 # Point the submodule at the core module's VERSION, once that is tagged
 # and pushed, and commit the change (e.g. v1.2.0).
 #
-# This is the release's middle step, and the one that has been skipped:
-# docker/v1.0.0 was published still requiring core v0.5.0. It refuses to
-# run before the core tag exists, tidies against the published module the
-# way a consumer resolves it, checks the result, and commits the two
-# files it changed and nothing else. Pushing stays a separate, deliberate
-# step.
+# This is the release's middle step: skipped, it publishes a submodule
+# that still requires the previous core release. It refuses to run before
+# the core tag exists, tidies against the published module the way a
+# consumer resolves it, checks the result, and commits the two files it
+# changed and nothing else. Pushing stays a separate, deliberate step.
 release-repoint VERSION:
     #!/usr/bin/env bash
     set -euo pipefail
