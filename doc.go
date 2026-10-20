@@ -35,7 +35,9 @@
 //   - [TransportError] — the connection to the target failed. Nothing can
 //     be concluded about the command.
 //   - [ErrNotFound], [ErrInvalidWorkdir] — it could not be started.
-//   - [ErrClosed] — the caller stopped it, or the environment was closed.
+//   - [ErrClosed] — the process or environment was closed.
+//   - The context's own error, matching ctx.Err() — the caller canceled
+//     it.
 //   - [ErrNotSupported] — the target cannot do what was asked.
 //
 // Anything a provider cannot classify stays an ordinary error, and

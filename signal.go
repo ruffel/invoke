@@ -9,8 +9,8 @@ package invoke
 // [ErrNotSupported] — never a silent no-op.
 type Signal string
 
-// The supported signal set. Window-size changes (SIGWINCH) and terminal
-// resize forwarding are out of scope this cycle.
+// The supported signal set. SIGWINCH is absent because window-size changes
+// and terminal resize forwarding are not part of the API.
 const (
 	// SIGINT interrupts the process, as Ctrl-C does.
 	SIGINT Signal = "INT"

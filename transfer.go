@@ -6,7 +6,9 @@ import (
 )
 
 // UnknownTotal is the TransferProgress.Total value reported when the total
-// size of a transfer is not known in advance.
+// size of a transfer is not known in advance. The providers in this module
+// always know the size, so they never report it; it is the convention for a
+// provider whose transport streams a file without one.
 const UnknownTotal int64 = -1
 
 // SymlinkPolicy selects how file transfers treat symbolic links inside a
@@ -16,7 +18,7 @@ type SymlinkPolicy int
 const (
 	// SymlinkPreserve recreates links as links at the destination. It is
 	// the default. On targets that cannot represent links (see
-	// [Capabilities].SymlinkPreserve), transfers fail with an error
+	// [Capabilities.SymlinkPreserve]), transfers fail with an error
 	// naming the link rather than silently flattening or dropping it.
 	SymlinkPreserve SymlinkPolicy = iota
 
