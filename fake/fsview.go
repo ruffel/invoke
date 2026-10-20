@@ -30,9 +30,6 @@ var (
 	_ fs.ReadLinkFS = (*fsView)(nil)
 )
 
-// maxLinkDepth bounds symlink resolution in Open, guarding cycles.
-const maxLinkDepth = 8
-
 func toVFSPath(name string) (string, bool) {
 	if !fs.ValidPath(name) {
 		return "", false
@@ -45,6 +42,11 @@ func toVFSPath(name string) (string, bool) {
 	return "/" + name, true
 }
 
+// Paths resolve as the transfer view resolves them, and as the host does:
+// a link in a parent component is a directory to walk through, so Open
+// resolves the whole path and Lstat and ReadLink resolve the parent and
+// leave the final entry as it is.
+
 // Open opens the named file, following symlinks.
 func (f *fsView) Open(name string) (fs.File, error) {
 	vpath, ok := toVFSPath(name)
@@ -52,9 +54,14 @@ func (f *fsView) Open(name string) (fs.File, error) {
 		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrInvalid}
 	}
 
-	node, resolved, err := f.resolve(vpath, maxLinkDepth)
+	resolved, err := vfsFS{f.v}.Resolve(vpath)
 	if err != nil {
-		return nil, &fs.PathError{Op: "open", Path: name, Err: err}
+		return nil, &fs.PathError{Op: "open", Path: name, Err: underlying(err)}
+	}
+
+	node, exists := f.v.snapshot(resolved)
+	if !exists {
+		return nil, &fs.PathError{Op: "open", Path: name, Err: fs.ErrNotExist}
 	}
 
 	if node.dir {
@@ -63,7 +70,7 @@ func (f *fsView) Open(name string) (fs.File, error) {
 
 	return &fileHandle{
 		reader: bytes.NewReader(node.content),
-		info:   nodeInfo(path.Base(resolved), node),
+		info:   nodeInfo(path.Base(name), node),
 	}, nil
 }
 
@@ -74,12 +81,12 @@ func (f *fsView) Lstat(name string) (fs.FileInfo, error) {
 		return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrInvalid}
 	}
 
-	node, exists := f.v.snapshot(vpath)
-	if !exists {
-		return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrNotExist}
+	info, err := vfsFS{f.v}.Lstat(vpath)
+	if err != nil {
+		return nil, &fs.PathError{Op: "lstat", Path: name, Err: underlying(err)}
 	}
 
-	return nodeInfo(path.Base(vpath), node), nil
+	return info, nil
 }
 
 // ReadLink returns the destination of the named symbolic link.
@@ -89,39 +96,24 @@ func (f *fsView) ReadLink(name string) (string, error) {
 		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
 	}
 
-	node, exists := f.v.snapshot(vpath)
-	if !exists {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrNotExist}
+	target, err := vfsFS{f.v}.Readlink(vpath)
+	if err != nil {
+		return "", &fs.PathError{Op: "readlink", Path: name, Err: underlying(err)}
 	}
 
-	if node.link == "" {
-		return "", &fs.PathError{Op: "readlink", Path: name, Err: fs.ErrInvalid}
-	}
-
-	return node.link, nil
+	return target, nil
 }
 
-// resolve walks symlinks to the underlying node.
-func (f *fsView) resolve(vpath string, depth int) (vnode, string, error) {
-	node, exists := f.v.snapshot(vpath)
-	if !exists {
-		return vnode{}, "", fs.ErrNotExist
+// underlying unwraps the path error the transfer view returns, so the
+// view's own error names the io/fs path the caller gave rather than the
+// virtual one, around the same cause.
+func underlying(err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Err
 	}
 
-	if node.link == "" {
-		return node, vpath, nil
-	}
-
-	if depth == 0 {
-		return vnode{}, "", errors.New("too many levels of symbolic links")
-	}
-
-	target := node.link
-	if !path.IsAbs(target) {
-		target = path.Join(path.Dir(vpath), target)
-	}
-
-	return f.resolve(path.Clean(target), depth-1)
+	return err
 }
 
 // nodeInfo materializes an fs.FileInfo for a node snapshot.
