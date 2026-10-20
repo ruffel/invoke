@@ -56,13 +56,8 @@ func TestSupportedScriptsAreAccepted(t *testing.T) {
 	}
 }
 
-// TestUnsupportedScriptsAreRefused pins the constructs the shell cannot
-// run and used to take literally instead.
-//
-// Each of these produced a wrong answer silently: the pipeline became
-// arguments, the redirection became words, and the || list inverted —
-// exiting non-zero having printed nothing where a real shell exits zero
-// having printed.
+// TestUnsupportedScriptsAreRefused pins that each construct outside the
+// subset is refused, and named in the refusal.
 func TestUnsupportedScriptsAreRefused(t *testing.T) {
 	t.Parallel()
 

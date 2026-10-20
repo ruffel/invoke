@@ -13,17 +13,8 @@ import (
 	"github.com/ruffel/invoke"
 )
 
-// The mini-shell interprets the POSIX subset the contract suite and
-// typical incidental scripts use: command sequencing with ; and &&,
-// single and double quotes, $VAR and ${VAR} expansion, $(command)
-// substitution, numeric redirects to /dev/null (flush or spaced) and
-// between the two output streams, cd, and exit.
-//
-// Nothing more, and the boundary is enforced rather than described: a
-// script reaching past the subset is refused by name, because the
-// alternative is a tokenizer treating what it does not recognize as
-// ordinary text and answering wrongly without saying so. A script needing
-// more belongs in a consumer handler.
+// The mini-shell interprets the subset listed in the package doc's "What
+// the shell runs" section, and refuses the rest by name.
 
 // shellScriptSupported refuses a shell command whose script uses a
 // construct this shell cannot run, naming it and wrapping
@@ -55,15 +46,6 @@ const exitUnsupportedSyntax = 93
 
 // unsupportedSyntax reports the first construct a script uses that this
 // shell does not implement, or nil when the script is within the subset.
-//
-// What falls outside the subset used to be taken literally, because an
-// unrecognized character is just another character to a tokenizer: a
-// pipeline became arguments to the first command, a redirection became
-// two more words, and `false || echo rescued` exited 1 having printed
-// nothing where a real shell exits 0 having printed. A test written
-// against that is not merely unverified — it can assert the opposite of
-// what every real target does — so a script this shell cannot run is
-// refused rather than run wrongly.
 //
 //nolint:cyclop,gocognit,funlen // One pass over the script; the cases read better together than split.
 func unsupportedSyntax(script string) error {

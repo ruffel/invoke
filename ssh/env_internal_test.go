@@ -126,19 +126,19 @@ func TestWaitFailureWithoutAStatusIsTerminal(t *testing.T) {
 	}
 }
 
-// TestSignalDeathDuringTeardownIsTheCallers pins the attribution the #67
-// fix turns on: teardown kills with SIGKILL but also closes the session,
-// and the close can be what ends the command — the server hangs it up
-// and reports a HUP or PIPE that outran the kill. While a Close or
-// cancellation is in flight, that signal death is the teardown's, not
-// the command's.
+// TestSignalDeathDuringTeardownIsTheCallers pins how a signal death is
+// attributed while teardown is in flight: teardown kills with SIGKILL but
+// also closes the session, and the close can be what ends the command —
+// the server hangs it up and reports a HUP or PIPE that outran the kill.
+// While a Close or cancellation is in flight, that signal death is the
+// teardown's, not the command's.
 //
 // It exercises attribute directly, with the signal it could never
 // otherwise see: a real *ssh.ExitError carrying a signal cannot be
 // constructed outside golang.org/x/crypto/ssh, and end to end the death
-// only wins the race against the client's own Close on a slow link —
-// which is why the bug reached CI as an intermittent failure and passed
-// every fast local run. Here the race is settled by construction.
+// only wins the race against the client's own Close on a slow link, so a
+// run against a real server shows it intermittently at best. Here the
+// race is settled by construction.
 func TestSignalDeathDuringTeardownIsTheCallers(t *testing.T) {
 	t.Parallel()
 
@@ -159,7 +159,7 @@ func TestSignalDeathDuringTeardownIsTheCallers(t *testing.T) {
 			var exitErr *invoke.ExitError
 
 			require.NotErrorAs(t, err, &exitErr,
-				"reporting the teardown's signal as the command's outcome is the #67 regression")
+				"the teardown's signal must not be reported as the command's own exit")
 		})
 
 		t.Run("canceled/"+string(sig), func(t *testing.T) {
@@ -175,13 +175,13 @@ func TestSignalDeathDuringTeardownIsTheCallers(t *testing.T) {
 			var exitErr *invoke.ExitError
 
 			require.NotErrorAs(t, err, &exitErr,
-				"reporting the teardown's signal as the command's outcome is the #67 regression")
+				"the teardown's signal must not be reported as the command's own exit")
 		})
 	}
 }
 
 // TestSignalDeathWithoutTeardownIsTheCommands pins the other side of the
-// same boundary, so the fix is not later widened into swallowing a real
+// same boundary, so the rule above does not widen into swallowing a real
 // signal death: with no Close or cancellation in flight, a signal is the
 // command's own outcome and must surface as an ExitError naming it.
 func TestSignalDeathWithoutTeardownIsTheCommands(t *testing.T) {

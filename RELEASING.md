@@ -25,14 +25,18 @@ point at it. The order is therefore fixed:
 
 Skipping step 2 publishes a submodule that compiles in this repository
 and nowhere else, because it would still name the *previous* release —
-carrying the previous API. `just release-check` exists to make that
-mistake impossible; run it before tagging.
+carrying the previous API. `just release-check` refuses a tree whose
+submodule names any other version, and `just release-repoint` runs it
+before committing the repoint.
 
 ## Procedure
 
 Replace `v1.2.0` throughout with the version being released. The draft
 release, which release-drafter keeps current as pull requests merge,
 names it: `gh release list` shows the draft.
+
+Both tags are pushed by hand, below. The draft does not create either:
+it is published last, against the core tag that already exists.
 
 ```sh
 # 0. Everything green, including the lanes that need a container runtime.
@@ -56,6 +60,11 @@ git push ruffel main
 git tag docker/v1.2.0
 git push ruffel docker/v1.2.0
 ```
+
+Then publish the draft release, attached to the `v1.2.0` tag.
+Release-drafter rewrites the draft on every push to main, the repoint
+commit included, so apply any edited notes just before publishing rather
+than earlier.
 
 ## Verifying the release
 
@@ -88,7 +97,9 @@ checksums only for packages something already imports, so a build after
 it alone fails asking for go.sum entries the release does not lack.
 
 The `release-verify` workflow does exactly this on every tag push, so it
-runs whether or not anyone remembers to.
+runs whether or not anyone remembers to. To re-check a published version
+without a new tag, run it by hand:
+`gh workflow run release-verify.yml -f version=v1.2.0`.
 
 If it fails, the tag cannot be withdrawn — the proxy keeps serving it.
 Publish a corrected patch version instead, and add the bad version to

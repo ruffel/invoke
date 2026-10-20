@@ -391,9 +391,9 @@ func (h hopSpec) describe() string {
 //
 // A context that has ended is reported as itself: the caller stopping the
 // work is not the transport failing, and only one of those is worth
-// retrying. This mirrors what the handshake has always done, and matters
-// more now that a hop reached through another reports a bare cancellation
-// with nothing else to identify it by.
+// retrying. The dial and the handshake report it the same way, and a hop
+// reached through another is named alongside it, a bare cancellation
+// having nothing else to identify it by.
 func (h hopSpec) setupFailure(ctx context.Context, op string, err error) error {
 	name := h.describe()
 
