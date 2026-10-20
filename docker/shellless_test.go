@@ -88,10 +88,10 @@ func TestContainerWithoutAShell(t *testing.T) {
 // they cannot stop the command.
 //
 // There is no signalling a command there: the wrapper that records its
-// id, and any kill, need a shell. Both used to wait for the command to
-// finish on its own, so a long command held Close or a canceled context
-// for its whole life. Now they let it go, and the outcome says that is
-// what happened rather than claiming it was ended.
+// id, and any kill, need a shell. Waiting for the command to finish on
+// its own would hold Close or a canceled context for its whole life, so
+// both let it go, and the outcome says that is what happened rather than
+// claiming it was ended.
 func TestShelllessCloseAndCancelDoNotWaitForTheCommand(t *testing.T) {
 	t.Parallel()
 

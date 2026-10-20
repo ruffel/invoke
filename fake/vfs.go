@@ -24,8 +24,8 @@ type vnode struct {
 // directly; vfsFS (vfsfs.go) presents it to the transfer engine for
 // Upload and Download; fsView (fsview.go) is the read-only io/fs view
 // [Environment.FS] returns. The store keys every entry by its literal
-// path, so the views resolve symbolic links themselves: vfsFS through
-// every component, as the host does, and fsView at the final one only.
+// path, so the views resolve symbolic links themselves, both through
+// every component as the host does: fsView asks vfsFS.
 type vfs struct {
 	mu    sync.Mutex
 	nodes map[string]*vnode

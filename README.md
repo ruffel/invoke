@@ -257,6 +257,9 @@ them.
 **Docker needs a shell in the container** for signal delivery, path
 lookup and staging uploads. Without one, those report `ErrNotSupported`
 rather than misbehaving; commands still run and downloads still arrive.
+`Start` cannot check a command before running it, so a missing
+executable or working directory shows as exit status 127 rather than as
+`ErrNotFound` or `ErrInvalidWorkdir`.
 Nothing can stop a command there either, so `Close` and cancellation let
 it go rather than wait for it: `Wait` returns at once, says the command
 was abandoned, and the command runs on in the container until it ends.

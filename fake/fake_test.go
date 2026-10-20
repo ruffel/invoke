@@ -502,6 +502,55 @@ func TestFSViewExposesTargetState(t *testing.T) {
 	assert.Equal(t, "config.json", target, "the FS view must expose the link's target")
 }
 
+// TestFSViewFollowsALinkedParent checks the FS view reaches through a
+// symbolic link to a directory, as the host's filesystem and the fake's
+// own transfers do: /srv/current pointing at a release is the ordinary
+// way to name one, and an assertion on srv/current/app must find it.
+func TestFSViewFollowsALinkedParent(t *testing.T) {
+	t.Parallel()
+
+	env := fake.New()
+
+	t.Cleanup(func() { _ = env.Close() })
+
+	release := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(release, "app"), []byte("app"), 0o644))
+	require.NoError(t, os.Mkdir(filepath.Join(release, "sub"), 0o750))
+	require.NoError(t, os.WriteFile(filepath.Join(release, "sub", "deep"), []byte("deep"), 0o644))
+	require.NoError(t, os.Symlink("app", filepath.Join(release, "app-link")))
+	require.NoError(t, env.Upload(t.Context(), release, "/srv/release-1"))
+
+	links := t.TempDir()
+	require.NoError(t, os.Symlink("/srv/release-1", filepath.Join(links, "current")))
+	require.NoError(t, env.Upload(t.Context(), links, "/srv/names"))
+
+	view := env.FS()
+
+	got, err := fs.ReadFile(view, "srv/names/current/app")
+	require.NoError(t, err, "reading a file under a linked directory")
+	assert.Equal(t, "app", string(got))
+
+	entries, err := fs.ReadDir(view, "srv/names/current/sub")
+	require.NoError(t, err, "listing a directory under a linked directory")
+	require.Len(t, entries, 1)
+	assert.Equal(t, "deep", entries[0].Name())
+
+	linkFS, ok := view.(fs.ReadLinkFS)
+	require.True(t, ok)
+
+	info, err := linkFS.Lstat("srv/names/current/app-link")
+	require.NoError(t, err, "Lstat under a linked directory")
+	assert.Equal(t, fs.ModeSymlink, info.Mode().Type(), "Lstat leaves the final link unfollowed")
+
+	target, err := linkFS.ReadLink("srv/names/current/app-link")
+	require.NoError(t, err, "ReadLink under a linked directory")
+	assert.Equal(t, "app", target)
+
+	// The view still passes the stdlib's conformance test. Only paths a walk
+	// reaches are listed: fs.WalkDir does not descend through a link.
+	require.NoError(t, fstest.TestFS(view, "srv/release-1/app", "srv/release-1/sub/deep"))
+}
+
 func TestUnknownCommandIsNotFound(t *testing.T) {
 	t.Parallel()
 
@@ -601,6 +650,19 @@ func TestBuiltinsAnswerTruthfullyOrRefuse(t *testing.T) {
 			script:     `echo one && exec echo two; echo three`,
 			wantExit:   0,
 			wantStdout: "one\ntwo\n",
+		},
+		{
+			// The shell recognises its builtins by the first word as it
+			// tokenizes it, so quoting the word changes nothing, as in a
+			// real shell.
+			name:       "exec is the shell's word however it is quoted",
+			script:     `"exec" echo two; echo three`,
+			wantStdout: "two\n",
+		},
+		{
+			name:       "exec's command takes its redirections",
+			script:     `exec echo hidden >/dev/null; echo three`,
+			wantStdout: "",
 		},
 		{
 			name:     "exec carries its command's failure",

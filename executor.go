@@ -157,6 +157,10 @@ func (e *Executor) Text(ctx context.Context, cmd Command, opts ...Option) (strin
 // note that a failed-then-retried attempt may have already delivered some
 // lines before failing.
 //
+// onLine is called serially, from a goroutine Lines starts, and every call
+// has returned before Lines does. The command's output is not read while
+// onLine runs, so it must not block indefinitely.
+//
 // A single line longer than 1 MiB fails the stream: the command is
 // stopped, and the error wraps [bufio.ErrTooLong].
 func (e *Executor) Lines(ctx context.Context, cmd Command, onLine func(string), opts ...Option) (Result, error) {
@@ -356,19 +360,8 @@ func (e *Executor) backoffWait(ctx context.Context, cfg execConfig, n int) error
 	}
 }
 
-// retryable reports whether an error is a transport failure — the only
-// family the executor retries. Everything else (exit errors, cancellation,
-// closed environments, unsupported features, missing binaries) is
-// terminal, so retrying must be earned by explicit classification.
-//
-// Belonging to that family is necessary but not sufficient. A
-// [TransportError] unwraps, so one wrapping a terminal outcome answers to
-// both families at once: every assertion about the inner error still
-// holds, and the classifier still reads the outer one. Retry asks a single
-// question — might the command not have run? — and an outcome saying it
-// did run answers it whatever else the error also says. So the terminal
-// reading wins, and a provider cannot obtain a second execution of an
-// arbitrary command by wrapping the first one's verdict.
+// retryable reports whether err is a [TransportError] that carries no
+// terminal outcome, as that type's doc sets out.
 func retryable(err error) bool {
 	var te *TransportError
 

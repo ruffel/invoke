@@ -18,11 +18,11 @@ import (
 // depend on /tmp, and by extension that its move into place is a rename on
 // the destination's own filesystem rather than a copy across a boundary.
 //
-// The container's /tmp is mounted read-only. Staging there — as a fixed
-// staging path once did — fails outright; staging in the destination's own
-// directory, which is writable, does not. A move that has to cross from
-// /tmp to the destination is also the move that cannot be atomic, so the
-// same change removes both problems.
+// The container's /tmp is mounted read-only. Staging under a fixed path
+// there fails outright; staging in the destination's own directory, which
+// is writable, does not. A move that has to cross from /tmp to the
+// destination is also the move that cannot be atomic, so staging beside
+// the destination avoids both problems.
 func TestUploadStagesOnTheDestinationFilesystem(t *testing.T) {
 	t.Parallel()
 

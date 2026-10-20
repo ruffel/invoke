@@ -23,7 +23,16 @@ type process struct {
 	pidFile string
 	started time.Time
 
-	attach  client.ExecAttachResult
+	// attach is the command's stream. doWait closes it once the outcome
+	// is in; stop closes it early to abandon a command it cannot end, and
+	// discard to tear down one never handed back.
+	attach client.ExecAttachResult
+
+	// copied closes when pumpOutput has read the stream to its end, which
+	// is the daemon's signal that the command finished, or when stop has
+	// let the stream go. copyErr, and the sinks' errors, are written by
+	// pumpOutput before copied closes and read only after it has, inside
+	// doWait, which is why no lock guards them.
 	copied  chan struct{}
 	copyErr error
 
@@ -53,7 +62,10 @@ type process struct {
 	waitErr      error
 
 	closeOnce sync.Once
-	done      chan struct{}
+
+	// done is closed by doWait once the outcome is settled, and releases
+	// monitorContext.
+	done chan struct{}
 }
 
 // Start runs cmd in the container and returns a handle to it.
@@ -108,6 +120,9 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
+	// pumpStdin is not waited for. Closing the stream ends a copy blocked
+	// writing to it, but nothing ends one blocked in the caller's own
+	// Reader, so such a copy is abandoned rather than allowed to hold Wait.
 	go p.pumpStdin(stdio.Stdin)
 	go p.pumpOutput(stdio)
 	go p.monitorContext(ctx)
@@ -296,7 +311,8 @@ func (p *process) Signal(sig invoke.Signal) error {
 }
 
 // Close terminates the command if it is still running and waits for the
-// outcome to settle. It is idempotent.
+// outcome to settle. In a container without a shell it abandons the
+// command instead, as stop describes. It is idempotent.
 func (p *process) Close() error {
 	p.closeOnce.Do(func() {
 		p.closedByUser.Store(true)
@@ -315,15 +331,25 @@ func (p *process) Close() error {
 //
 // Without a shell there is no signalling it: the wrapper that records its
 // id needs one, and so does any kill. Waiting for it to finish on its own
-// held Close, and cancellation, for the whole life of the command. So the
-// command is abandoned instead: its input is ended, which is all it takes
-// for one reading to EOF, and the stream is let go, which is what ends
-// the wait. Whatever else it was doing, it goes on doing in the
+// would hold Close, and cancellation, for the whole life of the command.
+// So the command is abandoned instead: its input is ended, which is all
+// it takes for one reading to EOF, and the stream is let go, which is
+// what ends the wait. Whatever else it was doing, it goes on doing in the
 // container, and the outcome says so.
+//
+// A command that has already finished is not abandoned: there is nothing
+// to let go of, and its own outcome stands. That is asked before the
+// stream is released, not after, because releasing it is not neutral:
+// under a terminal it hangs the terminal up, which can end the command,
+// and an answer read afterwards would report that ending as its own.
 func (p *process) stop() {
 	if p.pidFile != "" {
 		_ = p.kill(invoke.SIGKILL)
 
+		return
+	}
+
+	if p.finished() {
 		return
 	}
 
@@ -334,6 +360,20 @@ func (p *process) stop() {
 	}
 
 	p.attach.Close()
+}
+
+// finished reports whether the daemon has the command as no longer
+// running. An inspect that fails says nothing either way, and is taken as
+// still running: abandoning a command that had finished costs only its
+// outcome, where waiting on one that had not is the hang stop exists to
+// avoid.
+func (p *process) finished() bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
+	defer cancel()
+
+	inspect, err := p.env.client.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
+
+	return err == nil && !inspect.Running
 }
 
 // discard tears down an exec that was created but never handed back,
@@ -536,21 +576,11 @@ func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
 	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
 }
 
-// abandonedOutcome reports a command this side let go of. It is asked
-// about once, not waited on: a command that finished first has its exit
-// to report, and one still running in the container was neither ended
-// nor finished, which is what the error says.
+// abandonedOutcome reports a command this side let go of. It was still
+// running when it was let go of, as stop established, so whatever became
+// of it afterwards was Close's or the cancellation's doing, not the
+// command's: it is reported as such, never as an exit of its own.
 func (p *process) abandonedOutcome(duration time.Duration) (invoke.Result, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
-	defer cancel()
-
-	inspect, err := p.env.client.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
-	if err == nil && !inspect.Running {
-		if res, out, settled := p.reportedExit(inspect.ExitCode, duration); settled {
-			return res, out
-		}
-	}
-
 	const why = "the container has no shell to stop it, so it was abandoned and may still be running"
 
 	if p.closedByUser.Load() {
@@ -636,7 +666,8 @@ func (e *Environment) settleInspect(ctx context.Context, execID string) (client.
 
 // monitorContext terminates the command when the start context is
 // canceled, so cancellation stops work in the container rather than
-// merely unblocking the local Wait.
+// merely unblocking the local Wait. In a container without a shell it can
+// only abandon the command, which goes on running there.
 func (p *process) monitorContext(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -666,8 +697,15 @@ func (p *process) cleanupPIDFile() {
 	}
 }
 
-// runRaw runs argv in the container and returns its combined output and
-// exit code. It backs path lookup, shell detection, and signal delivery.
+// runRaw runs one command the provider needs for itself on an exec of its
+// own, and returns its stdout and exit status; stderr is discarded. Every
+// such command, from the probes at connect time to the kill and the
+// staging around an upload, goes through it.
+//
+// It deliberately does not refuse once the environment has closed: Close
+// marks it closed first and then tears down through here, killing
+// commands and removing their pid files, while stopped uploads remove
+// their staging the same way.
 func (e *Environment) runRaw(ctx context.Context, argv []string) (string, int, error) {
 	resp, err := e.client.ExecCreate(ctx, e.id, client.ExecCreateOptions{
 		AttachStdout: true,

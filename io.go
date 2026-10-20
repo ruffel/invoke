@@ -12,9 +12,10 @@ const (
 // IO wires the standard streams for a single invocation of a [Command].
 //
 // The zero value is safe and non-interactive: the process reads immediate
-// EOF from stdin and its output is discarded. Because an IO belongs to
-// exactly one invocation, retried or repeated runs construct a fresh IO
-// each time rather than reusing one whose streams have been consumed.
+// EOF from stdin and its output is discarded. An IO's streams are consumed
+// by the invocation they are given to. Under retry, pass [WithFreshIO] so
+// each attempt gets un-consumed streams: [Executor.Run] refuses to retry
+// with a Stdin it cannot replay, and reuses writers as given.
 type IO struct {
 	// Stdin is the process's standard input. nil means the process sees
 	// immediate EOF.

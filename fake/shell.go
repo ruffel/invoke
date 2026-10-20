@@ -324,19 +324,6 @@ func execScript(ctx context.Context, s *session, script string) (int, bool) {
 			continue
 		}
 
-		// exec replaces the shell with its command: the command runs and
-		// the script ends with its status, whatever follows. The
-		// replacement itself has nothing to simulate — a fake process is
-		// the whole script either way — but ending the script is what
-		// keeps `exec` scripts faithful: nothing after it may run.
-		if fields := strings.Fields(trimmed); len(fields) > 1 && fields[0] == "exec" {
-			rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "exec"))
-
-			execStatus, _, interrupted := execSimple(ctx, shellSession, rest)
-
-			return execStatus, interrupted
-		}
-
 		var (
 			exited      bool
 			interrupted bool
@@ -427,9 +414,9 @@ func splitScript(script string) ([]step, bool) {
 }
 
 // execSimple tokenizes and runs one simple command, applying redirects
-// and the shell-level builtins cd and exit. It returns, in order: the
-// exit status, whether the script must stop (exit), and whether the
-// command was interrupted by cancellation.
+// and the shell-level builtins cd, exit and exec. It returns, in order:
+// the exit status, whether the script must stop (exit, exec), and
+// whether the command was interrupted by cancellation.
 func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) {
 	argv, redirects, tokOK, tokInterrupted := tokenize(ctx, s, text)
 	if tokInterrupted {
@@ -442,6 +429,13 @@ func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) 
 		return 2, false, false
 	}
 
+	return runArgv(ctx, s, argv, redirects)
+}
+
+// runArgv runs a tokenized command. The shell's own builtins are told by
+// the first word as tokenized, so quoting one changes nothing, as in a
+// real shell.
+func runArgv(ctx context.Context, s *session, argv []string, redirects []redirect) (int, bool, bool) {
 	if len(argv) == 0 {
 		return 0, false, false
 	}
@@ -451,6 +445,17 @@ func execSimple(ctx context.Context, s *session, text string) (int, bool, bool) 
 		return runExit(s, argv)
 	case "cd":
 		return runCD(s, argv)
+	case "exec":
+		// exec replaces the shell with its command: the command runs and
+		// the script ends with its status, whatever follows. The
+		// replacement itself has nothing to simulate — a fake process is
+		// the whole script either way — but ending the script is what
+		// keeps exec scripts faithful: nothing after it may run.
+		if len(argv) > 1 {
+			code, _, interrupted := runArgv(ctx, s, argv[1:], redirects)
+
+			return code, true, interrupted
+		}
 	}
 
 	sub := s.clone()
