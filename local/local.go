@@ -2,9 +2,10 @@
 // program is running on. It is the reference [invoke.Environment]: every
 // behavior it implements is pinned by the invoketest contract suite.
 //
-// Windows is not a supported execution target this cycle; the package
-// compiles there, but [New] returns an error wrapping
-// [invoke.ErrNotSupported].
+// Windows is a compile target, not an execution target: the package
+// builds there so programs importing it cross-compile, but [New] returns
+// an error wrapping [invoke.ErrNotSupported], and its Windows-only files
+// are stubs that exist only to keep it compiling.
 //
 // A command asked for a terminal gets a real one: its own session with a
 // controlling terminal, both output streams merged onto it, and the

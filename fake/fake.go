@@ -20,20 +20,23 @@
 // interpreter covers a subset: sequencing with ; and &&, single and
 // double quotes, $NAME and ${NAME} expansion, $(command) substitution,
 // redirection to /dev/null (flush or spaced) and between the two output
-// streams, cd, and exit.
+// streams, cd, exit, and exec.
 //
-// A script reaching outside that subset is refused — wrapping
-// [invoke.ErrNotSupported], before any process exists — rather than run
-// wrongly. Pipelines, || lists, redirection to a file, input redirection,
-// backquotes, newline-separated commands, background commands, comments,
-// globs, backslash escapes, arithmetic expansion, the ${ operator forms,
-// and the special and positional parameters ($?, $1, $$) are all refused
-// by name. The alternative was worse than useless: an unrecognized
-// character is just another character to a tokenizer, so a pipeline used
-// to become arguments to the first command and `false || echo rescued`
-// exited 1 having printed nothing, where every real target exits 0
-// having printed. A test asserting that is not merely unverified — it
-// asserts the opposite of the truth.
+// A script reaching outside that subset is refused by name rather than
+// run wrongly. Pipelines, || lists, redirection to a file, input
+// redirection, backquotes, newline-separated commands, background
+// commands, comments, globs, backslash escapes, arithmetic expansion,
+// the ${ operator forms, and the special and positional parameters ($?,
+// $1, $$) are all refused. Start refuses such a script before any
+// process exists, with an error wrapping [invoke.ErrNotSupported]; a
+// script it cannot see into, such as one nested in quotes as
+// sh -c 'a | b', is refused when it runs, with the construct named on
+// standard error and exit status 93. The refusal is the point: an
+// unrecognized character is just another character to a tokenizer, so
+// an unsupported construct would otherwise be run as something else —
+// `false || echo rescued` exiting 1 having printed nothing, where every
+// real target exits 0 having printed — and a test asserting that would
+// assert the opposite of the truth.
 //
 // # The builtin vocabulary
 //
@@ -57,10 +60,11 @@
 //   - mkdir [-p], touch, and rm [-r|-f|-rf], each with the failure
 //     modes a real target has
 //
-// Inside scripts, cd (to $HOME with no argument) and exit (numeric
-// statuses only) are the shell's own. Anything else — ls, cp, grep,
-// env, chmod — is an unknown command: [invoke.ErrNotFound] from Start,
-// the shell's exit 127 from a script. Register your own with
+// Inside scripts, cd (to $HOME with no argument), exit (numeric
+// statuses only) and exec COMMAND (which runs COMMAND and ends the
+// script with its status) are the shell's own. Anything else — ls, cp,
+// grep, env, chmod — is an unknown command: [invoke.ErrNotFound] from
+// Start, the shell's exit 127 from a script. Register your own with
 // [Environment.Handle], which overrides any builtin of the same name
 // and is reachable everywhere the name can be written. A script needing
 // more than the subset belongs in a handler, or on a real target.
@@ -71,6 +75,22 @@
 // in Command.Env, or the base environment's. A handler registered under
 // a path lives at that path, and is reached by it whatever PATH says. A
 // script's own changes to PATH are not followed.
+//
+// # The filesystem
+//
+// One store holds the target's files, directories and symbolic links,
+// and everything that touches the target goes through it: the builtins
+// mutate it directly, Upload and Download reach it through the shared
+// transfer engine the real providers use, and [Environment.FS] reads it
+// as a live [io/fs.FS] for assertions. A file an upload wrote is the
+// file test -f finds and the one fs.ReadFile returns.
+//
+// # What the fake does not simulate
+//
+// TTY allocation is refused with [invoke.ErrNotSupported], as
+// [Environment.Capabilities] reports. Files carry permission bits but no
+// owner, and no modification time: ModTime is always the zero time, so
+// an assertion on mtimes needs a real target.
 package fake
 
 import (
@@ -96,7 +116,9 @@ type Session struct {
 	Stdout io.Writer
 	Stderr io.Writer
 
-	// Dir is the working directory the command was started with.
+	// Dir is the working directory the command runs in: Command.Dir,
+	// or / when that is empty, from Start; the shell's current
+	// directory from a script.
 	Dir string
 
 	// Env is the resolved environment: the fake's base environment with
@@ -108,6 +130,13 @@ type Session struct {
 // and returns the exit code. Honoring ctx cancellation keeps a scripted
 // command responsive to the lifecycle machinery, which handles the
 // resulting classification (cancellation, Close, signals) itself.
+//
+// cmd is the invocation as written. From Start it is the caller's
+// Command unchanged, its Dir possibly empty and its Env only the
+// overlay the caller set; from a script it carries the Path and Args the
+// script wrote, the shell's current directory as Dir, and no Env. The
+// state to act on is the [Session]'s: on both routes Session.Dir is the
+// directory the command runs in and Session.Env the full environment.
 type Handler func(ctx context.Context, cmd invoke.Command, s *Session) int
 
 // Environment is a simulated execution target.

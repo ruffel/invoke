@@ -75,9 +75,12 @@ invocation, not the command. Transfers ride the same environment:
 `env.Upload(ctx, "./dist", "/srv/app")` copies a file or a whole tree.
 
 To run the same command elsewhere, construct a different target. A remote
-host authenticates with a key file, the agent (`ssh.WithAgent`), or a
-password, and verifies the host key against the file you name — there is
-no trust-on-first-use:
+host authenticates with a key file, the agent (`ssh.WithAgent`), a
+password, or several of them, and verifies the host key against the file
+you name — there is no trust-on-first-use. Credentials are offered in
+OpenSSH's order whatever order the options are given in: the key file,
+then the agent's keys, then the password, sent only if no key was
+accepted:
 
 ```go
 env, err := ssh.New(ctx, "build-3.example.net",
@@ -194,12 +197,12 @@ written against it cannot come to rely on behavior no real target has.
 
 Its shell interprets a subset — sequencing with `;` and `&&`, quoting,
 `$NAME` and `${NAME}`, `$(...)` substitution, redirection to `/dev/null`
-and between the output streams — and refuses what it cannot run, naming
-it, rather than running it wrongly. A pipeline, a `||` list, a glob, a
-comment: each fails with `ErrNotSupported` instead of quietly meaning
-something else, and the builtins answer truthfully or refuse loudly.
-Script anything beyond the subset with `Handle`, or run it against a real
-target.
+and between the output streams, and its own `cd`, `exit` and `exec` — and
+refuses what it cannot run, naming it, rather than running it wrongly. A
+pipeline, a `||` list, a glob, a comment: each fails with `ErrNotSupported`
+instead of quietly meaning something else, and the builtins answer
+truthfully or refuse loudly. Script anything beyond the subset with
+`Handle`, or run it against a real target.
 
 ```go
 env := fake.New()
@@ -280,7 +283,7 @@ that contradicts the documentation or the contract suite is a bug, and
 its fix ships in any release, even where a caller came to depend on it.
 The two modules are released together, at one version.
 
-POSIX targets this cycle — Linux and macOS hosts, Linux containers.
+POSIX targets: Linux and macOS hosts, Linux containers.
 Everything compiles on Windows, but execution semantics are out of scope
 for now. Go 1.26 or newer.
 

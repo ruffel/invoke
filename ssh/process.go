@@ -29,6 +29,18 @@ type process struct {
 	// whether they stopped taking output.
 	stdout, stderr *outputSink
 
+	// The teardown flags. closedByUser is set only by Close, before it
+	// kills; ctxErr reads the start context, which monitorContext also
+	// watches to kill on cancellation. waitReturned is set only by doWait,
+	// once session.Wait has returned, and a kill is sent only while it is
+	// unset. done closes when doWait has finished, which is what ends
+	// monitorContext. result and waitErr are written once, by doWait under
+	// waitOnce, and read only after it.
+	//
+	// The flags attribute an ending; they do not override one. A status
+	// the server reported is read before either flag, and a kill also
+	// closes the session, which alone can end the command — see
+	// mapOutcome.
 	closedByUser atomic.Bool
 	ctxErr       func() error
 
@@ -473,8 +485,8 @@ func (p *process) deliverSignal(sig ssh.Signal) (bool, error) {
 //
 // The kill has to land: closing the session does not end the command,
 // since sshd holds the channel open until its child exits on its own. A
-// dropped kill therefore held Close, and cancellation, for the whole life
-// of the command. A server that refuses signals outright still gets the
+// dropped kill would hold Close, and cancellation, for the whole life of
+// the command. A server that refuses signals outright still gets the
 // closed session; that is all there is left to ask with.
 func (p *process) kill() {
 	_, _ = p.deliverSignal(ssh.SIGKILL)
@@ -502,9 +514,9 @@ func (p *process) monitorContext(ctx context.Context) {
 // flags are read. Cancellation and Close are things this side did, and
 // neither unruns a command the server already accounted for: the status
 // arrived, so the command finished, whatever this side went on to want.
-// Reading the flags first turned a completed command into a cancellation
-// whenever the two raced — and a caller who retries on cancellation would
-// then run it again.
+// Reading the flags first would turn a completed command into a
+// cancellation whenever the two raced — and a caller who retries on
+// cancellation would then run it again.
 //
 // A death by signal is the flags' to claim first, whichever signal it
 // was. Teardown kills with SIGKILL but also closes the session, and the

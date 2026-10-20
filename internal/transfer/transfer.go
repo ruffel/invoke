@@ -1,10 +1,19 @@
-// Package transfer implements the copy engine behind every provider's
-// Upload and Download: atomic temp-and-rename delivery, tree walking with
+// Package transfer implements the copy engine for transports that move a
+// file at a time: atomic temp-and-rename delivery, tree walking with
 // deepest-first directory-mode restoration, symlink and special-file
 // policy, per-file progress, and prompt cancellation. A provider plugs an
 // [FS] into each side of [Copy] and inherits the semantics the invoketest
 // transfer contracts specify, rather than re-implementing them per
 // transport.
+//
+// local copies [HostFS] to [HostFS], ssh pairs [HostFS] with an SFTP
+// adapter, and fake pairs it with an adapter over its virtual filesystem.
+// docker does not use the engine: the daemon moves whole trees as tar
+// archives, so there is no per-file write for an [FS] to perform. It
+// decides each entry with the exported policy helpers in the invoke
+// package instead — [invoke.ClassifyEntry], [invoke.EffectiveMode] and
+// [invoke.CheckFollowTarget] — which this engine applies too, so the two
+// reach the same answers.
 package transfer
 
 import (
