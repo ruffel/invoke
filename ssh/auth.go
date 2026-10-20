@@ -46,7 +46,7 @@ func authMethods(cfg *Config) ([]ssh.AuthMethod, io.Closer, error) {
 	}
 
 	if cfg.UseAgent {
-		held, conn, err := agentSigners()
+		held, conn, err := agentSigners(cfg.AgentSocket)
 		if err != nil {
 			skipped = append(skipped, err)
 		} else {
@@ -103,15 +103,18 @@ func keySigner(cfg *Config) (ssh.Signer, error) {
 	return signer, nil
 }
 
-// agentSigners connects to the SSH agent at SSH_AUTH_SOCK and lists the
-// keys it holds. Each signs through the connection, so the returned closer
-// must outlive authentication; the caller tracks it on the Environment so
-// Close releases the socket. When no key can be offered, the socket is
-// already closed.
-func agentSigners() ([]ssh.Signer, io.Closer, error) {
-	socket := os.Getenv("SSH_AUTH_SOCK")
+// agentSigners connects to the SSH agent at socket, or at SSH_AUTH_SOCK
+// when socket is empty, and lists the keys it holds. Each signs through
+// the connection, so the returned closer must outlive authentication; the
+// caller tracks it on the Environment so Close releases the socket. When
+// no key can be offered, the socket is already closed.
+func agentSigners(socket string) ([]ssh.Signer, io.Closer, error) {
 	if socket == "" {
-		return nil, nil, errors.New("ssh: agent requested but SSH_AUTH_SOCK is unset")
+		socket = os.Getenv("SSH_AUTH_SOCK")
+	}
+
+	if socket == "" {
+		return nil, nil, errors.New("ssh: agent requested but SSH_AUTH_SOCK is unset; set it, or name the socket with WithAgentSocket")
 	}
 
 	conn, err := net.Dial("unix", socket) //nolint:noctx // Local agent socket; connection is immediate.

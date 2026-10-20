@@ -195,15 +195,43 @@ func startAgent(t *testing.T, keys ...ed25519.PrivateKey) string {
 }
 
 // TestAgentAuthentication runs a real signing round-trip: a keyring
-// agent served over a unix socket, the provider connecting through
-// SSH_AUTH_SOCK, and the server accepting the agent-held key.
+// agent served over a unix socket, the provider connecting to it, and the
+// server accepting the agent-held key.
 func TestAgentAuthentication(t *testing.T) {
+	t.Parallel()
+
+	priv, pub := newClientKey(t)
+	srv := startTestServer(t, withAuthorizedKey(pub))
+
+	env := dialWithAuth(t, srv, ssh.WithAgentSocket(startAgent(t, priv)))
+	runEcho(t, env)
+}
+
+// TestAgentIsFoundThroughSSHAuthSock checks WithAgent finds the agent the
+// environment names, which is where an agent is looked for when no socket
+// is given.
+func TestAgentIsFoundThroughSSHAuthSock(t *testing.T) {
 	priv, pub := newClientKey(t)
 	srv := startTestServer(t, withAuthorizedKey(pub))
 
 	t.Setenv("SSH_AUTH_SOCK", startAgent(t, priv))
 
 	env := dialWithAuth(t, srv, ssh.WithAgent())
+	runEcho(t, env)
+}
+
+// TestAgentSocketWinsOverSSHAuthSock checks a socket named explicitly is
+// the agent asked, whatever SSH_AUTH_SOCK names: choosing an agent is
+// what the option is for.
+func TestAgentSocketWinsOverSSHAuthSock(t *testing.T) {
+	priv, pub := newClientKey(t)
+	srv := startTestServer(t, withAuthorizedKey(pub))
+
+	// The environment's agent holds no keys, so a connection that asked it
+	// would fail.
+	t.Setenv("SSH_AUTH_SOCK", startAgent(t))
+
+	env := dialWithAuth(t, srv, ssh.WithAgentSocket(startAgent(t, priv)))
 	runEcho(t, env)
 }
 
@@ -214,15 +242,15 @@ func TestAgentAuthentication(t *testing.T) {
 // refused — the everyday case of a stale key on disk and the current
 // one in the agent.
 func TestAgentKeysAreOfferedAlongsideAKeyFile(t *testing.T) {
+	t.Parallel()
+
 	stalePriv, stalePub := newClientKey(t)
 	currentPriv, currentPub := newClientKey(t)
 	srv := startTestServer(t, withAuthorizedKey(currentPub))
 
-	t.Setenv("SSH_AUTH_SOCK", startAgent(t, currentPriv))
-
 	env := dialWithAuth(t, srv,
 		ssh.WithPrivateKey(writeKeyFile(t, stalePriv, "")),
-		ssh.WithAgent())
+		ssh.WithAgentSocket(startAgent(t, currentPriv)))
 	runEcho(t, env)
 
 	assert.Equal(t, []string{
@@ -231,34 +259,34 @@ func TestAgentKeysAreOfferedAlongsideAKeyFile(t *testing.T) {
 	}, srv.authSeen(), "one connection offered the file key, was refused, and went on to the agent's key")
 }
 
-// TestAgentProblemsAreNamed pins what a caller hears when the agent is
-// their only configured method and it cannot supply a key.
-func TestAgentProblemsAreNamed(t *testing.T) {
-	t.Run("SSH_AUTH_SOCK unset", func(t *testing.T) {
-		t.Setenv("SSH_AUTH_SOCK", "")
+// TestAnUnsetAgentIsNamed pins what a caller hears when the agent is their
+// only configured method and the environment names none.
+func TestAnUnsetAgentIsNamed(t *testing.T) {
+	t.Setenv("SSH_AUTH_SOCK", "")
 
-		_, err := ssh.New(t.Context(), "127.0.0.1",
-			ssh.WithUser("tester"),
-			ssh.WithAgent(),
-			ssh.WithInsecureIgnoreHostKey())
-		require.Error(t, err, "an unreachable only-method cannot connect")
+	_, err := ssh.New(t.Context(), "127.0.0.1",
+		ssh.WithUser("tester"),
+		ssh.WithAgent(),
+		ssh.WithInsecureIgnoreHostKey())
+	require.Error(t, err, "an unreachable only-method cannot connect")
 
-		assert.Contains(t, err.Error(), "no usable authentication method")
-		assert.Contains(t, err.Error(), "SSH_AUTH_SOCK is unset")
-	})
+	assert.Contains(t, err.Error(), "no usable authentication method")
+	assert.Contains(t, err.Error(), "SSH_AUTH_SOCK is unset")
+}
 
-	t.Run("agent holds no keys", func(t *testing.T) {
-		t.Setenv("SSH_AUTH_SOCK", startAgent(t))
+// TestAnEmptyAgentIsNamed pins what a caller hears when the agent is their
+// only configured method and it holds no key.
+func TestAnEmptyAgentIsNamed(t *testing.T) {
+	t.Parallel()
 
-		_, err := ssh.New(t.Context(), "127.0.0.1",
-			ssh.WithUser("tester"),
-			ssh.WithAgent(),
-			ssh.WithInsecureIgnoreHostKey())
-		require.Error(t, err, "an empty only-method cannot connect")
+	_, err := ssh.New(t.Context(), "127.0.0.1",
+		ssh.WithUser("tester"),
+		ssh.WithAgentSocket(startAgent(t)),
+		ssh.WithInsecureIgnoreHostKey())
+	require.Error(t, err, "an empty only-method cannot connect")
 
-		assert.Contains(t, err.Error(), "no usable authentication method")
-		assert.Contains(t, err.Error(), "agent holds no keys")
-	})
+	assert.Contains(t, err.Error(), "no usable authentication method")
+	assert.Contains(t, err.Error(), "agent holds no keys")
 }
 
 // TestPublicKeysAreOfferedBeforeThePassword pins the order, which is
