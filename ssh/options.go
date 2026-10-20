@@ -64,9 +64,14 @@ type Config struct {
 	// PrivateKeyPassphrase decrypts an encrypted PrivateKeyPath.
 	PrivateKeyPassphrase string
 
-	// UseAgent enables authentication via the SSH agent at SSH_AUTH_SOCK,
-	// the only place the agent is looked for.
+	// UseAgent enables authentication via an SSH agent: the one at
+	// AgentSocket, or at SSH_AUTH_SOCK when AgentSocket is empty.
 	UseAgent bool
+
+	// AgentSocket is the path of the agent's unix socket, as
+	// [WithAgentSocket] sets it. Empty means SSH_AUTH_SOCK, read when the
+	// connection is made.
+	AgentSocket string
 
 	// HostKeyCallback verifies the server's host key directly. A hop has
 	// exactly one host-key policy: this callback, [Config.KnownHostsPath],
@@ -237,13 +242,25 @@ func WithPrivateKeyPassphrase(passphrase string) Option {
 	return func(c *Config) { c.PrivateKeyPassphrase = passphrase }
 }
 
-// WithAgent enables authentication via the SSH agent at SSH_AUTH_SOCK,
-// the only place the agent is looked for. Every key it holds is offered,
-// after the key file of [WithPrivateKey] when one is set. An unset
-// variable, an agent that cannot be reached, or one that holds no keys is
-// skipped while another credential remains; see [Config].
+// WithAgent enables authentication via the SSH agent at SSH_AUTH_SOCK.
+// Every key it holds is offered, after the key file of [WithPrivateKey]
+// when one is set. An unset variable, an agent that cannot be reached, or
+// one that holds no keys is skipped while another credential remains;
+// see [Config].
 func WithAgent() Option {
 	return func(c *Config) { c.UseAgent = true }
+}
+
+// WithAgentSocket enables authentication via the SSH agent at the unix
+// socket path, as [WithAgent] does for SSH_AUTH_SOCK. It is for an agent
+// the environment does not name, such as a password manager's, and for
+// a program that would otherwise have to set SSH_AUTH_SOCK, which is
+// process-wide, to choose one.
+func WithAgentSocket(path string) Option {
+	return func(c *Config) {
+		c.UseAgent = true
+		c.AgentSocket = path
+	}
 }
 
 // WithHostKeyCallback sets the host-key verification callback directly.
