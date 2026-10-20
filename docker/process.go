@@ -320,10 +320,20 @@ func (p *process) Close() error {
 // for one reading to EOF, and the stream is let go, which is what ends
 // the wait. Whatever else it was doing, it goes on doing in the
 // container, and the outcome says so.
+//
+// A command that has already finished is not abandoned: there is nothing
+// to let go of, and its own outcome stands. That is asked before the
+// stream is released, not after, because releasing it is not neutral:
+// under a terminal it hangs the terminal up, which can end the command,
+// and an answer read afterwards would report that ending as its own.
 func (p *process) stop() {
 	if p.pidFile != "" {
 		_ = p.kill(invoke.SIGKILL)
 
+		return
+	}
+
+	if p.finished() {
 		return
 	}
 
@@ -334,6 +344,20 @@ func (p *process) stop() {
 	}
 
 	p.attach.Close()
+}
+
+// finished reports whether the daemon has the command as no longer
+// running. An inspect that fails says nothing either way, and is taken as
+// still running: abandoning a command that had finished costs only its
+// outcome, where waiting on one that had not is the hang stop exists to
+// avoid.
+func (p *process) finished() bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
+	defer cancel()
+
+	inspect, err := p.env.client.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
+
+	return err == nil && !inspect.Running
 }
 
 // discard tears down an exec that was created but never handed back,
@@ -536,21 +560,11 @@ func (p *process) outcome(duration time.Duration) (invoke.Result, error) {
 	return invoke.Result{ExitCode: -1, Duration: duration}, &invoke.ExitError{Code: -1, Signal: sig}
 }
 
-// abandonedOutcome reports a command this side let go of. It is asked
-// about once, not waited on: a command that finished first has its exit
-// to report, and one still running in the container was neither ended
-// nor finished, which is what the error says.
+// abandonedOutcome reports a command this side let go of. It was still
+// running when it was let go of, as stop established, so whatever became
+// of it afterwards was Close's or the cancellation's doing, not the
+// command's: it is reported as such, never as an exit of its own.
 func (p *process) abandonedOutcome(duration time.Duration) (invoke.Result, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), p.env.cfg.timeout())
-	defer cancel()
-
-	inspect, err := p.env.client.ExecInspect(ctx, p.execID, client.ExecInspectOptions{})
-	if err == nil && !inspect.Running {
-		if res, out, settled := p.reportedExit(inspect.ExitCode, duration); settled {
-			return res, out
-		}
-	}
-
 	const why = "the container has no shell to stop it, so it was abandoned and may still be running"
 
 	if p.closedByUser.Load() {
