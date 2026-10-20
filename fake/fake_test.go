@@ -652,6 +652,19 @@ func TestBuiltinsAnswerTruthfullyOrRefuse(t *testing.T) {
 			wantStdout: "one\ntwo\n",
 		},
 		{
+			// The shell recognises its builtins by the first word as it
+			// tokenizes it, so quoting the word changes nothing, as in a
+			// real shell.
+			name:       "exec is the shell's word however it is quoted",
+			script:     `"exec" echo two; echo three`,
+			wantStdout: "two\n",
+		},
+		{
+			name:       "exec's command takes its redirections",
+			script:     `exec echo hidden >/dev/null; echo three`,
+			wantStdout: "",
+		},
+		{
 			name:     "exec carries its command's failure",
 			script:   `exec false; echo rescued`,
 			wantExit: 1,
