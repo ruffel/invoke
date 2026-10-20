@@ -68,21 +68,20 @@ type Config struct {
 	// the only place the agent is looked for.
 	UseAgent bool
 
-	// HostKeyCallback verifies the server's host key. A host-key policy is
-	// required: [New] fails closed if none is provided and no known_hosts
-	// source is configured. Use [WithKnownHosts], [WithHostKeyCallback], or
-	// — for tests only — [WithInsecureIgnoreHostKey].
-	//
-	// Configure exactly one. Where a hop has several, the first of these
-	// is used and the rest are ignored without error: the insecure
-	// override, then this callback, then known_hosts. A callback set beside
-	// [WithKnownHosts] therefore replaces it, and with it the algorithm
-	// constraint that known_hosts verification depends on.
+	// HostKeyCallback verifies the server's host key directly. A hop has
+	// exactly one host-key policy: this callback, [Config.KnownHostsPath],
+	// or — for tests only — [WithInsecureIgnoreHostKey]. [New] refuses a
+	// hop with none, failing closed rather than trusting the server, and
+	// refuses one with more than one before anything is dialed: two
+	// policies cannot both decide, and whichever was silently ignored
+	// would be the one the caller relied on.
 	HostKeyCallback ssh.HostKeyCallback
 
-	// knownHostsPath is a known_hosts file used to build both the host-key
-	// callback and the negotiated host-key algorithms.
-	knownHostsPath string
+	// KnownHostsPath is a known_hosts file to verify the server against,
+	// as [WithKnownHosts] sets it. It also constrains host-key negotiation
+	// to the algorithms recorded there for the host, which a bare
+	// HostKeyCallback cannot.
+	KnownHostsPath string
 
 	// insecureHostKey disables host-key verification entirely. Tests only.
 	insecureHostKey bool
@@ -133,9 +132,43 @@ func (c *Config) validate() error {
 		if err := hop.validateHost(hop == c); err != nil {
 			return err
 		}
+
+		if err := hop.validateHostKey(hop == c); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// validateHostKey refuses a hop given more than one host-key policy. A hop
+// given none is refused too, but when it is connected, by resolveHostKey.
+func (c *Config) validateHostKey(target bool) error {
+	var policies []string
+
+	if c.insecureHostKey {
+		policies = append(policies, "WithInsecureIgnoreHostKey")
+	}
+
+	if c.HostKeyCallback != nil {
+		policies = append(policies, "a HostKeyCallback")
+	}
+
+	if c.KnownHostsPath != "" {
+		policies = append(policies, "a known_hosts file")
+	}
+
+	if len(policies) <= 1 {
+		return nil
+	}
+
+	subject := "jump host"
+	if target {
+		subject = "host"
+	}
+
+	return fmt.Errorf("ssh: %s %q has more than one host-key policy (%s); set exactly one",
+		subject, c.Host, strings.Join(policies, ", "))
 }
 
 // validateHost checks one hop names a host that can be dialed.
@@ -214,8 +247,8 @@ func WithAgent() Option {
 }
 
 // WithHostKeyCallback sets the host-key verification callback directly.
-// It takes precedence over [WithKnownHosts] and yields to
-// [WithInsecureIgnoreHostKey] on the same hop; see [Config.HostKeyCallback].
+// It is the hop's one host-key policy: a hop given another as well is
+// refused; see [Config.HostKeyCallback].
 func WithHostKeyCallback(cb ssh.HostKeyCallback) Option {
 	return func(c *Config) { c.HostKeyCallback = cb }
 }
@@ -224,17 +257,18 @@ func WithHostKeyCallback(cb ssh.HostKeyCallback) Option {
 // and constrains host-key negotiation to the algorithms recorded there for
 // this host so a host known under one key type is not rejected when the
 // server offers another. The file is loaded when the connection is made,
-// and one that cannot be loaded fails it. A callback or the insecure
-// override on the same hop takes precedence, and this option is then
-// ignored; see [Config.HostKeyCallback].
+// and one that cannot be loaded fails it. It is the hop's one host-key
+// policy: a hop given another as well is refused; see
+// [Config.HostKeyCallback].
 func WithKnownHosts(path string) Option {
-	return func(c *Config) { c.knownHostsPath = path }
+	return func(c *Config) { c.KnownHostsPath = path }
 }
 
 // WithInsecureIgnoreHostKey disables host-key verification. It is unsafe
-// against man-in-the-middle attacks and intended only for tests. It takes
-// precedence over every other host-key option on the same hop, and
-// applies to that hop alone.
+// against man-in-the-middle attacks and intended only for tests. It
+// applies to its hop alone, and is that hop's one host-key policy: a hop
+// given another as well is refused, so a left-over insecure override
+// cannot quietly disable a known_hosts check beside it.
 func WithInsecureIgnoreHostKey() Option {
 	return func(c *Config) { c.insecureHostKey = true }
 }
