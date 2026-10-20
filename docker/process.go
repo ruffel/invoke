@@ -23,7 +23,16 @@ type process struct {
 	pidFile string
 	started time.Time
 
-	attach  client.ExecAttachResult
+	// attach is the command's stream. doWait closes it once the outcome
+	// is in; stop closes it early to abandon a command it cannot end, and
+	// discard to tear down one never handed back.
+	attach client.ExecAttachResult
+
+	// copied closes when pumpOutput has read the stream to its end, which
+	// is the daemon's signal that the command finished, or when stop has
+	// let the stream go. copyErr, and the sinks' errors, are written by
+	// pumpOutput before copied closes and read only after it has, inside
+	// doWait, which is why no lock guards them.
 	copied  chan struct{}
 	copyErr error
 
@@ -53,7 +62,10 @@ type process struct {
 	waitErr      error
 
 	closeOnce sync.Once
-	done      chan struct{}
+
+	// done is closed by doWait once the outcome is settled, and releases
+	// monitorContext.
+	done chan struct{}
 }
 
 // Start runs cmd in the container and returns a handle to it.
@@ -108,6 +120,9 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
+	// pumpStdin is not waited for. Closing the stream ends a copy blocked
+	// writing to it, but nothing ends one blocked in the caller's own
+	// Reader, so such a copy is abandoned rather than allowed to hold Wait.
 	go p.pumpStdin(stdio.Stdin)
 	go p.pumpOutput(stdio)
 	go p.monitorContext(ctx)
@@ -296,7 +311,8 @@ func (p *process) Signal(sig invoke.Signal) error {
 }
 
 // Close terminates the command if it is still running and waits for the
-// outcome to settle. It is idempotent.
+// outcome to settle. In a container without a shell it abandons the
+// command instead, as stop describes. It is idempotent.
 func (p *process) Close() error {
 	p.closeOnce.Do(func() {
 		p.closedByUser.Store(true)
@@ -315,10 +331,10 @@ func (p *process) Close() error {
 //
 // Without a shell there is no signalling it: the wrapper that records its
 // id needs one, and so does any kill. Waiting for it to finish on its own
-// held Close, and cancellation, for the whole life of the command. So the
-// command is abandoned instead: its input is ended, which is all it takes
-// for one reading to EOF, and the stream is let go, which is what ends
-// the wait. Whatever else it was doing, it goes on doing in the
+// would hold Close, and cancellation, for the whole life of the command.
+// So the command is abandoned instead: its input is ended, which is all
+// it takes for one reading to EOF, and the stream is let go, which is
+// what ends the wait. Whatever else it was doing, it goes on doing in the
 // container, and the outcome says so.
 //
 // A command that has already finished is not abandoned: there is nothing
@@ -650,7 +666,8 @@ func (e *Environment) settleInspect(ctx context.Context, execID string) (client.
 
 // monitorContext terminates the command when the start context is
 // canceled, so cancellation stops work in the container rather than
-// merely unblocking the local Wait.
+// merely unblocking the local Wait. In a container without a shell it can
+// only abandon the command, which goes on running there.
 func (p *process) monitorContext(ctx context.Context) {
 	select {
 	case <-ctx.Done():
@@ -680,8 +697,15 @@ func (p *process) cleanupPIDFile() {
 	}
 }
 
-// runRaw runs argv in the container and returns its combined output and
-// exit code. It backs path lookup, shell detection, and signal delivery.
+// runRaw runs one command the provider needs for itself on an exec of its
+// own, and returns its stdout and exit status; stderr is discarded. Every
+// such command, from the probes at connect time to the kill and the
+// staging around an upload, goes through it.
+//
+// It deliberately does not refuse once the environment has closed: Close
+// marks it closed first and then tears down through here, killing
+// commands and removing their pid files, while stopped uploads remove
+// their staging the same way.
 func (e *Environment) runRaw(ctx context.Context, argv []string) (string, int, error) {
 	resp, err := e.client.ExecCreate(ctx, e.id, client.ExecCreateOptions{
 		AttachStdout: true,
