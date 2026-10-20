@@ -77,10 +77,10 @@ func WithContext(name string) Option {
 // It bounds each of the provider's own calls on its own: the container
 // inspect and the probes [New] makes, the kill a Signal, Close or
 // cancellation sends, the status asked for once a command's output ends,
-// and the cleanup after a command or an upload. It also bounds how long
-// any command the provider runs for itself waits for the daemon to report
-// it finished, which includes the check Start makes before every command,
-// LookPath, and an upload's staging; lowering it caps each of those.
+// and the cleanup after a command or an upload. For Start's pre-flight
+// check, LookPath and upload staging, this setting bounds only status
+// polling after output ends; it does not cap exec creation, attachment
+// or output collection.
 //
 // It is not a bound on a command or a transfer the caller asked for,
 // which only their context and Close limit. Nor is it the ssh provider's
