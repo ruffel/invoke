@@ -17,10 +17,11 @@ type Result struct {
 	ExitCode int
 
 	// Duration is the wall-clock time from process start until its exit
-	// was observed. Observation can lag the exit by however long the
-	// provider waits for the command's output to drain: the local provider
-	// bounds that wait with its termination grace (see the local package's
-	// WithTerminationGrace), and the ssh and docker providers wait for the
-	// output stream to end.
+	// was observed. Observation can lag the exit while the provider drains
+	// output. The local provider bounds waiting for open output pipes or
+	// a terminal with its termination grace (see the local package's
+	// WithTerminationGrace), but still waits for writes to caller-supplied
+	// writers to return. The ssh and docker providers wait for the output
+	// stream to end.
 	Duration time.Duration
 }
