@@ -20,8 +20,8 @@ func resolveHostKey(cfg *Config, addr string) (ssh.HostKeyCallback, []string, er
 	case cfg.HostKeyCallback != nil:
 		return cfg.HostKeyCallback, nil, nil
 
-	case cfg.knownHostsPath != "":
-		return fromKnownHosts(cfg.knownHostsPath, addr)
+	case cfg.KnownHostsPath != "":
+		return fromKnownHosts(cfg.KnownHostsPath, addr)
 	}
 
 	// No source configured: fail closed rather than trust on first use.
