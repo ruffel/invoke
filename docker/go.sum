@@ -39,8 +39,8 @@ github.com/opencontainers/image-spec v1.1.1 h1:y0fUlFfIZhPF1W537XOLg0/fcx6zcHCJw
 github.com/opencontainers/image-spec v1.1.1/go.mod h1:qpqAh3Dmcf36wStyyWU+kCeDgrGnAve2nCC8+7h8Q0M=
 github.com/pkg/sftp v1.13.11 h1:0N92SLTB8JqASJB14ZLHHzFnBV8mG9zw4K7jghEFWuE=
 github.com/pkg/sftp v1.13.11/go.mod h1:uNkH9roSXglNJqM+glJJi+TQXQUm0fXFWqCFmT8hsN0=
-github.com/ruffel/invoke v1.2.0 h1:MNrhbkTiYK/2HbD1uWinNf/MrEwSwi7APlY8AnifzAw=
-github.com/ruffel/invoke v1.2.0/go.mod h1:ZX/TiuzAmZ1oUo8DVg6nF/gE0nyshLrg0EtN5fJD/qQ=
+github.com/ruffel/invoke v1.3.0 h1:t2LgKIpsZMrg7Gh+MxVOAY/pzNhQYhQhzvgMSBr6On4=
+github.com/ruffel/invoke v1.3.0/go.mod h1:CIG7G9vMydQEjWs0rwo+i6B0fFtIFLV4m53BAj4eo5k=
 github.com/skeema/knownhosts v1.3.3 h1:tiFvsjIW+xqP5cqVsod7atn/xm57OY6v9KwxB1xWUyA=
 github.com/skeema/knownhosts v1.3.3/go.mod h1:2y0ntYxeqSNxOw5pfqSVDcRyBt2FqfxhzNDPoKz/ifQ=
 github.com/stretchr/testify v1.12.1 h1:EuwCh5fleGS7H32xRwO3wRGT7DxrDhLAT6FF8MpWDWE=
