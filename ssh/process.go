@@ -3,15 +3,16 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ruffel/invoke"
+	"github.com/ruffel/invoke/internal/output"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,7 +28,7 @@ type process struct {
 
 	// stdout and stderr deliver to the caller's writers, and remember
 	// whether they stopped taking output.
-	stdout, stderr *outputSink
+	stdout, stderr *output.Sink
 
 	// The teardown flags. closedByUser is set only by Close, before it
 	// kills; ctxErr reads the start context, which monitorContext also
@@ -55,8 +56,8 @@ type process struct {
 
 // Start launches cmd on the remote host and returns a handle to it.
 func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
-	if err := e.checkOpen("start"); err != nil {
-		return nil, err
+	if err := e.life.Err(); err != nil {
+		return nil, fmt.Errorf("ssh: start: %w", err)
 	}
 
 	if err := cmd.Validate(); err != nil {
@@ -89,21 +90,22 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, err
 	}
 
+	// A terminal merges the command's two output streams into one, so
+	// there is nothing left for stderr to carry.
+	stderr := stdio.Stderr
+	if stdio.TTY != nil {
+		stderr = nil
+	}
+
 	p := &process{
 		env:     e,
 		session: session,
 		started: time.Now(),
 		envFile: envFile,
-		stdout:  &outputSink{w: stdio.Stdout},
-		stderr:  &outputSink{},
+		stdout:  output.NewSink(stdio.Stdout),
+		stderr:  output.NewSink(stderr),
 		ctxErr:  ctx.Err,
 		done:    make(chan struct{}),
-	}
-
-	// A terminal merges the command's two output streams into one, so
-	// there is nothing left for stderr to carry.
-	if stdio.TTY == nil {
-		p.stderr.w = stdio.Stderr
 	}
 
 	session.Stdin = stdio.Stdin
@@ -123,13 +125,13 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		return nil, &invoke.TransportError{Op: "start", Err: err}
 	}
 
-	if err := e.track(p); err != nil {
+	if err := e.life.Track(p); err != nil {
 		// The connection closed while the command was being started. Tear
 		// it down rather than leave it running past the environment that
 		// owns it; the command is fully started, so Close is its teardown.
 		_ = p.Close()
 
-		return nil, err
+		return nil, fmt.Errorf("ssh: start: %w", err)
 	}
 
 	go p.monitorContext(ctx)
@@ -237,12 +239,10 @@ func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env 
 		return exportPrologue(refused), "", nil
 	}
 
-	suffix, err := randomSuffix()
-	if err != nil {
-		return "", "", fmt.Errorf("ssh: start: %w", err)
-	}
-
-	path := "/tmp/.invoke-env-" + suffix
+	// A name no concurrent command, and no attacker, can predict: a
+	// predictable name is one that can be created first, so the file
+	// would be written to something somebody else owns.
+	path := "/tmp/.invoke-env-" + rand.Text()
 
 	if err := e.writeRemoteFile(ctx, path, exportScript(refused)); err != nil {
 		return "", "", fmt.Errorf(
@@ -370,7 +370,7 @@ func (p *process) Close() error {
 
 func (p *process) doWait() {
 	defer close(p.done)
-	defer p.env.untrack(p)
+	defer p.env.life.Untrack(p)
 
 	err := p.session.Wait()
 	p.waitReturned.Store(true)
@@ -383,7 +383,7 @@ func (p *process) doWait() {
 	// one: nothing about the connection failed, and a retry would run
 	// the command again.
 	if p.waitErr == nil {
-		if werr := p.writeErr(); werr != nil {
+		if werr := output.FirstErr(p.stdout, p.stderr); werr != nil {
 			p.waitErr = fmt.Errorf("ssh: wait: writing the command's output: %w", werr)
 		}
 	}
@@ -391,39 +391,6 @@ func (p *process) doWait() {
 	_ = p.session.Close()
 
 	p.sweepEnvFile()
-}
-
-// outputSink hands the command's output to a caller's writer until that
-// writer fails, then discards the rest.
-//
-// The session's copy stops at the first write error, and once nothing
-// reads the channel its window fills, the remote command blocks on its
-// next write, and Wait never returns. Draining keeps the command able to
-// finish, so its exit status is still there to report. A nil writer
-// discards everything.
-type outputSink struct {
-	w   io.Writer
-	err error
-}
-
-func (s *outputSink) Write(b []byte) (int, error) {
-	if s.w != nil && s.err == nil {
-		if _, err := s.w.Write(b); err != nil {
-			s.err = err
-		}
-	}
-
-	return len(b), nil
-}
-
-// writeErr is the first failure of the caller's writers, stdout's first.
-// It is read only once the session's copies have finished.
-func (p *process) writeErr() error {
-	if p.stdout.err != nil {
-		return p.stdout.err
-	}
-
-	return p.stderr.err
 }
 
 // sweepEnvFile removes the delivery file after an ending that may have

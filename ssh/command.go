@@ -40,20 +40,6 @@ func commandLine(cmd invoke.Command, prologue string) string {
 	return prologue + line
 }
 
-// envValue returns the last value name carries in env, honoring the
-// same last-wins rule the delivered environment has.
-func envValue(env []string, name string) (string, bool) {
-	value, found := "", false
-
-	for _, pair := range env {
-		if key, v, ok := strings.Cut(pair, "="); ok && key == name {
-			value, found = v, true
-		}
-	}
-
-	return value, found
-}
-
 // exportScript renders KEY=VALUE pairs as a shell script that exports
 // them, for a file the command line sources.
 func exportScript(pairs []string) string {
@@ -142,7 +128,7 @@ func preCheckLine(cmd invoke.Command) string {
 	// disagree — refusing a runnable command, or waving through a name
 	// that resolves elsewhere at run time. PATH is no secret; the
 	// values that stay off command lines travel by the env machinery.
-	if value, ok := envValue(cmd.Env, "PATH"); ok {
+	if value, ok := cmd.LookupEnv("PATH"); ok {
 		b.WriteString("PATH=" + quoteArg(value) + "; export PATH; ")
 	}
 

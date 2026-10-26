@@ -23,7 +23,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ruffel/invoke"
@@ -48,16 +47,9 @@ type Environment struct {
 	stopKeepAlive context.CancelFunc
 	keepAliveDone chan struct{}
 
-	// mu guards closed and active. Close is the only writer of closed;
-	// track and untrack are the only writers of active, and track refuses
-	// once closed is set.
-	mu sync.Mutex
-	// life is what Close ends, taking in-flight transfers with it. It is
-	// set once, at construction, and needs no lock of its own.
+	// life is what Close ends: the commands still running and the
+	// transfers in flight.
 	life *lifetime.Lifetime
-
-	closed bool
-	active map[*process]struct{}
 }
 
 var _ invoke.Environment = (*Environment)(nil)
@@ -92,7 +84,6 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 		cfg:    cfg,
 		chain:  established,
 		client: established.target(),
-		active: make(map[*process]struct{}),
 		life:   lifetime.New(),
 	}
 
@@ -145,8 +136,8 @@ func (e *Environment) Capabilities() invoke.Capabilities {
 
 // LookPath resolves name on the remote host via the shell's command -v.
 func (e *Environment) LookPath(ctx context.Context, name string) (string, error) {
-	if err := e.checkOpen("lookpath"); err != nil {
-		return "", err
+	if err := e.life.Err(); err != nil {
+		return "", fmt.Errorf("ssh: lookpath: %w", err)
 	}
 
 	out, code, err := e.runRaw(ctx, lookPathLine(name))
@@ -161,47 +152,27 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 	return strings.TrimSpace(out), nil
 }
 
-// Close closes the SSH connection, terminating processes still running.
+// Close closes the SSH connection, stopping transfers in flight and
+// terminating commands still running first. It is idempotent, and
+// returns only once the connection is closed, whichever call closed it.
 func (e *Environment) Close() error {
-	e.mu.Lock()
+	return e.life.CloseWith(e.teardown)
+}
 
-	if e.closed {
-		e.mu.Unlock()
-
-		// A Close racing another still waits for the transfers the first
-		// one stopped: returning while they unwind would let them run
-		// on past it.
-		e.life.Close()
-
-		return nil
-	}
-
-	e.closed = true
-
-	procs := make([]*process, 0, len(e.active))
-	for p := range e.active {
-		procs = append(procs, p)
-	}
-
-	e.mu.Unlock()
-
-	// Transfers are stopped first, and waited for, while the connection
-	// they unwind over is still there: a stopped copy removes its temp
-	// file on the way out.
-	e.life.Close()
-
-	// The processes go while the keepalive is still watching. Each Close
-	// kills its command and waits for the outcome, and on a link that has
-	// died without a close nothing answers either: the keepalive
-	// discovering the dead link and closing it is what ends those waits.
-	for _, p := range procs {
-		_ = p.Close()
-	}
-
-	// Then stop probing and wait for the loop to finish before the
-	// connection goes away, so no probe outlives Close. The wait is
-	// bounded: a probe already in flight answers or times out within one
-	// interval.
+// teardown drops the connection once nothing runs over it.
+//
+// The lifetime has stopped the transfers and terminated the commands by
+// the time this runs, in that order, and the order matters. Transfers go
+// first, while the connection they unwind over is still there: a stopped
+// copy removes its temp file on the way out. The commands go next, while
+// the keepalive is still watching: each Close kills its command and
+// waits for the outcome, and on a link that has died without a close
+// nothing answers either, so the keepalive discovering the dead link and
+// closing it is what ends those waits. Only then does probing stop, and
+// the loop is waited for before the connection goes, so no probe outlives
+// Close. The wait is bounded: a probe already in flight answers or times
+// out within one interval.
+func (e *Environment) teardown() error {
 	if e.stopKeepAlive != nil {
 		e.stopKeepAlive()
 		<-e.keepAliveDone
@@ -321,45 +292,4 @@ func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	default:
 		return invoke.OSUnknown
 	}
-}
-
-func (e *Environment) checkOpen(op string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return fmt.Errorf("ssh: %s: %w", op, invoke.ErrClosed)
-	}
-
-	return nil
-}
-
-// track registers a running process so Close can terminate it, unless the
-// connection has closed in the meantime.
-//
-// Start checks the closed flag once at entry and then opens a session and
-// starts the command, several round-trips later. A Close landing in that
-// window has already gathered the processes it will terminate, so one
-// added afterwards would run with nothing left to stop it. Re-checking
-// here under the same lock closes that gap: a process is either registered
-// before Close snapshots, and terminated with the rest, or refused, and
-// torn down by its caller.
-func (e *Environment) track(p *process) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return fmt.Errorf("ssh: start: %w", invoke.ErrClosed)
-	}
-
-	e.active[p] = struct{}{}
-
-	return nil
-}
-
-func (e *Environment) untrack(p *process) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	delete(e.active, p)
 }

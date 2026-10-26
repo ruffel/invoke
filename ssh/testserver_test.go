@@ -940,7 +940,7 @@ func readString(b []byte) (string, []byte) {
 const envFilePrefix = "/tmp/.invoke-env-"
 
 // envFilePattern matches a delivery file's path inside a command line.
-var envFilePattern = regexp.MustCompile(`/tmp/\.invoke-env-[0-9a-f]+`)
+var envFilePattern = regexp.MustCompile(`/tmp/\.invoke-env-[A-Za-z0-9]+`)
 
 // removeEnvFilesNamedIn deletes every delivery file a command line
 // names, standing in for a tmp cleaner racing the shell.
