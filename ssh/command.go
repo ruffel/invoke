@@ -40,74 +40,12 @@ func commandLine(cmd invoke.Command, prologue string) string {
 	return prologue + line
 }
 
-// exportScript renders KEY=VALUE pairs as a shell script that exports
-// them, for a file the command line sources.
-func exportScript(pairs []string) string {
-	var script strings.Builder
-
-	for _, pair := range pairs {
-		if key, value, ok := strings.Cut(pair, "="); ok {
-			script.WriteString("export " + key + "=" + quoteArg(value) + "\n")
-		}
-	}
-
-	return script.String()
-}
-
-// exportPrologue renders the pairs directly onto the command line, where
-// they are visible to every account on the remote host.
-func exportPrologue(pairs []string) string {
-	var prologue strings.Builder
-
-	for _, pair := range pairs {
-		if key, value, ok := strings.Cut(pair, "="); ok {
-			prologue.WriteString("export " + key + "=" + quoteArg(value) + "; ")
-		}
-	}
-
-	return prologue.String()
-}
-
-// sourcePrologue reads the environment from a file and removes it before
-// the command runs, so it exists only for the moment in between.
-//
-// Failing to read it exits rather than running the command without its
-// environment, which is the outcome this whole route exists to avoid.
-// The readability test stands on its own ahead of the source: dot is a
-// special built-in, and a POSIX shell aborts outright when one fails,
-// skipping any || that was waiting to catch it — the guard would never
-// fire from where it looks like it belongs.
-//
-// The file is removed under the session's own PATH rather than the one
-// it just set. A caller's PATH that names only their own tools has no rm
-// on it, and the file, secrets and all, stayed where it was. Saving and
-// restoring PATH costs no process, unlike asking where rm is, and
-// unlike command -p it finds rm wherever this host keeps it.
-func sourcePrologue(path string) string {
-	quoted := quoteArg(path)
-
-	return "[ -r " + quoted + " ] || exit " + strconv.Itoa(envDeliveryFailed) + "; " +
-		"__invoke_path=$PATH; . " + quoted + "; " +
-		"__invoke_caller_path=$PATH; PATH=$__invoke_path; rm -f " + quoted + "; " +
-		"PATH=$__invoke_caller_path; unset __invoke_path __invoke_caller_path; "
-}
-
 // Exit codes used by the pre-flight check to distinguish a missing working
 // directory from an unresolvable command. They sit above the range a normal
 // command would plausibly use for these conditions.
 const (
 	preCheckBadDir   = 91
 	preCheckNotFound = 92
-
-	// envDeliveryFailed reports that the environment file could not be
-	// read, so the command was not run.
-	//
-	// The status is reserved on the file-delivery route: unlike the
-	// pre-check statuses, which run in an exec of their own, this one
-	// shares the command's session, so a command of its own exiting 93
-	// under that route is read as a delivery failure. WithCommandLineEnv
-	// avoids the file and with it the reservation.
-	envDeliveryFailed = 93
 )
 
 // preCheckLine builds a command that validates a command's working
