@@ -40,14 +40,31 @@ is why they are not part of `just check`.
 ## Repository layout
 
 - The root is package `invoke`: the `Environment` interface, commands,
-  results, the `Executor`, and the exported transfer policy in
+  results, and the policy layer over them — the `Executor` in
+  `executor.go`, the retry mechanism behind it in `retry.go`, sudo
+  wrapping in `sudo.go`, and the exported transfer policy in
   `transfer.go`.
 - `local/`, `ssh/` and `fake/` are providers in the core module.
 - `docker/` is the container provider, in a module of its own.
-- `internal/transfer/` is the transfer engine; `internal/lifetime/` ties
-  the operations an `Environment` runs to its life, so `Close` can stop
-  them.
+- `internal/` is mechanism more than one provider shares.
+  `internal/transfer/` is the transfer engine. `internal/lifetime/` is
+  the life of an `Environment`: the processes it has started and the
+  transfers in flight, which `Close` ends and waits for, and the guard
+  that refuses work once closing has begun. `internal/output/` stands
+  between a command's output and the caller's writers.
 - `invoketest/` is the contract suite every provider passes.
+
+Every provider has the same spine, so a reader who knows one can find
+their way around another: `environment.go` holds the package
+documentation, the connection and its lifecycle; `process.go` a running
+command; `files.go` transfers; `options.go` configuration. A concern a
+target adds gets a file named for it, not a longer file. ssh has
+`chain.go` (jump hosts), `keepalive.go`, `env.go` (how a command's
+environment reaches it), `command.go` (the command lines it renders) and
+`sftpfs.go`, the transfer engine's view of the remote side, as
+`fake/vfsfs.go` is of the virtual one; docker has `shell.go`, the scripts
+it runs in the container, and `place.go`, moving a download into place on
+the host.
 
 Tests run in three lanes, by build tag:
 
@@ -78,11 +95,15 @@ brings a large dependency graph of its own, which consumers who never use
 docker should not inherit; ssh's dependencies are small enough to stay in
 the core. The docker module requires a released core version. It may
 import the core's `internal/` packages for mechanism — it uses
-`internal/lifetime` — but only once a release carries them. Policy stays
-exported in the root package, so a provider outside this repository can
-reach the same answers. `invoketest` is public for the same reason, and
-the parity test lives in `docker/` because only that module can import
-every provider.
+`internal/lifetime` — but only once a release carries them, and the same
+holds for anything added to the core's exported API. A shared mechanism
+therefore reaches the core providers first and the docker module one
+release later; until then the module keeps a copy of its own, with a
+comment naming what it mirrors, and the release's repoint step is the
+cue to replace it. Policy stays exported in the root package, so a
+provider outside this repository can reach the same answers.
+`invoketest` is public for the same reason, and the parity test lives in
+`docker/` because only that module can import every provider.
 
 Test files are named for the behaviour they cover, not for a source
 file. In the root, `local/`, `ssh/`, `fake/` and `internal/`, white-box
