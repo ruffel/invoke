@@ -2,8 +2,6 @@ package ssh
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +16,6 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/ruffel/invoke"
-	"github.com/ruffel/invoke/internal/lifetime"
 	"github.com/ruffel/invoke/internal/transfer"
 	"golang.org/x/crypto/ssh"
 )
@@ -92,27 +89,20 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 // connection failing under it is a transport fault; Close closing it is
 // not, and would otherwise read as one.
 func (e *Environment) transfer(ctx context.Context, op string, run func(context.Context, transfer.FS) error) error {
-	if err := e.checkOpen(op); err != nil {
-		return err
-	}
+	err := e.life.Run(ctx, func(ctx context.Context) error {
+		// Asked before a session is opened for a transfer that will not
+		// run.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("ssh: %s: %w", op, err)
+		}
 
-	if err := ctx.Err(); err != nil {
+		return e.runSession(ctx, op, run)
+	})
+
+	// Refused, or stopped, by Close: the one outcome nothing above got
+	// to name.
+	if errors.Is(err, invoke.ErrClosed) {
 		return fmt.Errorf("ssh: %s: %w", op, err)
-	}
-
-	ctx, end, err := e.life.Enter(ctx)
-	if err != nil {
-		return fmt.Errorf("ssh: %s: %w", op, err)
-	}
-
-	defer end()
-
-	err = e.runSession(ctx, op, run)
-
-	// Asked even of a copy that finished: Close stopped it, whether or
-	// not its last bytes had already been written.
-	if lifetime.Ended(ctx) {
-		return fmt.Errorf("ssh: %s: stopped by Close: %w", op, invoke.ErrClosed)
 	}
 
 	return err
@@ -628,21 +618,6 @@ func (f sftpFS) Resolve(p string) (string, error) {
 	}
 
 	return resolved, nil
-}
-
-// randomSuffix returns hex material for a name no concurrent command will
-// collide with.
-//
-// A failure to gather randomness is reported rather than papered over with
-// a fixed string: a predictable name is one an attacker can pre-create, so
-// the caller must fail closed instead of writing to it.
-func randomSuffix() (string, error) {
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", fmt.Errorf("ssh: generating a unique name: %w", err)
-	}
-
-	return hex.EncodeToString(buf[:]), nil
 }
 
 // splitPath breaks a POSIX path into its components.
