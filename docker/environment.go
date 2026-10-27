@@ -57,11 +57,14 @@ type Environment struct {
 	hasShell bool
 	shell    string
 
+	// life is what Close ends, taking in-flight transfers with it.
+	life *lifetime.Lifetime
+
+	// mu guards closed and active: the processes Close terminates, kept
+	// as the core providers keep theirs in internal/lifetime, which this
+	// module adopts once a release carries it.
 	mu     sync.Mutex
 	closed bool
-
-	// life is what Close ends, taking in-flight transfers with it.
-	life   *lifetime.Lifetime
 	active map[*process]struct{}
 }
 
@@ -161,15 +164,7 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 		return "", fmt.Errorf("docker: lookpath %q: container has no shell: %w", name, invoke.ErrNotSupported)
 	}
 
-	// Walked rather than asked of "command -v", which reports a shell
-	// builtin by its bare name: on a busybox image even "true" is one,
-	// and a bare name is not a path anything can exec.
-	script := `case "$1" in
-*/*) [ -f "$1" ] && [ -x "$1" ] && printf '%s\n' "$1" && exit 0; exit 1 ;;
-*) ` + pathWalkFor(`$1`, `printf '%s\n' "$d/$1"; exit 0`, `exit 1`) + ` ;;
-esac`
-
-	out, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", name})
+	out, code, err := e.runRaw(ctx, []string{"sh", "-c", lookPathScript(), "sh", name})
 	if err != nil {
 		return "", fmt.Errorf("docker: lookpath %q: %w", name, err)
 	}
@@ -308,9 +303,7 @@ func (e *Environment) detectShell(ctx context.Context) (string, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, e.cfg.timeout())
 	defer cancel()
 
-	script := pathWalkFor(`$1`, `printf '%s\n' "$d/$1"; exit 0`, `exit 0`)
-
-	out, code, err := e.runRaw(probeCtx, []string{"sh", "-c", script, "sh", "sh"})
+	out, code, err := e.runRaw(probeCtx, []string{"sh", "-c", shellProbeScript(), "sh", "sh"})
 	if err != nil || code != 0 {
 		return "", false
 	}
