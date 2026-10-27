@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -131,7 +132,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 }
 
 // preCheck validates the command's working directory and executable
-// before running it.
+// before running it, by running preCheckScript.
 //
 // The daemon accepts both without complaint and reports the failure only
 // once the command is under way: as a diagnostic on the command's own
@@ -147,24 +148,6 @@ func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 		return nil
 	}
 
-	// The check resolves the executable where the command will be: the
-	// daemon finds it through the exec's own environment, so a PATH the
-	// caller supplies is the one the check walks too. Otherwise the two
-	// disagree, refusing a runnable command or waving through one that
-	// resolves elsewhere at run time.
-	//
-	// A name is resolved by walking PATH for executable files, as every
-	// provider resolves one. "command -v" answers for shell builtins too,
-	// so it blesses a bare "cd" that no exec could run. A path is checked
-	// directly, because "command -v" given a path answers whether the
-	// file exists on some shells and whether it can be executed on others.
-	script := `if [ -n "$3" ]; then PATH=$4; export PATH; fi
-if [ -n "$1" ] && ! cd "$1"; then exit 91; fi
-case "$2" in
-*/*) [ -f "$2" ] && [ -x "$2" ] || exit 92 ;;
-*) ` + pathWalk(`exit 0`, `exit 92`) + ` ;;
-esac`
-
 	callerPath, hasPath := envValue(cmd.Env, "PATH")
 
 	set := ""
@@ -172,7 +155,7 @@ esac`
 		set = "1"
 	}
 
-	_, code, err := e.runRaw(ctx, []string{"sh", "-c", script, "sh", cmd.Dir, cmd.Path, set, callerPath})
+	_, code, err := e.runRaw(ctx, []string{"sh", "-c", preCheckScript(), "sh", cmd.Dir, cmd.Path, set, callerPath})
 	if err != nil {
 		return fmt.Errorf("docker: start: %w", err)
 	}
@@ -187,21 +170,11 @@ esac`
 	}
 }
 
-// pathWalk walks PATH for the pre-flight check's command name, $2.
-func pathWalk(hit, miss string) string {
-	return pathWalkFor(`$2`, hit, miss)
-}
-
-// pathWalkFor walks PATH for the name held in the positional parameter
-// param, files only, running hit on the first executable match and miss
-// when nothing matched. $d holds the matching directory in hit.
-func pathWalkFor(param, hit, miss string) string {
-	return `IFS=:; for d in $PATH; do [ -f "$d/` + param + `" ] && [ -x "$d/` + param + `" ] && { ` + hit +
-		`; }; done; ` + miss
-}
-
 // envValue returns the last value name carries in env, honoring the
 // last-wins rule the delivered environment has.
+//
+// It is invoke.Command.LookupEnv, which this module calls instead once a
+// release carries it: the module requires a released core version.
 func envValue(env []string, name string) (string, bool) {
 	value, found := "", false
 
@@ -213,13 +186,6 @@ func envValue(env []string, name string) (string, bool) {
 
 	return value, found
 }
-
-// Exit codes the pre-flight check uses to tell its two failures apart.
-// They sit above the range a normal command would plausibly use.
-const (
-	preCheckBadDir   = 91
-	preCheckNotFound = 92
-)
 
 // createExec registers the command with the daemon.
 //
@@ -265,15 +231,11 @@ func (e *Environment) wrapCommand(cmd invoke.Command) ([]string, string) {
 		return append([]string{cmd.Path}, cmd.Args...), ""
 	}
 
-	pidFile := "/tmp/.invoke-pid-" + randomSuffix()
-
-	// $$ is the shell's own id, and exec replaces the shell with the
-	// command, so the command inherits it.
-	script := `echo $$ > "$1"; shift; exec "$@"`
+	pidFile := "/tmp/.invoke-pid-" + rand.Text()
 
 	// The shell by its own path, not by name: the exec runs with the
 	// caller's environment, whose PATH need not list it.
-	argv := append([]string{e.shell, "-c", script, "sh", pidFile, cmd.Path}, cmd.Args...)
+	argv := append([]string{e.shell, "-c", wrapperScript, "sh", pidFile, cmd.Path}, cmd.Args...)
 
 	return argv, pidFile
 }
@@ -416,16 +378,7 @@ func (p *process) kill(sig invoke.Signal) error {
 	// is only credited to it when the status matches the signal too.
 	p.sentSignal.Store(sig)
 
-	// The wrapper writes the file before exec'ing, so it may not exist
-	// for the first instants of the command's life; wait briefly for it
-	// rather than reporting a kill that signalled nothing.
-	script := `for _ in 1 2 3 4 5 6 7 8 9 10; do
-	if [ -s "$2" ]; then exec kill -s "$1" "$(cat "$2")"; fi
-	sleep 0.05
-done
-exit 1`
-
-	_, code, err := p.env.runRaw(ctx, []string{"sh", "-c", script, "sh", string(sig), p.pidFile})
+	_, code, err := p.env.runRaw(ctx, []string{"sh", "-c", killScript, "sh", string(sig), p.pidFile})
 	if err != nil {
 		return err
 	}
@@ -487,6 +440,9 @@ func (p *process) pumpOutput(stdio invoke.IO) {
 // outputSink hands the command's output to a caller's writer until that
 // writer fails, then discards the rest, so the stream can still be read to
 // its end. A nil writer discards everything.
+//
+// It is the core module's internal/output.Sink, which this module adopts
+// once a release carries it: the module requires a released core version.
 type outputSink struct {
 	w   io.Writer
 	err error
