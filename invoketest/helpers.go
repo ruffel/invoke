@@ -3,8 +3,6 @@ package invoketest
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"io"
 	"sync"
@@ -18,18 +16,6 @@ import (
 // contractTimeout bounds every blocking step inside a contract, so a
 // provider that hangs produces a failed contract rather than a hung suite.
 const contractTimeout = 5 * time.Second
-
-// token returns a short random hex string for unique target-side paths.
-func token(t T) string {
-	t.Helper()
-
-	var raw [8]byte
-
-	_, err := rand.Read(raw[:])
-	require.NoError(t, err, "generating random token")
-
-	return hex.EncodeToString(raw[:])
-}
 
 // exitSettle is the floor for how long a contract waits for a process to
 // finish exiting once its last output has been observed. It is a margin

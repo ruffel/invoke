@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -354,7 +355,7 @@ func lifecycleCancelTerminatesProcess() TestCase {
 		Name:        "cancel-terminates-process",
 		Description: "Canceling the context terminates the process on the target, not merely the caller's Wait",
 		Run: func(t T, env invoke.Environment) {
-			marker := "/tmp/invoke-cancel-" + token(t)
+			marker := "/tmp/invoke-cancel-" + rand.Text()
 			defer cleanupTargetPath(t, env, marker)
 
 			ctx, cancel := context.WithCancel(t.Context())
@@ -508,7 +509,7 @@ func lifecycleEnvCloseStopsTransfers() TestCase {
 			src := filepath.Join(t.TempDir(), "big.bin")
 			require.NoError(t, os.WriteFile(src, make([]byte, closeFileBytes), fixtureMode), "writing fixture")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			held, release := make(chan struct{}), make(chan struct{})
 

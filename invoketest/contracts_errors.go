@@ -1,6 +1,7 @@
 package invoketest
 
 import (
+	"crypto/rand"
 	"fmt"
 
 	"github.com/ruffel/invoke"
@@ -31,7 +32,7 @@ func errorsShellMissingBinaryIsExit127() TestCase {
 			// must be an ExitError(127), never conflated with the
 			// start-time not-found classification.
 			outcome, _, _ := runCapture(t, env,
-				invoke.Shell("invoke-missing-"+token(t)))
+				invoke.Shell("invoke-missing-"+rand.Text()))
 
 			require.NotErrorIs(t, outcome.err, invoke.ErrNotFound,
 				"a missing binary inside a shell command must not surface as ErrNotFound; the shell ran and exited")
@@ -51,7 +52,7 @@ func errorsMissingBinaryNotFound() TestCase {
 		Description: "A binary the target cannot resolve fails wrapping ErrNotFound",
 		Run: func(t T, env invoke.Environment) {
 			proc, err := env.Start(t.Context(),
-				invoke.New("invoke-definitely-missing-"+token(t)), invoke.IO{})
+				invoke.New("invoke-definitely-missing-"+rand.Text()), invoke.IO{})
 			if err == nil {
 				if proc != nil {
 					_ = proc.Close()
@@ -72,7 +73,7 @@ func errorsBadWorkdirClassified() TestCase {
 		Description: "A nonexistent working directory fails wrapping ErrInvalidWorkdir, not as a command outcome",
 		Run: func(t T, env invoke.Environment) {
 			cmd := invoke.New("true")
-			cmd.Dir = "/tmp/invoke-no-such-dir-" + token(t)
+			cmd.Dir = "/tmp/invoke-no-such-dir-" + rand.Text()
 
 			proc, err := env.Start(t.Context(), cmd, invoke.IO{})
 			if err == nil {
@@ -105,7 +106,7 @@ func errorsLookPathClassifies() TestCase {
 			assert.Contains(t, path, "/",
 				"LookPath must return a path containing a separator, not a bare name")
 
-			_, err = env.LookPath(t.Context(), "invoke-definitely-missing-"+token(t))
+			_, err = env.LookPath(t.Context(), "invoke-definitely-missing-"+rand.Text())
 			assert.ErrorIs(t, err, invoke.ErrNotFound, "LookPath of an unresolvable name")
 		},
 	}
@@ -127,11 +128,11 @@ func errorsTerminalOutcomesAreNotTransport() TestCase {
 
 			// Could not be started, for reasons asking again will not
 			// change: the binary is not there, the directory is not there.
-			_, notFound := env.Start(ctx, invoke.New("invoke-missing-"+token(t)), invoke.IO{})
+			_, notFound := env.Start(ctx, invoke.New("invoke-missing-"+rand.Text()), invoke.IO{})
 			requireNotTransport(t, notFound, "a missing binary")
 
 			badDir := invoke.New("true")
-			badDir.Dir = "/invoke-no-such-dir-" + token(t)
+			badDir.Dir = "/invoke-no-such-dir-" + rand.Text()
 
 			_, badWorkdir := env.Start(ctx, badDir, invoke.IO{})
 			requireNotTransport(t, badWorkdir, "an invalid working directory")

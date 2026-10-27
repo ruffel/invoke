@@ -1,6 +1,7 @@
 package invoketest
 
 import (
+	"crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,7 @@ func downloadSymlinkFollowCopiesContent() TestCase {
 			writeHostFixture(t, srcDir, "real.txt", "followed content")
 			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "seeding Upload")
@@ -66,7 +67,7 @@ func downloadFollowRejectsEscapes() TestCase {
 			return caps.SymlinkPreserve, "seeding a link on the target needs symlink preservation"
 		},
 		Run: func(t T, env invoke.Environment) {
-			tok := token(t)
+			tok := rand.Text()
 
 			// The secret sits on the target, beside the tree rather than
 			// in it, and the tree's link points at it by absolute path.
@@ -113,7 +114,7 @@ func downloadProgressTotals() TestCase {
 			require.NoError(t, os.Mkdir(filepath.Join(srcDir, "nested"), 0o750), "mkdir")
 			writeHostFixture(t, filepath.Join(srcDir, "nested"), "c.txt", strings.Repeat("c", 100))
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "seeding Upload")
@@ -157,7 +158,7 @@ func downloadFailurePreservesDestination() TestCase {
 		Run: func(t T, env invoke.Environment) {
 			local := writeHostFixture(t, t.TempDir(), "precious.txt", "precious destination")
 
-			missing := "/tmp/invoke-missing-" + token(t)
+			missing := "/tmp/invoke-missing-" + rand.Text()
 
 			require.Error(t, env.Download(t.Context(), missing, local),
 				"downloading a path that does not exist succeeded, want an error")
@@ -178,7 +179,7 @@ func downloadTreeMergesIntoExisting() TestCase {
 			writeHostFixture(t, srcDir, "shared.txt", "new")
 			writeHostFixture(t, srcDir, "added.txt", "added")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "seeding Upload")
