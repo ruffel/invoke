@@ -1,6 +1,7 @@
 package invoke
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"time"
 )
@@ -17,6 +18,17 @@ type execConfig struct {
 
 func defaultExecConfig() execConfig {
 	return execConfig{attempts: 1}
+}
+
+// validate rejects a policy no attempt could run under. It is checked when
+// a call is made rather than when an option is applied: an option has no
+// error to return, and a bad value is never a silent no-op.
+func (c execConfig) validate() error {
+	if c.attempts < 1 {
+		return fmt.Errorf("invoke: retry attempts must be at least 1, got %d", c.attempts)
+	}
+
+	return nil
 }
 
 // Option configures command execution policy. The same options apply both
@@ -38,94 +50,6 @@ func WithRetry(attempts int, backoff BackoffFunc) Option {
 	return func(c *execConfig) {
 		c.attempts = attempts
 		c.backoff = backoff
-	}
-}
-
-// WithFreshIO supplies a fresh [IO] for each attempt, so a retried command
-// gets un-consumed streams. It is required to retry a command whose IO
-// carries a non-nil Stdin, since a consumed reader cannot be replayed.
-// The capture helpers ([Executor.Output], [Executor.Text]) own their
-// streams and override any WithFreshIO passed to them.
-func WithFreshIO(fn func(attempt int) IO) Option {
-	return func(c *execConfig) {
-		c.freshIO = fn
-	}
-}
-
-// sudoConfig collects sudo wrapping options.
-type sudoConfig struct {
-	user        string
-	group       string
-	preserveEnv bool
-	flags       []string
-}
-
-// SudoOption configures how [WithSudo] wraps a command.
-type SudoOption func(*sudoConfig)
-
-// WithSudo runs the command through sudo in non-interactive mode
-// (sudo -n), so a password prompt fails rather than hangs.
-//
-// The command and its arguments are passed after a -- separator as an
-// argv, never as a shell string, so no argument can be misread as a sudo
-// flag or interpreted by a shell.
-//
-// The process the target starts is sudo, so everything the provider does
-// addresses sudo rather than the wrapped command:
-//
-//   - Start resolves sudo, and only a missing sudo fails wrapping
-//     [ErrNotFound]. A wrapped command sudo cannot find, or a password
-//     sudo -n will not prompt for, makes sudo exit non-zero: an
-//     [ExitError], with sudo's own message on standard error, and never
-//     retried.
-//   - Command.Env is set on sudo's process, whichever way the provider
-//     delivers it, and sudo resets the environment by default: the
-//     variables do not reach the wrapped command unless the sudoers
-//     policy preserves them or [WithSudoPreserveEnv] is set and
-//     permitted.
-//   - [Process.Signal] and Close address sudo. sudo relays the signals it
-//     can catch to the command, but SIGKILL cannot be caught: a command
-//     sudo runs as a child of its own is killed with it only where the
-//     target signals the whole process group, as [Process.Signal]
-//     describes.
-func WithSudo(opts ...SudoOption) Option {
-	return func(c *execConfig) {
-		sc := &sudoConfig{}
-		for _, opt := range opts {
-			opt(sc)
-		}
-
-		c.sudo = sc
-	}
-}
-
-// WithSudoUser runs the command as the given target user (sudo -u).
-func WithSudoUser(user string) SudoOption {
-	return func(c *sudoConfig) {
-		c.user = user
-	}
-}
-
-// WithSudoGroup runs the command as the given target group (sudo -g).
-func WithSudoGroup(group string) SudoOption {
-	return func(c *sudoConfig) {
-		c.group = group
-	}
-}
-
-// WithSudoPreserveEnv preserves the invoking environment (sudo -E), subject
-// to the sudoers policy allowing it.
-func WithSudoPreserveEnv() SudoOption {
-	return func(c *sudoConfig) {
-		c.preserveEnv = true
-	}
-}
-
-// WithSudoFlags appends additional flags to the sudo invocation, before the
-// -- separator. Callers own the safety of anything passed here.
-func WithSudoFlags(flags ...string) SudoOption {
-	return func(c *sudoConfig) {
-		c.flags = append(c.flags, flags...)
 	}
 }
 
@@ -165,5 +89,16 @@ func WithJitter(backoff BackoffFunc, fraction float64) BackoffFunc {
 		}
 
 		return base - time.Duration(rand.Int64N(spread)) //nolint:gosec // Jitter timing, not security.
+	}
+}
+
+// WithFreshIO supplies a fresh [IO] for each attempt, so a retried command
+// gets un-consumed streams. It is required to retry a command whose IO
+// carries a non-nil Stdin, since a consumed reader cannot be replayed.
+// The capture helpers ([Executor.Output], [Executor.Text]) own their
+// streams and override any WithFreshIO passed to them.
+func WithFreshIO(fn func(attempt int) IO) Option {
+	return func(c *execConfig) {
+		c.freshIO = fn
 	}
 }
