@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io/fs"
 	"os"
@@ -116,7 +117,7 @@ func transferSymlinkUnsupportedErrors() TestCase {
 			writeHostFixture(t, srcDir, "real.txt", "real")
 			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			err := env.Upload(t.Context(), srcDir, remote)
@@ -141,7 +142,7 @@ func transferCanceledBeforeStartDoesNothing() TestCase {
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			assert.ErrorIs(t, env.Upload(ctx, srcDir, remote), context.Canceled,
@@ -173,7 +174,7 @@ func transferBinaryContentSurvives() TestCase {
 			src := filepath.Join(t.TempDir(), "blob.bin")
 			require.NoError(t, os.WriteFile(src, payload, 0o600), "writing binary fixture")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), src, remote), "Upload")
@@ -199,7 +200,7 @@ func transferDownloadCancelPreservesDestination() TestCase {
 			// destination the canceled download must not corrupt.
 			srcDir := t.TempDir()
 			big := writeHostFixture(t, srcDir, "big.bin", strings.Repeat("y", bigFileBytes))
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			defer cleanupTargetPath(t, env, remote)
 
@@ -236,7 +237,7 @@ func transferEmptyFilesAndDirs() TestCase {
 			emptyDir := filepath.Join(srcDir, "hollow")
 			require.NoError(t, os.Mkdir(emptyDir, 0o750), "mkdir")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "Upload")
@@ -262,7 +263,7 @@ func transferSymlinkFollowCopiesContent() TestCase {
 
 			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t,
@@ -341,7 +342,7 @@ func transferRoundTrip() TestCase {
 		Description: "An uploaded file arrives intact with its mode preserved, verified on the target and by download",
 		Run: func(t T, env invoke.Environment) {
 			src := writeHostFixture(t, t.TempDir(), "src.txt", "payload")
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			defer cleanupTargetPath(t, env, remote)
 
@@ -365,7 +366,7 @@ func transferModeOverride() TestCase {
 			dir := t.TempDir()
 			first := writeHostFixture(t, dir, "first.txt", "old content")
 			second := writeHostFixture(t, dir, "second.txt", "new content")
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			defer cleanupTargetPath(t, env, remote)
 
@@ -401,7 +402,7 @@ func transferModeOverrideIsFilesOnly() TestCase {
 			require.NoError(t, os.Chmod(sub, dirMode), "fixture dir mode, umask-proof")
 			writeHostFixture(t, sub, "leaf.txt", "content")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			defer cleanupTargetPath(t, env, remote)
 
@@ -437,7 +438,7 @@ func transferFailurePreservesDestination() TestCase {
 			dir := t.TempDir()
 			good := writeHostFixture(t, dir, "good.txt", "precious destination")
 			unreadable := writeHostFixture(t, dir, "unreadable.txt", "never seen")
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 
 			defer cleanupTargetPath(t, env, remote)
 
@@ -465,7 +466,7 @@ func transferCancelPreservesDestination() TestCase {
 
 			// The destination gets a directory of its own, so whatever a
 			// canceled transfer leaves beside it can be listed.
-			remoteDir := "/tmp/invoke-xfer-" + token(t)
+			remoteDir := "/tmp/invoke-xfer-" + rand.Text()
 			remote := remoteDir + "/dst.bin"
 
 			defer cleanupTargetPath(t, env, remoteDir)
@@ -520,7 +521,7 @@ func transferCancelPreservesTreeDestination() TestCase {
 				want[name] = content
 			}
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			ctx, cancel := context.WithCancel(t.Context())
@@ -601,7 +602,7 @@ func transferTreeCreatesParents() TestCase {
 
 			writeHostFixture(t, nested, "deep.txt", "deep")
 
-			base := "/tmp/invoke-xfer-" + token(t)
+			base := "/tmp/invoke-xfer-" + rand.Text()
 			remote := base + "/made/parents/tree"
 
 			defer cleanupTargetPath(t, env, base)
@@ -637,7 +638,7 @@ func transferSymlinksPreserve() TestCase {
 			require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "link.txt")), "symlink")
 			require.NoError(t, os.Symlink("gone", filepath.Join(srcDir, "dangling.txt")), "symlink")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t, env.Upload(t.Context(), srcDir, remote), "Upload")
@@ -666,7 +667,7 @@ func transferFollowRejectsEscapes() TestCase {
 			srcDir := t.TempDir()
 			require.NoError(t, os.Symlink(outside, filepath.Join(srcDir, "escape.txt")), "symlink")
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			err := env.Upload(t.Context(), srcDir, remote, invoke.WithSymlinks(invoke.SymlinkFollow))
@@ -691,7 +692,7 @@ func transferSpecialFiles() TestCase {
 				t.Skipf("FIFO creation unavailable on this host")
 			}
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			err := env.Upload(t.Context(), srcDir, remote)
@@ -724,7 +725,7 @@ func transferProgressTotals() TestCase {
 			require.NoError(t, os.Mkdir(filepath.Join(srcDir, "nested"), 0o750), "mkdir")
 			writeHostFixture(t, filepath.Join(srcDir, "nested"), "c.txt", strings.Repeat("c", 100))
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			// Guarded: progress callbacks may arrive concurrently when a
@@ -792,7 +793,7 @@ func transferConcurrentCopiesDeliverTheTree() TestCase {
 				events []invoke.TransferProgress
 			)
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t,
@@ -866,7 +867,7 @@ func transferConcurrencyOneIsSequential() TestCase {
 				order []string
 			)
 
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			require.NoError(t,
@@ -912,7 +913,7 @@ func transferTreeMergesIntoExisting() TestCase {
 		Name:        "tree-upload-merges-into-existing",
 		Description: "Uploading a tree onto an existing directory merges: namesakes are replaced, everything else survives",
 		Run: func(t T, env invoke.Environment) {
-			remote := "/tmp/invoke-xfer-" + token(t)
+			remote := "/tmp/invoke-xfer-" + rand.Text()
 			defer cleanupTargetPath(t, env, remote)
 
 			first := t.TempDir()

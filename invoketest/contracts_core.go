@@ -2,6 +2,7 @@ package invoketest
 
 import (
 	"bytes"
+	"crypto/rand"
 	"path"
 	"strings"
 	"time"
@@ -170,7 +171,7 @@ func coreEnvPathResolvesCommand() TestCase {
 			found, err := env.LookPath(t.Context(), "true")
 			require.NoError(t, err, "the target needs true for this contract")
 
-			nowhere := "/invoke-no-such-dir-" + token(t)
+			nowhere := "/invoke-no-such-dir-" + rand.Text()
 
 			// The caller's PATH lists where true lives, after a directory
 			// that does not exist: the command is found through it.
@@ -332,7 +333,7 @@ func coreWorkdirIsHonored() TestCase {
 		Name:        "workdir-is-honored",
 		Description: "Command.Dir sets the process working directory on the target",
 		Run: func(t T, env invoke.Environment) {
-			dir := "/tmp/invoke-wd-" + token(t)
+			dir := "/tmp/invoke-wd-" + rand.Text()
 
 			runSucceeds(t, env, invoke.Shell("mkdir -p "+shellQuote(dir)))
 			defer cleanupTargetPath(t, env, dir)

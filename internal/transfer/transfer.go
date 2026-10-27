@@ -19,7 +19,6 @@ package transfer
 import (
 	"context"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"io/fs"
@@ -591,15 +590,11 @@ func (e endpoints) copyFile(ctx context.Context, src, dst, rel string, srcMode f
 	return nil
 }
 
-// tempFile exclusively creates a temporary file alongside dst, returning
-// its path and open handle.
+// tempFile exclusively creates a temporary file alongside dst, under a
+// name no concurrent copy can collide with, returning its path and open
+// handle.
 func (e endpoints) tempFile(dst string) (string, WriteFile, error) {
-	suffix, err := randomSuffix()
-	if err != nil {
-		return "", nil, err
-	}
-
-	name := e.dst.Join(e.dst.Dir(dst), ".invoke-"+suffix+".tmp")
+	name := e.dst.Join(e.dst.Dir(dst), ".invoke-"+rand.Text()+".tmp")
 
 	f, err := e.dst.CreateExclusive(name)
 	if err != nil {
@@ -607,16 +602,6 @@ func (e endpoints) tempFile(dst string) (string, WriteFile, error) {
 	}
 
 	return name, f, nil
-}
-
-// randomSuffix returns random hex material for a collision-free temp name.
-func randomSuffix() (string, error) {
-	var buf [8]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", err
-	}
-
-	return hex.EncodeToString(buf[:]), nil
 }
 
 // writeFile streams src into the temporary file and finalizes its mode.
