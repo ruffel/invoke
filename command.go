@@ -49,6 +49,24 @@ func Shell(script string) Command {
 	return Command{Path: "sh", Args: []string{"-c", script}}
 }
 
+// LookupEnv returns the value name carries in Env, and whether Env names
+// it at all. The last entry naming it wins, as it does in the environment
+// the command receives: this is the PATH a bare Path is resolved against,
+// and the value any variable has when the command starts. Providers use it
+// to resolve a command the way its own environment would; callers may use
+// it to inspect a Command they were handed.
+func (c Command) LookupEnv(name string) (string, bool) {
+	value, found := "", false
+
+	for _, entry := range c.Env {
+		if key, v, ok := strings.Cut(entry, "="); ok && key == name {
+			value, found = v, true
+		}
+	}
+
+	return value, found
+}
+
 // Validate returns an error if the Command cannot be started as specified.
 // Providers call it before starting; callers may use it for early checks.
 func (c Command) Validate() error {

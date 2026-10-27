@@ -57,6 +57,37 @@ func TestCommandValidate(t *testing.T) {
 	}
 }
 
+// TestLookupEnvIsLastWins pins the rule every provider resolves a bare
+// name by: the value a variable has when the command starts is the last
+// one Env gives it, and an entry that is not KEY=VALUE names nothing.
+func TestLookupEnvIsLastWins(t *testing.T) {
+	t.Parallel()
+
+	cmd := invoke.New("true")
+	cmd.Env = []string{"PATH=/first", "EMPTY=", "MALFORMED", "PATH=/last", "PAIR=a=b"}
+
+	value, ok := cmd.LookupEnv("PATH")
+	assert.True(t, ok)
+	assert.Equal(t, "/last", value, "the last entry naming a variable is the one the command sees")
+
+	value, ok = cmd.LookupEnv("EMPTY")
+	assert.True(t, ok, "a variable set to nothing is still set")
+	assert.Empty(t, value)
+
+	value, ok = cmd.LookupEnv("PAIR")
+	assert.True(t, ok)
+	assert.Equal(t, "a=b", value, "only the first separator divides a name from its value")
+
+	_, ok = cmd.LookupEnv("MALFORMED")
+	assert.False(t, ok, "an entry with no separator names nothing")
+
+	_, ok = cmd.LookupEnv("ABSENT")
+	assert.False(t, ok)
+
+	_, ok = invoke.New("true").LookupEnv("PATH")
+	assert.False(t, ok, "a Command with no Env sets nothing")
+}
+
 // TestValidateRefusesUnusableEnvironmentEntries pins the environment names
 // a Command may carry.
 //
