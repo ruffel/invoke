@@ -7,10 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
-	"sync/atomic"
-	"time"
 )
 
 const (
@@ -202,60 +199,11 @@ func (e *Executor) configFor(opts []Option) (execConfig, error) {
 		opt(&cfg)
 	}
 
-	if cfg.attempts < 1 {
-		return cfg, fmt.Errorf("invoke: retry attempts must be at least 1, got %d", cfg.attempts)
+	if err := cfg.validate(); err != nil {
+		return cfg, err
 	}
 
 	return cfg, nil
-}
-
-// runWithRetry drives attempt up to the configured number of times,
-// retrying only on TransportError and waiting per the backoff between
-// attempts. The final TransportError is returned as-is, never re-wrapped.
-func (e *Executor) runWithRetry(ctx context.Context, cfg execConfig, attempt func(attempt int) (Result, error)) (Result, error) {
-	var (
-		res Result
-		err error
-	)
-
-	for n := 1; n <= cfg.attempts; n++ {
-		if n > 1 {
-			if werr := e.backoffWait(ctx, cfg, n); werr != nil {
-				return res, werr
-			}
-		}
-
-		res, err = attempt(n)
-		if err == nil || !retryable(err) {
-			return res, err
-		}
-	}
-
-	return res, err
-}
-
-// retryTransfer runs a transfer under the executor's default retry policy.
-func (e *Executor) retryTransfer(ctx context.Context, transfer func() error) error {
-	if e.base.attempts < 1 {
-		return fmt.Errorf("invoke: retry attempts must be at least 1, got %d", e.base.attempts)
-	}
-
-	var err error
-
-	for n := 1; n <= e.base.attempts; n++ {
-		if n > 1 {
-			if werr := e.backoffWait(ctx, e.base, n); werr != nil {
-				return werr
-			}
-		}
-
-		err = transfer()
-		if err == nil || !retryable(err) {
-			return err
-		}
-	}
-
-	return err
 }
 
 // once starts cmd, waits for it, and releases the process handle.
@@ -337,95 +285,6 @@ func (e *Executor) streamOnce(ctx context.Context, cmd Command, onLine func(stri
 	}
 }
 
-// backoffWait sleeps for the configured backoff before attempt n,
-// returning the context error if it is canceled first.
-func (e *Executor) backoffWait(ctx context.Context, cfg execConfig, n int) error {
-	if cfg.backoff == nil {
-		return ctx.Err()
-	}
-
-	delay := cfg.backoff(n)
-	if delay <= 0 {
-		return ctx.Err()
-	}
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-// retryable reports whether err is a [TransportError] that carries no
-// terminal outcome, as that type's doc sets out.
-func retryable(err error) bool {
-	var te *TransportError
-
-	return errors.As(err, &te) && !terminal(err)
-}
-
-// terminal reports whether err carries an outcome that forecloses running
-// the command again: it ran, or it could not run for a reason that asking
-// again will not change.
-//
-// Cancellation is deliberately absent. A provider's own per-attempt
-// deadline produces a context error inside a genuine transport failure,
-// and treating that as terminal would strand a retry the caller wanted.
-// The caller's own cancellation needs no help from here: the backoff
-// before the next attempt returns the context's error, so the command is
-// never started again regardless of how this reads.
-func terminal(err error) bool {
-	var (
-		exitErr *ExitError
-		refused *refusedOutputError
-	)
-
-	if errors.As(err, &exitErr) || errors.As(err, &refused) {
-		return true
-	}
-
-	for _, sentinel := range []error{ErrClosed, ErrNotFound, ErrNotSupported, ErrInvalidWorkdir} {
-		if errors.Is(err, sentinel) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// applySudo rewrites cmd to run through sudo, or returns it unchanged when
-// no sudo policy is configured. Arguments are passed as an argv after a --
-// separator, so nothing can be misread as a flag or interpreted by a
-// shell.
-func applySudo(cfg execConfig, cmd Command) Command {
-	if cfg.sudo == nil {
-		return cmd
-	}
-
-	args := []string{"-n"}
-	if cfg.sudo.user != "" {
-		args = append(args, "-u", cfg.sudo.user)
-	}
-
-	if cfg.sudo.group != "" {
-		args = append(args, "-g", cfg.sudo.group)
-	}
-
-	if cfg.sudo.preserveEnv {
-		args = append(args, "-E")
-	}
-
-	args = append(args, cfg.sudo.flags...)
-	args = append(args, "--", cmd.Path)
-	args = append(args, cmd.Args...)
-
-	return Command{Path: "sudo", Args: args, Env: cmd.Env, Dir: cmd.Dir}
-}
-
 // attachStderrTail copies the retained stderr tail onto an [ExitError]
 // that does not already carry one. Any other error, an empty tail, or a
 // nil writer (the caller claimed the stream) leaves err untouched.
@@ -439,63 +298,6 @@ func attachStderrTail(err error, tw *tailWriter) {
 		exitErr.Stderr = tw.buf
 	}
 }
-
-// refusalWatch notes whether any of an attempt's writers refused output.
-//
-// An attempt whose output the caller could not take is never retried. The
-// command has run, and a provider reporting that the caller's writer
-// failed passes on the writer's own error, which the executor cannot
-// classify on the caller's behalf: a writer that is itself, say, an
-// upload may well fail with a TransportError, though no transport to
-// this command's target failed.
-type refusalWatch struct {
-	hit atomic.Bool
-}
-
-// wrap returns w reporting its failures here. A nil writer has nothing to
-// refuse, and an *os.File is left alone: a provider may hand it to the
-// command directly, and wrapping it would put a copy in the way.
-func (r *refusalWatch) wrap(w io.Writer) io.Writer {
-	if w == nil {
-		return nil
-	}
-
-	if _, ok := w.(*os.File); ok {
-		return w
-	}
-
-	return &watchedWriter{w: w, watch: r}
-}
-
-// refused reports whether a wrapped writer failed. A nil watch, for an
-// attempt that cannot be retried, never did.
-func (r *refusalWatch) refused() bool {
-	return r != nil && r.hit.Load()
-}
-
-type watchedWriter struct {
-	w     io.Writer
-	watch *refusalWatch
-}
-
-func (w *watchedWriter) Write(p []byte) (int, error) {
-	n, err := w.w.Write(p)
-	if err != nil {
-		w.watch.hit.Store(true)
-	}
-
-	return n, err
-}
-
-// refusedOutputError marks an attempt's error as terminal because the
-// caller's writer failed during it. It adds nothing to the message and
-// unwraps to the provider's error unchanged.
-type refusedOutputError struct {
-	err error
-}
-
-func (e *refusedOutputError) Error() string { return e.err.Error() }
-func (e *refusedOutputError) Unwrap() error { return e.err }
 
 // tailWriter retains the last max bytes written through it, so a failing
 // command's stderr can travel on its [ExitError] without unbounded

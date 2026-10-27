@@ -36,9 +36,9 @@ type Environment interface {
 	// existing destination), and missing parent directories at the
 	// destination are created. A tree merges into a directory already at
 	// the destination, as cp and rsync do: the files it carries replace
-	// their namesakes, and nothing else there is removed. Canceling ctx stops the transfer and
-	// returns an error matching ctx.Err(): files already delivered stay
-	// whole, and no partial file is left behind.
+	// their namesakes, and nothing else there is removed. Canceling ctx
+	// stops the transfer and returns an error matching ctx.Err(): files
+	// already delivered stay whole, and no partial file is left behind.
 	Upload(ctx context.Context, localPath, remotePath string, opts ...TransferOption) error
 
 	// Download copies a file or directory tree from the target to the
