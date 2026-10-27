@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"sync"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/internal/lifetime"
@@ -30,11 +29,8 @@ import (
 type Environment struct {
 	cfg config
 
-	mu     sync.Mutex
-	closed bool
-	active map[*process]struct{}
-
-	// life is what Close ends, taking in-flight transfers with it.
+	// life is what Close ends: the processes still running and the
+	// transfers in flight.
 	life *lifetime.Lifetime
 }
 
@@ -51,7 +47,7 @@ func New(opts ...Option) (*Environment, error) {
 		opt(&cfg)
 	}
 
-	return &Environment{cfg: cfg, active: make(map[*process]struct{}), life: lifetime.New()}, nil
+	return &Environment{cfg: cfg, life: lifetime.New()}, nil
 }
 
 // OS reports the local operating system.
@@ -70,44 +66,18 @@ func (e *Environment) Capabilities() invoke.Capabilities {
 	}
 }
 
-// Close marks the environment closed and terminates any processes still
-// running. It is idempotent.
+// Close stops any transfer in flight and terminates any process still
+// running, waiting for both. It is idempotent.
 func (e *Environment) Close() error {
-	e.mu.Lock()
-
-	if e.closed {
-		e.mu.Unlock()
-
-		// A Close racing another still waits for the transfers the first
-		// one stopped: returning while they unwind would let them run
-		// on past it.
-		e.life.Close()
-
-		return nil
-	}
-
-	e.closed = true
-
-	procs := make([]*process, 0, len(e.active))
-	for p := range e.active {
-		procs = append(procs, p)
-	}
-
-	e.mu.Unlock()
-
 	e.life.Close()
-
-	for _, p := range procs {
-		_ = p.Close()
-	}
 
 	return nil
 }
 
 // LookPath resolves name against the host process's PATH.
 func (e *Environment) LookPath(ctx context.Context, name string) (string, error) {
-	if err := e.checkOpen("lookpath"); err != nil {
-		return "", err
+	if err := e.life.Err(); err != nil {
+		return "", fmt.Errorf("local: lookpath: %w", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -133,46 +103,6 @@ func (e *Environment) LookPath(ctx context.Context, name string) (string, error)
 	}
 
 	return path, nil
-}
-
-func (e *Environment) checkOpen(op string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return fmt.Errorf("local: %s: %w", op, invoke.ErrClosed)
-	}
-
-	return nil
-}
-
-// track registers a running process so Close can terminate it, unless the
-// environment has closed in the meantime.
-//
-// Start checks the closed flag once at entry and then starts the process
-// and wires its streams. A Close landing in that window has already
-// gathered the processes it will terminate, so one added afterwards would
-// run with nothing left to stop it. Re-checking here under the same lock
-// closes that gap: a process is either registered before Close snapshots,
-// and terminated with the rest, or refused, and torn down by its caller.
-func (e *Environment) track(p *process) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return fmt.Errorf("local: start: %w", invoke.ErrClosed)
-	}
-
-	e.active[p] = struct{}{}
-
-	return nil
-}
-
-func (e *Environment) untrack(p *process) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	delete(e.active, p)
 }
 
 // namesDirectory reports whether name is a directory on disk, the one

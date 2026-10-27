@@ -141,41 +141,26 @@ type Handler func(ctx context.Context, cmd invoke.Command, s *Session) int
 
 // Environment is a simulated execution target.
 type Environment struct {
+	// mu guards handlers, calls and baseEnv.
 	mu       sync.Mutex
-	closed   bool
 	handlers map[string]Handler
 	calls    []invoke.Command
-	active   map[*process]struct{}
+	baseEnv  map[string]string
 
-	fs      *vfs
-	baseEnv map[string]string
+	fs *vfs
 
-	// life is what Close ends, taking in-flight transfers with it.
+	// life is what Close ends: the simulated processes still running and
+	// the transfers in flight.
 	life *lifetime.Lifetime
 }
 
 var _ invoke.Environment = (*Environment)(nil)
-
-// Option configures the fake at construction.
-type Option func(*Environment)
-
-// WithEnv adds KEY=VALUE pairs to the fake target's base environment.
-func WithEnv(pairs ...string) Option {
-	return func(e *Environment) {
-		for _, pair := range pairs {
-			if key, value, ok := cutPair(pair); ok {
-				e.baseEnv[key] = value
-			}
-		}
-	}
-}
 
 // New returns a fresh simulated target with an empty /tmp, a small base
 // environment, and no recorded calls.
 func New(opts ...Option) *Environment {
 	e := &Environment{
 		handlers: make(map[string]Handler),
-		active:   make(map[*process]struct{}),
 		fs:       newVFS(),
 		life:     lifetime.New(),
 		baseEnv: map[string]string{
@@ -215,8 +200,8 @@ func (e *Environment) Calls() []invoke.Command {
 
 // Start launches a simulated process for cmd.
 func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
-	if err := e.checkOpen("start"); err != nil {
-		return nil, err
+	if err := e.life.Err(); err != nil {
+		return nil, fmt.Errorf("fake: start: %w", err)
 	}
 
 	if err := cmd.Validate(); err != nil {
@@ -268,8 +253,8 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 // LookPath resolves name against the fake's handlers and builtins. The
 // answer is itself resolvable: what LookPath reports, Start accepts.
 func (e *Environment) LookPath(ctx context.Context, name string) (string, error) {
-	if err := e.checkOpen("lookpath"); err != nil {
-		return "", err
+	if err := e.life.Err(); err != nil {
+		return "", fmt.Errorf("fake: lookpath: %w", err)
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -302,36 +287,10 @@ func (e *Environment) Capabilities() invoke.Capabilities {
 	}
 }
 
-// Close marks the fake closed and terminates simulated processes still
-// running. It is idempotent.
+// Close stops any transfer in flight and terminates any simulated process
+// still running, waiting for both. It is idempotent.
 func (e *Environment) Close() error {
-	e.mu.Lock()
-
-	if e.closed {
-		e.mu.Unlock()
-
-		// A Close racing another still waits for the transfers the first
-		// one stopped: returning while they unwind would let them run
-		// on past it.
-		e.life.Close()
-
-		return nil
-	}
-
-	e.closed = true
-
-	procs := make([]*process, 0, len(e.active))
-	for p := range e.active {
-		procs = append(procs, p)
-	}
-
-	e.mu.Unlock()
-
 	e.life.Close()
-
-	for _, p := range procs {
-		_ = p.Close()
-	}
 
 	return nil
 }
@@ -395,14 +354,11 @@ func (e *Environment) onPath(cmd invoke.Command) bool {
 		return true
 	}
 
-	e.mu.Lock()
-	pathList := e.baseEnv["PATH"]
-	e.mu.Unlock()
-
-	for _, pair := range cmd.Env {
-		if key, value, ok := strings.Cut(pair, "="); ok && key == "PATH" {
-			pathList = value
-		}
+	pathList, ok := cmd.LookupEnv("PATH")
+	if !ok {
+		e.mu.Lock()
+		pathList = e.baseEnv["PATH"]
+		e.mu.Unlock()
 	}
 
 	for dir := range strings.SplitSeq(pathList, ":") {
@@ -425,50 +381,14 @@ func commandName(pathStr string) string {
 	return pathStr
 }
 
-func (e *Environment) checkOpen(op string) error {
+// record notes a command that is about to run. It is called before the
+// body runs, so a handler reading Calls finds its own invocation, and one
+// that starts another command is recorded before it.
+func (e *Environment) record(cmd invoke.Command) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.closed {
-		return fmt.Errorf("fake: %s: %w", op, invoke.ErrClosed)
-	}
-
-	return nil
-}
-
-// track registers a running process so Close can terminate it, unless the
-// environment has closed in the meantime.
-//
-// Start checks the closed flag once at entry. A Close landing after that
-// has already gathered the processes it will terminate, so one added
-// afterwards would run with nothing left to stop it. Re-checking here
-// under the same lock closes that gap: a process is either registered
-// before Close gathers them, and terminated with the rest, or refused
-// before its body runs.
-//
-// The command is recorded here too, under the same lock and before the
-// body runs: a handler reading Calls finds its own invocation, and one
-// that starts another command is recorded before it. A refused command
-// is not recorded, since it never started.
-func (e *Environment) track(p *process, cmd invoke.Command) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	if e.closed {
-		return fmt.Errorf("fake: start: %w", invoke.ErrClosed)
-	}
-
-	e.active[p] = struct{}{}
 	e.calls = append(e.calls, cmd)
-
-	return nil
-}
-
-func (e *Environment) untrack(p *process) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	delete(e.active, p)
 }
 
 func cutPair(pair string) (string, string, bool) {
