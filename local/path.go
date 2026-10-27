@@ -3,8 +3,6 @@ package local
 import (
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"strings"
 )
 
 // resolveIn finds a bare command name through the PATH list the caller
@@ -31,24 +29,4 @@ func resolveIn(name, pathList string) (string, error) {
 	}
 
 	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
-}
-
-// callerPath returns the PATH Command.Env sets, last one winning as it
-// does in the environment the command receives. Windows names variables
-// without regard to case.
-func callerPath(env []string) (string, bool) {
-	value, found := "", false
-
-	for _, pair := range env {
-		key, v, ok := strings.Cut(pair, "=")
-		if !ok {
-			continue
-		}
-
-		if key == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(key, "PATH")) {
-			value, found = v, true
-		}
-	}
-
-	return value, found
 }

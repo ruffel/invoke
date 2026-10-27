@@ -16,16 +16,15 @@ import (
 	"github.com/ruffel/invoke"
 )
 
-// How long Wait may remain blocked after the process has exited (or its
-// context was canceled) while its output pipes are still held open — for
-// example by an orphaned descendant — is set by [WithTerminationGrace].
-//
-// os/exec cannot bound a blocking caller-supplied Stdin the same way
-// (closing pipes does not unblock an arbitrary Reader.Read), which is why
-// stdin is wired through our own pipe below rather than handed to
-// os/exec.
-
 // process implements invoke.Process for a locally started command.
+//
+// How long Wait may stay blocked after the process has exited, or its
+// context was canceled, while something still holds its output pipes open
+// — an orphaned descendant, say — is bounded by [WithTerminationGrace]. A
+// caller-supplied Stdin cannot be bounded the same way, since closing
+// pipes does not unblock an arbitrary Reader's Read, which is why stdin is
+// wired through a pipe of this package's own rather than handed to
+// os/exec.
 type process struct {
 	env     *Environment
 	execCmd *exec.Cmd
@@ -56,8 +55,8 @@ type process struct {
 
 // Start launches cmd on the local machine.
 func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invoke.IO) (invoke.Process, error) {
-	if err := e.checkOpen("start"); err != nil {
-		return nil, err
+	if err := e.life.Err(); err != nil {
+		return nil, fmt.Errorf("local: start: %w", err)
 	}
 
 	if err := cmd.Validate(); err != nil {
@@ -77,7 +76,7 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 	// A bare name is found through the caller's PATH when they set one.
 	// A failed lookup travels in Err, which Start reports as os/exec's
 	// own lookup failure would be.
-	if pathList, ok := callerPath(cmd.Env); ok && filepath.Base(cmd.Path) == cmd.Path {
+	if pathList, ok := cmd.LookupEnv("PATH"); ok && filepath.Base(cmd.Path) == cmd.Path {
 		execCmd.Path, execCmd.Err = resolveIn(cmd.Path, pathList)
 	}
 
@@ -137,13 +136,13 @@ func (e *Environment) Start(ctx context.Context, cmd invoke.Command, stdio invok
 		}(stdio.Stdin, p.stdinW)
 	}
 
-	if err := e.track(p); err != nil {
+	if err := e.life.Track(p); err != nil {
 		// The environment closed while the process was being started. Tear
 		// it down rather than leave it running past the environment that
 		// owns it; the process is fully started, so Close is its teardown.
 		_ = p.Close()
 
-		return nil, err
+		return nil, fmt.Errorf("local: start: %w", err)
 	}
 
 	return p, nil
@@ -242,7 +241,7 @@ func (p *process) attachStreams(execCmd *exec.Cmd, stdio invoke.IO) error {
 }
 
 func (p *process) doWait() {
-	defer p.env.untrack(p)
+	defer p.env.life.Untrack(p)
 
 	err := p.execCmd.Wait()
 	p.waitReturned.Store(true)
