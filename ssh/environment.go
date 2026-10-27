@@ -20,10 +20,11 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/ruffel/invoke"
 	"github.com/ruffel/invoke/internal/lifetime"
@@ -42,10 +43,9 @@ type Environment struct {
 	// client is the chain's target, which is what every session runs on.
 	client *ssh.Client
 
-	// stopKeepAlive ends the keepalive loop, and keepAliveDone closes once
-	// it has actually stopped, so Close never outlives its own goroutine.
-	stopKeepAlive context.CancelFunc
-	keepAliveDone chan struct{}
+	// keepAlive probes the connection for as long as it lives, and is nil
+	// when probing is disabled.
+	keepAlive *keepAlive
 
 	// life is what Close ends: the commands still running and the
 	// transfers in flight.
@@ -94,7 +94,7 @@ func NewFromConfig(ctx context.Context, cfg *Config) (*Environment, error) {
 	// opened. Ending it with that work would leave the connection
 	// unwatched for the rest of its life.
 	//nolint:contextcheck // The loop's lifetime is the connection's; Close ends it.
-	env.startKeepAlive()
+	env.keepAlive = startKeepAlive(env.chain, cfg.keepAlive())
 
 	return env, nil
 }
@@ -134,7 +134,7 @@ func (e *Environment) Capabilities() invoke.Capabilities {
 	}
 }
 
-// LookPath resolves name on the remote host via the shell's command -v.
+// LookPath resolves name on the remote host by walking the login PATH.
 func (e *Environment) LookPath(ctx context.Context, name string) (string, error) {
 	if err := e.life.Err(); err != nil {
 		return "", fmt.Errorf("ssh: lookpath: %w", err)
@@ -170,105 +170,11 @@ func (e *Environment) Close() error {
 // nothing answers either, so the keepalive discovering the dead link and
 // closing it is what ends those waits. Only then does probing stop, and
 // the loop is waited for before the connection goes, so no probe outlives
-// Close. The wait is bounded: a probe already in flight answers or times
-// out within one interval.
+// Close.
 func (e *Environment) teardown() error {
-	if e.stopKeepAlive != nil {
-		e.stopKeepAlive()
-		<-e.keepAliveDone
-	}
+	e.keepAlive.stop()
 
 	return e.chain.Close()
-}
-
-// startKeepAlive probes the server periodically so a connection that dies
-// without a close — a dropped link, a NAT timeout — is discovered rather
-// than leaving the next operation blocked on a socket nobody is serving.
-//
-// A probe the server does not answer within one interval is that
-// discovery. The connection is closed on the spot, which is what unblocks
-// everything still waiting on the dead link: running Waits, transfers,
-// and Close itself. Without the bound, a probe on a black-holed
-// connection would block in its own send until the kernel gave up on
-// the socket — and hold Close hostage with it.
-//
-// One loop covers a whole chain. A probe to the target crosses every hop
-// on the way, so a jump host that dies silently strands the probe exactly
-// as a dead target does, and is discovered on the same interval.
-func (e *Environment) startKeepAlive() {
-	interval := e.cfg.keepAlive()
-	if interval <= 0 {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	e.stopKeepAlive = cancel
-	e.keepAliveDone = make(chan struct{})
-
-	// The grace is how long an answer may take before the link is
-	// declared dead. It is floored: an answer bound tighter than a
-	// second measures scheduling noise, not the link.
-	grace := max(interval, probeGraceFloor)
-
-	go func() {
-		defer close(e.keepAliveDone)
-
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if !e.probeAlive(ctx, grace) {
-					// The whole chain goes, not just the target: a link
-					// that died takes every connection riding on it with
-					// it, and the socket underneath would otherwise be
-					// held until Close.
-					_ = e.chain.Close()
-
-					return
-				}
-			}
-		}
-	}()
-}
-
-// probeGraceFloor is the least time a probe gets to answer.
-const probeGraceFloor = time.Second
-
-// probeAlive sends one keepalive and reports whether the server answered
-// within bound. An answer slower than the probing cadence is
-// indistinguishable from none; a stopped loop no longer cares either
-// way.
-func (e *Environment) probeAlive(ctx context.Context, bound time.Duration) bool {
-	answered := make(chan error, 1)
-
-	go func() {
-		_, _, err := e.client.SendRequest("keepalive@openssh.com", true, nil)
-		answered <- err
-	}()
-
-	timer := time.NewTimer(bound)
-	defer timer.Stop()
-
-	select {
-	case err := <-answered:
-		return err == nil
-	case <-timer.C:
-		return false
-	case <-ctx.Done():
-		// Stopping. Liveness no longer matters, but a probe already on
-		// the wire is seen out first — no probe outlives Close — with
-		// the same bound, so a dead link cannot hold this open either.
-		select {
-		case <-answered:
-		case <-timer.C:
-		}
-
-		return true
-	}
 }
 
 // detectOS runs uname on the remote host to classify its operating
@@ -292,4 +198,51 @@ func (e *Environment) detectOS(ctx context.Context) invoke.TargetOS {
 	default:
 		return invoke.OSUnknown
 	}
+}
+
+// runRaw runs a raw command line on a fresh session and returns its stdout
+// and exit code. It backs everything the provider runs for itself:
+// LookPath, OS detection, the pre-flight check, and the removal of an
+// environment file.
+func (e *Environment) runRaw(ctx context.Context, cmdline string) (string, int, error) {
+	session, err := e.client.NewSession()
+	if err != nil {
+		return "", -1, &invoke.TransportError{Op: "session", Err: err}
+	}
+
+	defer func() { _ = session.Close() }()
+
+	var out bytes.Buffer
+
+	session.Stdout = &out
+
+	done := make(chan error, 1)
+
+	go func() { done <- session.Run(cmdline) }()
+
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+
+		<-done
+
+		return out.String(), -1, ctx.Err()
+	case runErr := <-done:
+		return classifyRaw(out.String(), runErr)
+	}
+}
+
+// classifyRaw turns a session.Run result into (stdout, exit code, error).
+func classifyRaw(out string, err error) (string, int, error) {
+	if err == nil {
+		return out, 0, nil
+	}
+
+	var exitErr *ssh.ExitError
+	if errors.As(err, &exitErr) {
+		return out, exitErr.ExitStatus(), nil
+	}
+
+	return out, -1, &invoke.TransportError{Op: "run", Err: err}
 }

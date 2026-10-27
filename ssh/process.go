@@ -1,12 +1,9 @@
 package ssh
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -158,6 +155,17 @@ func (e *Environment) preCheck(ctx context.Context, cmd invoke.Command) error {
 	}
 }
 
+// Terminal defaults for a requested pseudo-terminal.
+const (
+	// defaultTerm is the terminal type reported to the remote host. A
+	// command that consults it finds something it will recognize.
+	defaultTerm = "xterm"
+
+	// ttyBaudRate is the nominal line speed; it does not throttle
+	// anything, but the request carries it.
+	ttyBaudRate = 14400
+)
+
 // requestPTY asks the server for a pseudo-terminal of the requested size.
 //
 // Echo is disabled: a terminal would otherwise reflect whatever the
@@ -190,133 +198,6 @@ func requestPTY(session *ssh.Session, tty *invoke.TTY) error {
 	}
 
 	return nil
-}
-
-// Terminal defaults for a requested pseudo-terminal.
-const (
-	// defaultTerm is the terminal type reported to the remote host. A
-	// command that consults it finds something it will recognize.
-	defaultTerm = "xterm"
-
-	// ttyBaudRate is the nominal line speed; it does not throttle
-	// anything, but the request carries it.
-	ttyBaudRate = 14400
-)
-
-// deliverEnv arranges for env to reach the command, returning any
-// prologue the command line needs to carry.
-//
-// Variables go out of band first, where they never appear in the remote
-// process table. A server accepts only those its AcceptEnv setting names,
-// though, and the stock setting names none — so refusal is the ordinary
-// case rather than the exception, and running the command without its
-// environment is not an option.
-//
-// Refused variables are therefore written to a file only the login user
-// can read, which the command line sources and deletes before running the
-// command. The values never reach an argument vector. A caller who cannot
-// use a file — a read-only target, say — can opt into carrying them on the
-// command line instead, where every account on the host can read them.
-func (e *Environment) deliverEnv(ctx context.Context, session *ssh.Session, env []string) (string, string, error) {
-	var refused []string
-
-	for _, pair := range env {
-		key, value, ok := strings.Cut(pair, "=")
-		if !ok {
-			continue
-		}
-
-		if err := session.Setenv(key, value); err != nil {
-			refused = append(refused, pair)
-		}
-	}
-
-	if len(refused) == 0 {
-		return "", "", nil
-	}
-
-	if e.cfg.CommandLineEnv {
-		return exportPrologue(refused), "", nil
-	}
-
-	// A name no concurrent command, and no attacker, can predict: a
-	// predictable name is one that can be created first, so the file
-	// would be written to something somebody else owns.
-	path := "/tmp/.invoke-env-" + rand.Text()
-
-	if err := e.writeRemoteFile(ctx, path, exportScript(refused)); err != nil {
-		return "", "", fmt.Errorf(
-			"ssh: start: the server refused %s and they could not be delivered by file either; "+
-				"pass WithCommandLineEnv to send them on the command line, where every account "+
-				"on the host can read them: %w",
-			strings.Join(refusedNames(refused), ", "), err)
-	}
-
-	return sourcePrologue(path), path, nil
-}
-
-// cleanupTimeout bounds the best-effort removal of a delivery file.
-const cleanupTimeout = 10 * time.Second
-
-// removeRemoteFile deletes a file this package created, best effort and
-// detached from any caller context: the outcome the file supported has
-// already been decided, and a secret left in /tmp is worth one more
-// round trip.
-func (e *Environment) removeRemoteFile(path string) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), cleanupTimeout)
-	defer cancel()
-
-	if _, _, err := e.runRaw(ctx, "rm -f "+quoteArg(path)); err != nil {
-		return // Best effort: the outcome the file supported is already decided.
-	}
-}
-
-// refusedNames lists the variable names from KEY=VALUE pairs, so an error
-// can name them without quoting their values.
-func refusedNames(pairs []string) []string {
-	names := make([]string, 0, len(pairs))
-
-	for _, pair := range pairs {
-		key, _, _ := strings.Cut(pair, "=")
-		names = append(names, key)
-	}
-
-	return names
-}
-
-// writeRemoteFile creates a file readable only by the login user, with
-// its content carried on the command's input rather than its arguments.
-func (e *Environment) writeRemoteFile(ctx context.Context, path, content string) error {
-	session, err := e.client.NewSession()
-	if err != nil {
-		return &invoke.TransportError{Op: "session", Err: err}
-	}
-
-	defer func() { _ = session.Close() }()
-
-	session.Stdin = strings.NewReader(content)
-
-	done := make(chan error, 1)
-
-	go func() {
-		done <- session.Run("umask 077; cat > " + quoteArg(path))
-	}()
-
-	select {
-	case <-ctx.Done():
-		_ = session.Close()
-
-		<-done
-
-		return ctx.Err()
-
-	case runErr := <-done:
-		if runErr != nil {
-			return &invoke.TransportError{Op: "write", Err: runErr}
-		}
-
-		return nil
-	}
 }
 
 // Wait blocks until the remote command completes and returns its outcome.
@@ -601,51 +482,6 @@ func reportedExit(err error, duration time.Duration) (invoke.Result, error, bool
 	code := exitErr.ExitStatus()
 
 	return invoke.Result{ExitCode: code, Duration: duration}, &invoke.ExitError{Code: code}, true
-}
-
-// runRaw runs a raw command line on a fresh session and returns its stdout
-// and exit code. It backs LookPath, OS detection, and the pre-flight check.
-func (e *Environment) runRaw(ctx context.Context, cmdline string) (string, int, error) {
-	session, err := e.client.NewSession()
-	if err != nil {
-		return "", -1, &invoke.TransportError{Op: "session", Err: err}
-	}
-
-	defer func() { _ = session.Close() }()
-
-	var out bytes.Buffer
-
-	session.Stdout = &out
-
-	done := make(chan error, 1)
-
-	go func() { done <- session.Run(cmdline) }()
-
-	select {
-	case <-ctx.Done():
-		_ = session.Signal(ssh.SIGKILL)
-		_ = session.Close()
-
-		<-done
-
-		return out.String(), -1, ctx.Err()
-	case runErr := <-done:
-		return classifyRaw(out.String(), runErr)
-	}
-}
-
-// classifyRaw turns a session.Run result into (stdout, exit code, error).
-func classifyRaw(out string, err error) (string, int, error) {
-	if err == nil {
-		return out, 0, nil
-	}
-
-	var exitErr *ssh.ExitError
-	if errors.As(err, &exitErr) {
-		return out, exitErr.ExitStatus(), nil
-	}
-
-	return out, -1, &invoke.TransportError{Op: "run", Err: err}
 }
 
 // supportedSignal reports whether sig is in the portable signal set the
