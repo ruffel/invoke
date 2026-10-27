@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/ruffel/invoke"
-	"github.com/ruffel/invoke/internal/lifetime"
 	"github.com/ruffel/invoke/internal/transfer"
 )
 
@@ -30,28 +29,10 @@ func (e *Environment) Download(ctx context.Context, remotePath, localPath string
 	})
 }
 
-// transfer runs one transfer for the life of the Environment.
+// transfer runs one transfer for the life of the Environment: Close stops
+// it and waits for it, and it then fails wrapping invoke.ErrClosed.
 func (e *Environment) transfer(ctx context.Context, op string, run func(context.Context) error) error {
-	if err := e.checkOpen(op); err != nil {
-		return err
-	}
-
-	opCtx, end, err := e.life.Enter(ctx)
-	if err != nil {
-		return fmt.Errorf("fake: %s: %w", op, err)
-	}
-
-	defer end()
-
-	err = run(opCtx)
-
-	// Asked even of a copy that finished: Close stopped it, whether or
-	// not its last bytes had already been written.
-	if lifetime.Ended(opCtx) {
-		return fmt.Errorf("fake: %s: stopped by Close: %w", op, invoke.ErrClosed)
-	}
-
-	if err != nil {
+	if err := e.life.Run(ctx, run); err != nil {
 		return fmt.Errorf("fake: %s: %w", op, err)
 	}
 

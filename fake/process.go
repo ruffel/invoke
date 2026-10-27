@@ -96,11 +96,16 @@ func (e *Environment) spawn(
 		startCtxErr: ctx.Err,
 	}
 
-	if err := e.track(p, cmd); err != nil {
+	if err := e.life.Track(p); err != nil {
 		cancel()
 
-		return nil, err
+		return nil, fmt.Errorf("fake: start: %w", err)
 	}
+
+	// Recorded before the body runs, and only for a command that will: a
+	// refused one never started. Close cannot slip in between, since it
+	// waits for the process, whose body starts only after this.
+	e.record(cmd)
 
 	go func() {
 		// Releasing the context registration on return keeps a
@@ -140,7 +145,7 @@ func (e *Environment) spawn(
 func (p *process) Wait() (invoke.Result, error) {
 	p.waitOnce.Do(func() {
 		<-p.done
-		p.env.untrack(p)
+		p.env.life.Untrack(p)
 
 		duration := time.Since(p.started)
 		p.result, p.waitErr = p.mapOutcome(duration)
